@@ -1,9 +1,4 @@
-use anyhow::{anyhow, Context, Result};
-use blake2::{Blake2s256, Digest};
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use clap::{App, Arg};
-use flate2::{read::ZlibDecoder, write::ZlibEncoder, Compression};
-use io::prelude::*;
+/*
 use io::Write;
 use rand::prelude::*;
 use rand::prelude::*;
@@ -17,10 +12,9 @@ use std::process::exit;
 use std::sync::mpsc::{sync_channel, Receiver};
 use thinp::commands::utils::*;
 use thinp::report::*;
+*/
 
 //-----------------------------------------
-
-pub type Hash = generic_array::GenericArray<u8, generic_array::typenum::U32>;
 
 pub struct RollingHash {
     a_to_k_minus_1: u32,
@@ -41,7 +35,7 @@ impl RollingHash {
                 .wrapping_add(RollingHash::hash_byte(0));
         }
 
-        let mut r = Self {
+        let r = Self {
             a_to_k_minus_1,
             hash,
             window_size,

@@ -15,9 +15,9 @@ fn main_() -> Result<()> {
     let mut args = std::env::args_os();
     ensure!(args.len() > 0);
 
-    let mut os_name = args.next().unwrap();
-    let mut os_name = args.next().unwrap();
-    let mut name = Path::new(&os_name);
+    let _ = args.next().unwrap();
+    let os_name = args.next().unwrap();
+    let name = Path::new(&os_name);
 
     let mut new_args = vec![OsString::from(&name)];
     for a in args.into_iter() {

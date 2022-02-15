@@ -1,26 +1,23 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::Result;
 use blake2::{Blake2s256, Digest};
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{LittleEndian, WriteBytesExt};
 use clap::{App, Arg};
-use flate2::{read::ZlibDecoder, write::ZlibEncoder, Compression};
+use flate2::{write::ZlibEncoder, Compression};
 use io::prelude::*;
 use io::Write;
-use rand::prelude::*;
-use rand::prelude::*;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::error::Error;
+use std::collections::{BTreeSet, VecDeque};
 use std::fs::OpenOptions;
 use std::io;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::process::exit;
-use std::sync::mpsc::{sync_channel, Receiver};
 use thinp::commands::utils::*;
 use thinp::report::*;
 
 use crate::rolling_hash::*;
 
 //-----------------------------------------
+
+pub type Hash = generic_array::GenericArray<u8, generic_array::typenum::U32>;
 
 type IoVec<'a> = Vec<&'a [u8]>;
 
@@ -134,7 +131,7 @@ impl HashSplitter {
 
     fn consume(&mut self) -> IoVec {
         let mut begin = &mut self.consume_c;
-        let mut end = &mut self.leading_c;
+        let end = &mut self.leading_c;
         let blocks = &self.blocks;
 
         assert!(begin != end);
@@ -483,17 +480,6 @@ impl Slab {
 
 //-----------------------------------------
 
-struct Entry {
-    hits: usize,
-    len: usize,
-}
-
-impl Default for Entry {
-    fn default() -> Self {
-        Self { hits: 0, len: 0 }
-    }
-}
-
 struct DedupHandler<'a, W: Write> {
     output: &'a mut W,
     nr_chunks: usize,
@@ -516,10 +502,8 @@ impl<'a, W: Write> IoVecHandler for DedupHandler<'a, W> {
     fn handle(&mut self, iov: &IoVec) -> Result<()> {
         self.nr_chunks += 1;
 
-        let mut len = 0;
         let mut hasher = Blake2s256::new();
         for v in iov {
-            len += v.len();
             hasher.update(&v[..]);
         }
         let h = hasher.finalize();
@@ -588,7 +572,7 @@ pub fn run(args: &[std::ffi::OsString]) {
         .version(crate::version::tools_version())
         .about("archives a device or file")
         .arg(
-            Arg::with_name("INPUT")
+            Arg::new("INPUT")
                 .help("Specify a device or file to archive")
                 .required(true)
                 .short('i')
@@ -596,7 +580,7 @@ pub fn run(args: &[std::ffi::OsString]) {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("OUTPUT")
+            Arg::new("OUTPUT")
                 .help("Specify packed output file")
                 .required(true)
                 .short('o')
