@@ -1,0 +1,16 @@
+[package]
+name = "dm-archive"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0"
+blake2 = "0.10"
+byteorder = "1.4"
+clap = "3.0"
+flate2 = "1.0"
+generic-array = "0.14"
+rand = "0.8"
+thinp = { git = "https://github.com/jthornber/thin-provisioning-tools.git", branch = "main" }
