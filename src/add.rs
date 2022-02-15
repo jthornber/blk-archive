@@ -201,8 +201,9 @@ impl Splitter for HashSplitter {
 #[cfg(test)]
 mod splitter_tests {
     use super::*;
+    use rand::*;
+    use std::collections::BTreeMap;
     use std::io::{BufReader, BufWriter, Read, Write};
-    use std::string::String;
 
     fn rand_buffer(count: usize) -> Vec<u8> {
         let mut buffer = Vec::new();
@@ -258,7 +259,7 @@ mod splitter_tests {
         fn handle(&mut self, iov: &IoVec) -> Result<()> {
             for v in iov {
                 println!("{:?}", v);
-                self.output.write(v);
+                self.output.write(v)?;
             }
 
             Ok(())
@@ -328,14 +329,6 @@ mod splitter_tests {
             }
             total
         }
-
-        fn estimate_dedup_len(&self) -> usize {
-            let mut total = 0;
-            for (_, Entry { len, .. }) in &self.hashes {
-                total += len + 32; // 32 because we've got to store the hash too
-            }
-            total
-        }
     }
 
     impl IoVecHandler for TestHandler {
@@ -389,7 +382,6 @@ mod splitter_tests {
     #[test]
     fn splitter_emits_all_data() {
         let input_buf = prep_data();
-        let input_buf = b"the quick brown fox jumps over the lazy dog.  The quick brown fox jumps over the lazy dog.".to_vec();
         let mut input = BufReader::new(&input_buf[..]);
 
         let mut output_buf = Vec::new();
@@ -420,7 +412,7 @@ mod splitter_tests {
         let lengths = handler.lengths();
         let mut csv = std::fs::File::create("dedup-lengths.csv").unwrap();
         for (len, hits) in lengths {
-            write!(csv, "{}, {}\n", len, hits);
+            write!(csv, "{}, {}\n", len, hits).expect("write failed");
         }
 
         assert!(handler.unique_len() < (input_buf.len() / 4));
