@@ -57,10 +57,18 @@ impl Slab {
         Ok(())
     }
 
+    pub fn nr_entries(&self) -> usize {
+        self.blocks.len()
+    }
+
     pub fn entries_len(&self) -> usize {
         self.offset as usize
     }
 }
+
+//-----------------------------------------
+
+
 
 //-----------------------------------------
 

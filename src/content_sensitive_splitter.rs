@@ -170,6 +170,7 @@ impl Splitter for ContentSensitiveSplitter {
         if iov.len() > 0 {
             handler.handle(&iov)?;
         }
+        handler.complete()?;
         Ok(())
     }
 }
