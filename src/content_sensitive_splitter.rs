@@ -23,12 +23,6 @@ impl Default for Cursor {
     }
 }
 
-impl Cursor {
-    fn lt(&self, rhs: &Cursor) -> bool {
-        (self.block < rhs.block) || ((self.block == rhs.block) && (self.offset < rhs.offset))
-    }
-}
-
 pub struct ContentSensitiveSplitter {
     rhash: RollingHash,
 
@@ -45,6 +39,7 @@ pub struct ContentSensitiveSplitter {
 
 impl ContentSensitiveSplitter {
     pub fn new(window_size: u32) -> Self {
+        // FIXME: round window size up to a power of 2
         Self {
             rhash: RollingHash::new(window_size),
 
@@ -107,27 +102,30 @@ impl ContentSensitiveSplitter {
         }
     }
 
-    fn consume(&mut self) -> IoVec {
-        let mut begin = &mut self.consume_c;
-        let end = &mut self.leading_c;
+    fn consume(&mut self, len: usize) -> IoVec {
+        let mut c = &mut self.consume_c;
         let blocks = &self.blocks;
 
-        assert!(begin != end);
+        assert!(len != 0);
 
+	let mut remaining = len;
         let mut r = IoVec::new();
-        while begin.lt(end) {
-            let b = &blocks[begin.block];
+        while remaining > 0 {
+            let b = &blocks[c.block];
+            let blen = b.len() - c.offset;
 
-            if begin.block == end.block {
-                r.push(&b[begin.offset..end.offset]);
-                begin.offset = end.offset;
+            if blen >= remaining {
+                r.push(&b[c.offset..(c.offset + remaining)]);
+                c.offset = c.offset + remaining;
+                remaining = 0;
             } else {
-                r.push(&b[begin.offset..]);
-                begin.offset = 0;
-                begin.block += 1;
+                r.push(&b[c.offset..]);
+                remaining -= blen;
+                c.offset = 0;
+                c.block += 1;
             }
         }
-        self.len = 0;
+        self.len -= len;
         r
     }
 
@@ -146,10 +144,11 @@ impl ContentSensitiveSplitter {
 
     fn hit_break(&self, mask: u32) -> bool {
         let h = self.rhash.hash >> 8;
-        ((h & mask) == 0) && (self.len >= (self.rhash.window_size as usize) / 2)
+        (h & mask) == 0
     }
 }
 
+const DIGEST_LEN: usize = 32;
 impl Splitter for ContentSensitiveSplitter {
     fn next(&mut self, buffer: Vec<u8>, handler: &mut dyn IoVecHandler) -> Result<()> {
         self.blocks.push_back(buffer);
@@ -157,8 +156,9 @@ impl Splitter for ContentSensitiveSplitter {
         while !self.eof() {
             let _h = self.rhash.step(self.get_trailing(), self.get_leading());
             self.advance(); // So the current byte is included in the block
-            if self.hit_break(self.div) {
-                handler.handle(&self.consume())?;
+
+            if self.hit_break(self.div) && self.len > DIGEST_LEN * 2 {
+                handler.handle(&self.consume(self.len))?;
             }
         }
 
@@ -242,6 +242,10 @@ mod splitter_tests {
                 self.output.write(v)?;
             }
 
+            Ok(())
+        }
+
+        fn complete(&mut self) -> Result<()> {
             Ok(())
         }
     }
@@ -332,6 +336,10 @@ mod splitter_tests {
 
             Ok(())
         }
+
+        fn complete(&mut self) -> Result<()> {
+            Ok(())
+        }
     }
 
     //-----------
@@ -395,6 +403,11 @@ mod splitter_tests {
             write!(csv, "{}, {}\n", len, hits).expect("write failed");
         }
 
+        eprintln!(
+            "input len = {}, unique len = {}",
+            input_buf.len(),
+            handler.unique_len()
+        );
         assert!(handler.unique_len() < (input_buf.len() / 4));
     }
 }
