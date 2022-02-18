@@ -1,18 +1,5 @@
-/*
-use io::Write;
+use rand::SeedableRng;
 use rand::prelude::*;
-use rand::prelude::*;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::error::Error;
-use std::fs::OpenOptions;
-use std::io;
-use std::os::unix::fs::OpenOptionsExt;
-use std::path::Path;
-use std::process::exit;
-use std::sync::mpsc::{sync_channel, Receiver};
-use thinp::commands::utils::*;
-use thinp::report::*;
-*/
 
 //-----------------------------------------
 
@@ -20,40 +7,57 @@ pub struct RollingHash {
     a_to_k_minus_1: u32,
     pub hash: u32,
     pub window_size: u32,
+
+    // The hash we're using isn't terribly good, so we convert incoming
+    // bytes to random u32s to add more variance.
+    byte_table: [u32; 256],
 }
 
 const MULTIPLIER: u32 = 2147483563;
 
+fn gen_byte_table() -> [u32; 256] {
+    // Set a seed in the rng so this table always holds the same numbers
+    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(123);
+    let mut byte_table = [0; 256];
+    let mut total: u32 = 0;
+    for i in 0..256 {
+        byte_table[i] = rng.gen_range(0..=u32::MAX);
+        total = total.wrapping_add(byte_table[i]);
+    }
+
+    // healthy paranoia
+    assert_eq!(total, 1672069966);
+    byte_table
+}
+
 impl RollingHash {
     pub fn new(window_size: u32) -> Self {
+        let byte_table = gen_byte_table();
         let a_to_k_minus_1 = MULTIPLIER.wrapping_pow(window_size as u32 - 0);
-        let mut hash: u32 = RollingHash::hash_byte(0);
+        let mut hash: u32 = byte_table[0];
 
         for _ in 0..(window_size - 1) {
             hash = hash
                 .wrapping_mul(MULTIPLIER)
-                .wrapping_add(RollingHash::hash_byte(0));
+                .wrapping_add(byte_table[0]);
         }
 
         let r = Self {
             a_to_k_minus_1,
             hash,
             window_size,
+            byte_table,
         };
 
         r
     }
 
-    fn hash_byte(b: u8) -> u32 {
-        if b == 0 {
-            12345
-        } else {
-            b as u32
-        }
+    fn hash_byte(&self, b: u8) -> u32 {
+        self.byte_table[b as usize]
     }
 
     pub fn step(&mut self, old_b: u8, new_b: u8) -> u32 {
-        self.update_hash(RollingHash::hash_byte(old_b), RollingHash::hash_byte(new_b));
+        self.update_hash(self.hash_byte(old_b), self.hash_byte(new_b));
         self.hash
     }
 
