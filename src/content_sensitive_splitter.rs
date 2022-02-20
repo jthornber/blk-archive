@@ -102,13 +102,24 @@ impl ContentSensitiveSplitter {
         }
     }
 
+    fn drop_old_blocks(&mut self) {
+        let first_used = self.consume_c.block.min(self.trailing_c.block);
+        for _ in 0..first_used {
+            self.blocks.pop_front();
+        }
+
+        self.consume_c.block -= first_used;
+        self.trailing_c.block -= first_used;
+        self.leading_c.block -= first_used;
+    }
+
     fn consume(&mut self, len: usize) -> IoVec {
         let mut c = &mut self.consume_c;
         let blocks = &self.blocks;
 
         assert!(len != 0);
 
-	let mut remaining = len;
+        let mut remaining = len;
         let mut r = IoVec::new();
         while remaining > 0 {
             let b = &blocks[c.block];
@@ -159,6 +170,7 @@ impl Splitter for ContentSensitiveSplitter {
 
             if self.hit_break(self.div) && self.len > DIGEST_LEN * 2 {
                 handler.handle(&self.consume(self.len))?;
+                self.drop_old_blocks();
             }
         }
 
@@ -169,6 +181,7 @@ impl Splitter for ContentSensitiveSplitter {
         let iov = self.consume_all();
         if iov.len() > 0 {
             handler.handle(&iov)?;
+            self.drop_old_blocks();
         }
         handler.complete()?;
         Ok(())
