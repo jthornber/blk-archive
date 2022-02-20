@@ -9,34 +9,22 @@ use crate::content_sensitive_splitter::*;
 
 //-----------------------------------------
 
-pub struct SlabEntry {
-    h: Hash,
+struct DataPacker {
     offset: u32,
-}
-
-pub struct Slab {
-    offset: u32,
-    blocks: Vec<SlabEntry>,
     packer: ZlibEncoder<Vec<u8>>,
 }
 
-impl Default for Slab {
+impl Default for DataPacker {
     fn default() -> Self {
         Self {
             offset: 0,
-            blocks: Vec::new(),
             packer: ZlibEncoder::new(Vec::new(), Compression::default()),
         }
     }
 }
 
-impl Slab {
-    pub fn add_chunk(&mut self, h: Hash, iov: &IoVec) -> Result<()> {
-        self.blocks.push(SlabEntry {
-            h,
-            offset: self.offset,
-        });
-
+impl DataPacker {
+    fn write_iov(&mut self, iov: &IoVec) -> Result<()> {
         for v in iov {
             self.offset += v.len() as u32;
             self.packer.write(v)?;
@@ -45,16 +33,56 @@ impl Slab {
         Ok(())
     }
 
-    pub fn complete<W: Write>(mut self, w: &mut W) -> Result<()> {
+    fn complete(mut self) -> Result<Vec<u8>> {
+        let r = self.packer.reset(Vec::new())?;
+        Ok(r)
+    }
+}
+
+//-----------------------------------------
+
+pub struct SlabEntry {
+    h: Hash,
+    offset: u32,
+}
+
+pub struct Slab {
+    blocks: Vec<SlabEntry>,
+    packer: DataPacker,
+}
+
+impl Default for Slab {
+    fn default() -> Self {
+        Self {
+            blocks: Vec::new(),
+            packer: DataPacker::default(),
+        }
+    }
+}
+
+impl Slab {
+    pub fn add_chunk(&mut self, h: Hash, iov: &IoVec) -> Result<()> {
+        self.blocks.push(SlabEntry {
+            h,
+            offset: self.packer.offset,
+        });
+
+        self.packer.write_iov(iov)?;
+        Ok(())
+    }
+
+    pub fn complete<W: Write>(mut self, w: &mut W) -> Result<Vec<SlabEntry>> {
         w.write_u64::<LittleEndian>(self.blocks.len() as u64)?;
         for b in &self.blocks {
             w.write(&b.h[..])?;
             w.write_u32::<LittleEndian>(b.offset as u32)?;
         }
 
-        let compressed = self.packer.reset(Vec::new())?;
+        let compressed = self.packer.complete()?;
         w.write(&compressed[..])?;
-        Ok(())
+        let mut blocks = Vec::new();
+        std::mem::swap(&mut blocks, &mut self.blocks);
+        Ok(blocks)
     }
 
     pub fn nr_entries(&self) -> usize {
@@ -62,13 +90,9 @@ impl Slab {
     }
 
     pub fn entries_len(&self) -> usize {
-        self.offset as usize
+        self.packer.offset as usize
     }
 }
-
-//-----------------------------------------
-
-
 
 //-----------------------------------------
 

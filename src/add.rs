@@ -1,5 +1,5 @@
 use anyhow::Result;
-use blake2::{Blake2s256, Digest};
+use blake2::{Blake2b, Digest};
 use clap::{App, Arg};
 use io::prelude::*;
 use io::Write;
@@ -33,11 +33,10 @@ fn all_zeroes(iov: &IoVec) -> Option<usize> {
 
 //-----------------------------------------
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct SeqEntry {
-    slab: u32,
-    index: u32,
-}
+// 32bit digest used to hash the hashes
+type Blake2b32 = Blake2b<generic_array::typenum::U4>;
+type Blake2b256 = Blake2b<generic_array::typenum::U32>;
+pub type MiniHash = generic_array::GenericArray<u8, generic_array::typenum::U4>;
 
 struct DedupHandler<'a, W: Write> {
     output: &'a mut W,
@@ -45,8 +44,8 @@ struct DedupHandler<'a, W: Write> {
     nr_chunks: usize,
 
     // Maps hashes to the slab they're in
-    hashes: BTreeMap<Hash, MapEntry>,
-    current_slab: u64,
+    hashes: BTreeMap<MiniHash, MapEntry>,
+    slabs: Vec<Vec<SlabEntry>>,
     packer: Slab,
     mapping_builder: DevMapBuilder,
 }
@@ -58,7 +57,7 @@ impl<'a, W: Write> DedupHandler<'a, W> {
             index,
             nr_chunks: 0,
             hashes: BTreeMap::new(),
-            current_slab: 0,
+            slabs: Vec::new(),
             packer: Slab::default(),
             mapping_builder: DevMapBuilder::default(),
         }
@@ -80,24 +79,29 @@ impl<'a, W: Write> IoVecHandler for DedupHandler<'a, W> {
             self.mapping_builder
                 .next(&MapEntry::Zero { len: len as u64 }, self.index)?;
         } else {
-            let mut hasher = Blake2s256::new();
+            let mut hasher = Blake2b256::new();
             for v in iov {
                 hasher.update(&v[..]);
             }
             let h = hasher.finalize();
 
+            let mut mhasher = Blake2b32::new();
+            mhasher.update(&h[..]);
+            let mh = mhasher.finalize();
+
             let me: MapEntry;
-            match self.hashes.entry(h) {
+            match self.hashes.entry(mh) {
                 e @ Vacant(_) => {
                     me = e
                         .or_insert(MapEntry::Data {
-                            slab: self.current_slab as u64,
+                            slab: self.slabs.len() as u64,
                             offset: self.packer.nr_entries() as u32,
                         })
                         .clone();
                     self.packer.add_chunk(h, iov)?;
                 }
                 Occupied(e) => {
+                    // FIXME: We need to double check the proper hash.
                     me = *e.get();
                 }
             }
@@ -108,8 +112,8 @@ impl<'a, W: Write> IoVecHandler for DedupHandler<'a, W> {
                 // Write the slab
                 let mut packer = Slab::default();
                 std::mem::swap(&mut packer, &mut self.packer);
-                packer.complete(self.output)?;
-                self.current_slab += 1;
+                let slab_header = packer.complete(self.output)?;
+                self.slabs.push(slab_header);
             }
         }
 
