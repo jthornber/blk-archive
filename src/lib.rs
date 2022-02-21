@@ -1,4 +1,5 @@
 pub mod archive;
+pub mod config;
 pub mod content_sensitive_splitter;
 pub mod create;
 pub mod device_mapping;
