@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::{command, Arg, Command};
 use std::process::exit;
 
+use dm_archive::create;
 use dm_archive::pack;
 
 //-----------------------
@@ -41,11 +42,34 @@ fn main_() -> Result<()> {
                         .takes_value(true),
                 ),
         )
+        .subcommand(
+            Command::new("create")
+                .about("creates a new archive")
+                .arg(
+                    Arg::new("DIR")
+                        .help("Specify the top level directory for the archive")
+                        .required(true)
+                        .long("dir")
+                        .value_name("DIR")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::new("BLOCK_SIZE")
+                        .help("Specify the average block size used when deduplicating data")
+                        .required(false)
+                        .long("block-size")
+                        .value_name("BLOCK_SIZE")
+                        .takes_value(true),
+                ),
+        )
         .get_matches();
 
     match matches.subcommand() {
         Some(("pack", sub_matches)) => {
             pack::run(sub_matches)?;
+        }
+        Some(("create", sub_matches)) => {
+            create::run(sub_matches)?;
         }
         _ => unreachable!("Exhausted list of subcommands and subcommand_required prevents 'None'"),
     }
@@ -56,7 +80,9 @@ fn main_() -> Result<()> {
 fn main() {
     let code = match main_() {
         Ok(()) => 0,
-        Err(_) => {
+        Err(e) => {
+            // FIXME: write to report
+            eprintln!("{}", e);
             // We don't print out the error since -q may be set
             1
         }
