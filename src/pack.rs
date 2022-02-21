@@ -7,7 +7,6 @@ use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::exit;
 use thinp::commands::utils::*;
 use thinp::report::*;
 
@@ -179,7 +178,7 @@ pub fn archive(input_file: &Path, output_file: &Path, block_size: usize) -> Resu
 
 //-----------------------------------------
 
-pub fn run(matches: &ArgMatches) {
+pub fn run(matches: &ArgMatches) -> Result<()> {
     let input_file = Path::new(matches.value_of("INPUT").unwrap());
     let output_file = Path::new(matches.value_of("OUTPUT").unwrap());
     let block_size = matches
@@ -188,10 +187,7 @@ pub fn run(matches: &ArgMatches) {
     let report = std::sync::Arc::new(mk_simple_report());
     check_input_file(input_file, &report);
 
-    if let Err(reason) = archive(input_file, output_file, block_size) {
-        report.fatal(&format!("Application error: {}\n", reason));
-        exit(1);
-    }
+    archive(input_file, output_file, block_size)
 }
 
 //-----------------------------------------

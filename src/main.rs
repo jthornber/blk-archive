@@ -45,7 +45,7 @@ fn main_() -> Result<()> {
 
     match matches.subcommand() {
         Some(("pack", sub_matches)) => {
-            pack::run(sub_matches);
+            pack::run(sub_matches)?;
         }
         _ => unreachable!("Exhausted list of subcommands and subcommand_required prevents 'None'"),
     }
