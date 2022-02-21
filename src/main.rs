@@ -32,16 +32,6 @@ fn main_() -> Result<()> {
                         .value_name("ARCHIVE")
                         .takes_value(true),
                 )
-                .arg(
-                    Arg::new("BLOCK_SIZE")
-                        .help("Specify average block size")
-                        .required(false)
-                        .validator(|s| s.parse::<usize>())
-                        .default_value("4096")
-                        .short('b')
-                        .value_name("BLOCK_SIZE")
-                        .takes_value(true),
-                ),
         )
         .subcommand(
             Command::new("create")

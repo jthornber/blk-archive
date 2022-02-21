@@ -12,6 +12,7 @@ use thinp::commands::utils::*;
 use thinp::report::*;
 
 use crate::archive::*;
+use crate::config;
 use crate::content_sensitive_splitter::*;
 use crate::device_mapping::*;
 use crate::splitter::*;
@@ -182,18 +183,13 @@ pub fn pack(input_file: &Path, output_file: &Path, block_size: usize) -> Result<
 pub fn run(matches: &ArgMatches) -> Result<()> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
     let input_file = Path::new(matches.value_of("INPUT").unwrap()).canonicalize()?;
-    let block_size = matches
-        .value_of("BLOCK_SIZE")
-        .unwrap()
-        .parse::<usize>()
-        .unwrap();
-
     let report = std::sync::Arc::new(mk_simple_report());
     check_input_file(&input_file, &report);
 
     env::set_current_dir(&archive_dir)?;
+    let config = config::read_config(".")?;
     let output_file: PathBuf = ["data", "data"].iter().collect();
-    pack(&input_file, &output_file, block_size)
+    pack(&input_file, &output_file, config.block_size)
 }
 
 //-----------------------------------------
