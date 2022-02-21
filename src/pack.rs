@@ -8,6 +8,7 @@ use std::env;
 use std::fs::OpenOptions;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use thinp::commands::utils::*;
 use thinp::report::*;
 
@@ -130,13 +131,19 @@ impl<'a, W: Write> IoVecHandler for DedupHandler<'a, W> {
 
 //-----------------------------------------
 
-pub fn pack(input_file: &Path, output_file: &Path, block_size: usize) -> Result<()> {
+pub fn pack(
+    report: &Arc<Report>,
+    input_file: &Path,
+    output_file: &Path,
+    block_size: usize,
+) -> Result<()> {
     let mut splitter = ContentSensitiveSplitter::new(block_size as u32);
 
     let mut input = OpenOptions::new()
         .read(true)
         .write(false)
         .open(input_file)?;
+    let input_size = input.metadata()?.len();
 
     let mut output = OpenOptions::new()
         .read(false)
@@ -158,7 +165,10 @@ pub fn pack(input_file: &Path, output_file: &Path, block_size: usize) -> Result<
 
     let mut handler = DedupHandler::new(&mut output, &mut index);
 
+    report.set_title(&format!("Packing {} ...", input_file.display()));
+    report.progress(0);
     const BUFFER_SIZE: usize = 4 * 1024 * 1024;
+    let mut total_read: u64 = 0;
     loop {
         let mut buffer = vec![0u8; BUFFER_SIZE];
         let n = input.read(&mut buffer[..])?;
@@ -171,9 +181,13 @@ pub fn pack(input_file: &Path, output_file: &Path, block_size: usize) -> Result<
             buffer.truncate(n);
             splitter.next(buffer, &mut handler)?;
         }
+
+        total_read += n as u64;
+        report.progress(((100 * total_read) / input_size) as u8);
     }
 
     splitter.complete(&mut handler)?;
+    report.progress(100);
 
     Ok(())
 }
@@ -183,13 +197,13 @@ pub fn pack(input_file: &Path, output_file: &Path, block_size: usize) -> Result<
 pub fn run(matches: &ArgMatches) -> Result<()> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
     let input_file = Path::new(matches.value_of("INPUT").unwrap()).canonicalize()?;
-    let report = std::sync::Arc::new(mk_simple_report());
+    let report = std::sync::Arc::new(mk_progress_bar_report());
     check_input_file(&input_file, &report);
 
     env::set_current_dir(&archive_dir)?;
     let config = config::read_config(".")?;
     let output_file: PathBuf = ["data", "data"].iter().collect();
-    pack(&input_file, &output_file, config.block_size)
+    pack(&report, &input_file, &output_file, config.block_size)
 }
 
 //-----------------------------------------
