@@ -19,8 +19,7 @@ fn main_() -> Result<()> {
                     Arg::new("INPUT")
                         .help("Specify a device or file to archive")
                         .required(true)
-                        .short('i')
-                        .value_name("DEV")
+                        .value_name("INPUT")
                         .takes_value(true),
                 )
                 .arg(

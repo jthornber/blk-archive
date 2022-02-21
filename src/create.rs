@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::ArgMatches;
 use std::fs;
 use std::fs::OpenOptions;
@@ -45,7 +45,7 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
         .value_of("BLOCK_SIZE")
         .map(|s| s.parse::<usize>())
         .or(Some(Ok(4096)))
-        .unwrap()?;
+        .unwrap().context("couldn't parse --block-size argument")?;
 
     let report = std::sync::Arc::new(mk_simple_report());
 
