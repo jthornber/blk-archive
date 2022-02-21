@@ -1,34 +1,53 @@
-use anyhow::{anyhow, ensure, Result};
-use std::ffi::OsString;
-use std::path::Path;
+use anyhow::Result;
+use clap::{command, Arg, Command};
 use std::process::exit;
 
 use dm_archive::add;
 
 //-----------------------
 
-fn name_eq(name: &Path, cmd: &str) -> bool {
-    name == Path::new(cmd)
-}
-
 fn main_() -> Result<()> {
-    let mut args = std::env::args_os();
-    ensure!(args.len() > 0);
+    let matches = command!()
+        .propagate_version(true)
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .subcommand(
+            Command::new("pack")
+                .about("packs a stream into the archive")
+                .arg(
+                    Arg::new("INPUT")
+                        .help("Specify a device or file to archive")
+                        .required(true)
+                        .short('i')
+                        .value_name("DEV")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::new("OUTPUT")
+                        .help("Specify packed output file")
+                        .required(true)
+                        .short('o')
+                        .value_name("FILE")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::new("BLOCK_SIZE")
+                        .help("Specify average block size")
+                        .required(false)
+                        .validator(|s| s.parse::<usize>())
+                        .default_value("4096")
+                        .short('b')
+                        .value_name("BLOCK_SIZE")
+                        .takes_value(true),
+                ),
+        )
+        .get_matches();
 
-    let _ = args.next().unwrap();
-    let os_name = args.next().unwrap();
-    let name = Path::new(&os_name);
-
-    let mut new_args = vec![OsString::from(&name)];
-    for a in args.into_iter() {
-        new_args.push(a);
-    }
-
-    if name_eq(name, "add") {
-        add::run(&new_args);
-    } else {
-        eprintln!("unrecognised command");
-        return Err(anyhow!("unrecognised command"));
+    match matches.subcommand() {
+        Some(("pack", sub_matches)) => {
+            add::run(sub_matches);
+        }
+        _ => unreachable!("Exhausted list of subcommands and subcommand_required prevents 'None'"),
     }
 
     Ok(())

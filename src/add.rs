@@ -1,6 +1,6 @@
 use anyhow::Result;
 use blake2::{Blake2b, Digest};
-use clap::{App, Arg};
+use clap::{ArgMatches};
 use io::prelude::*;
 use io::Write;
 use std::collections::BTreeMap;
@@ -179,38 +179,7 @@ pub fn archive(input_file: &Path, output_file: &Path, block_size: usize) -> Resu
 
 //-----------------------------------------
 
-pub fn run(args: &[std::ffi::OsString]) {
-    let parser = App::new("dm-archive add")
-        .version(crate::version::tools_version())
-        .about("archives a device or file")
-        .arg(
-            Arg::new("INPUT")
-                .help("Specify a device or file to archive")
-                .required(true)
-                .short('i')
-                .value_name("DEV")
-                .takes_value(true),
-        )
-        .arg(
-            Arg::new("OUTPUT")
-                .help("Specify packed output file")
-                .required(true)
-                .short('o')
-                .value_name("FILE")
-                .takes_value(true),
-        )
-        .arg(
-            Arg::new("BLOCK_SIZE")
-                .help("Specify average block size")
-                .required(false)
-                .validator(|s| s.parse::<usize>())
-                .default_value("4096")
-                .short('b')
-                .value_name("BLOCK_SIZE")
-                .takes_value(true),
-        );
-
-    let matches = parser.get_matches_from(args);
+pub fn run(matches: &ArgMatches) {
     let input_file = Path::new(matches.value_of("INPUT").unwrap());
     let output_file = Path::new(matches.value_of("OUTPUT").unwrap());
     let block_size = matches
