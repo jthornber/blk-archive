@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::{command, Arg, Command};
 use std::process::exit;
 
-use dm_archive::add;
+use dm_archive::pack;
 
 //-----------------------
 
@@ -45,7 +45,7 @@ fn main_() -> Result<()> {
 
     match matches.subcommand() {
         Some(("pack", sub_matches)) => {
-            add::run(sub_matches);
+            pack::run(sub_matches);
         }
         _ => unreachable!("Exhausted list of subcommands and subcommand_required prevents 'None'"),
     }
