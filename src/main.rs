@@ -24,11 +24,12 @@ fn main_() -> Result<()> {
                         .takes_value(true),
                 )
                 .arg(
-                    Arg::new("OUTPUT")
-                        .help("Specify packed output file")
+                    Arg::new("ARCHIVE")
+                        .help("Specify archive directory")
                         .required(true)
-                        .short('o')
-                        .value_name("FILE")
+                        .long("archive")
+                        .short('a')
+                        .value_name("ARCHIVE")
                         .takes_value(true),
                 )
                 .arg(

@@ -1,9 +1,10 @@
 use anyhow::Result;
 use blake2::{Blake2b, Digest};
-use clap::{ArgMatches};
+use clap::ArgMatches;
 use io::prelude::*;
 use io::Write;
 use std::collections::BTreeMap;
+use std::env;
 use std::fs::OpenOptions;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -128,7 +129,7 @@ impl<'a, W: Write> IoVecHandler for DedupHandler<'a, W> {
 
 //-----------------------------------------
 
-pub fn archive(input_file: &Path, output_file: &Path, block_size: usize) -> Result<()> {
+pub fn pack(input_file: &Path, output_file: &Path, block_size: usize) -> Result<()> {
     let mut splitter = ContentSensitiveSplitter::new(block_size as u32);
 
     let mut input = OpenOptions::new()
@@ -179,15 +180,20 @@ pub fn archive(input_file: &Path, output_file: &Path, block_size: usize) -> Resu
 //-----------------------------------------
 
 pub fn run(matches: &ArgMatches) -> Result<()> {
-    let input_file = Path::new(matches.value_of("INPUT").unwrap());
-    let output_file = Path::new(matches.value_of("OUTPUT").unwrap());
+    let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
+    let input_file = Path::new(matches.value_of("INPUT").unwrap()).canonicalize()?;
     let block_size = matches
-        .value_of("BLOCK_SIZE").unwrap().parse::<usize>().unwrap();
+        .value_of("BLOCK_SIZE")
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
 
     let report = std::sync::Arc::new(mk_simple_report());
-    check_input_file(input_file, &report);
+    check_input_file(&input_file, &report);
 
-    archive(input_file, output_file, block_size)
+    env::set_current_dir(&archive_dir)?;
+    let output_file: PathBuf = ["data", "data"].iter().collect();
+    pack(&input_file, &output_file, block_size)
 }
 
 //-----------------------------------------
