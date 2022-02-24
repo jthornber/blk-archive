@@ -1,12 +1,11 @@
 use anyhow::Result;
 use std::collections::VecDeque;
 
+use crate::iovec::*;
 use crate::rolling_hash::*;
 use crate::splitter::*;
 
 //-----------------------------------------
-
-pub type Hash = generic_array::GenericArray<u8, generic_array::typenum::U32>;
 
 #[derive(PartialEq, Eq)]
 struct Cursor {

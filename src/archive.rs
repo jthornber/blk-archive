@@ -4,8 +4,8 @@ use flate2::{write::ZlibEncoder, Compression};
 use io::Write;
 use std::io;
 
-use crate::splitter::*;
-use crate::content_sensitive_splitter::*;
+use crate::iovec::*;
+use crate::hash::*;
 
 //-----------------------------------------
 
@@ -42,7 +42,7 @@ impl DataPacker {
 //-----------------------------------------
 
 pub struct SlabEntry {
-    h: Hash,
+    h: Hash256,
     offset: u32,
 }
 
@@ -61,7 +61,7 @@ impl Default for Slab {
 }
 
 impl Slab {
-    pub fn add_chunk(&mut self, h: Hash, iov: &IoVec) -> Result<()> {
+    pub fn add_chunk(&mut self, h: Hash256, iov: &IoVec) -> Result<()> {
         self.blocks.push(SlabEntry {
             h,
             offset: self.packer.offset,

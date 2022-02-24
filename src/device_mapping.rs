@@ -259,7 +259,7 @@ impl VMState {
     }
 }
 
-pub struct DevMapBuilder {
+pub struct MappingBuilder {
     run: Option<Run>,
     vm_state: VMState,
 }
@@ -273,7 +273,7 @@ fn pack_instrs<W: Write>(w: &mut W, instrs: &IVec) -> Result<()> {
     Ok(())
 }
 
-impl Default for DevMapBuilder {
+impl Default for MappingBuilder {
     fn default() -> Self {
         Self {
             run: None,
@@ -282,7 +282,7 @@ impl Default for DevMapBuilder {
     }
 }
 
-impl DevMapBuilder {
+impl MappingBuilder {
     pub fn next<W: Write>(&mut self, e: &MapEntry, w: &mut W) -> Result<()> {
         use MapEntry::*;
 
