@@ -27,7 +27,7 @@ impl DataPacker {
     fn write_iov(&mut self, iov: &IoVec) -> Result<()> {
         for v in iov {
             self.offset += v.len() as u32;
-            self.packer.write(v)?;
+            self.packer.write_all(v)?;
         }
 
         Ok(())
@@ -46,11 +46,13 @@ pub struct SlabEntry {
     offset: u32,
 }
 
+#[derive(Default)]
 pub struct Slab {
     blocks: Vec<SlabEntry>,
     packer: DataPacker,
 }
 
+/*
 impl Default for Slab {
     fn default() -> Self {
         Self {
@@ -59,6 +61,7 @@ impl Default for Slab {
         }
     }
 }
+*/
 
 impl Slab {
     pub fn add_chunk(&mut self, h: Hash256, iov: &IoVec) -> Result<()> {
@@ -74,12 +77,12 @@ impl Slab {
     pub fn complete<W: Write>(mut self, w: &mut W) -> Result<Vec<SlabEntry>> {
         w.write_u64::<LittleEndian>(self.blocks.len() as u64)?;
         for b in &self.blocks {
-            w.write(&b.h[..])?;
+            w.write_all(&b.h[..])?;
             w.write_u32::<LittleEndian>(b.offset as u32)?;
         }
 
         let compressed = self.packer.complete()?;
-        w.write(&compressed[..])?;
+        w.write_all(&compressed[..])?;
         let mut blocks = Vec::new();
         std::mem::swap(&mut blocks, &mut self.blocks);
         Ok(blocks)

@@ -7,19 +7,10 @@ use crate::splitter::*;
 
 //-----------------------------------------
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Default)]
 struct Cursor {
     block: usize,
     offset: usize,
-}
-
-impl Default for Cursor {
-    fn default() -> Self {
-        Self {
-            block: 0,
-            offset: 0,
-        }
-    }
 }
 
 pub struct ContentSensitiveSplitter {
@@ -126,7 +117,7 @@ impl ContentSensitiveSplitter {
 
             if blen >= remaining {
                 r.push(&b[c.offset..(c.offset + remaining)]);
-                c.offset = c.offset + remaining;
+                c.offset += remaining;
                 remaining = 0;
             } else {
                 r.push(&b[c.offset..]);
@@ -178,7 +169,7 @@ impl Splitter for ContentSensitiveSplitter {
 
     fn complete(mut self, handler: &mut dyn IoVecHandler) -> Result<()> {
         let iov = self.consume_all();
-        if iov.len() > 0 {
+        if !iov.is_empty() {
             handler.handle(&iov)?;
             self.drop_old_blocks();
         }
@@ -196,6 +187,8 @@ mod splitter_tests {
     use rand::*;
     use std::collections::BTreeMap;
     use std::io::{BufReader, BufWriter, Read, Write};
+
+    use crate::hash::*;
 
     fn rand_buffer(count: usize) -> Vec<u8> {
         let mut buffer = Vec::new();
@@ -282,7 +275,7 @@ mod splitter_tests {
 
     struct TestHandler {
         nr_chunks: usize,
-        hashes: BTreeMap<Hash, Entry>,
+        hashes: BTreeMap<Hash256, Entry>,
     }
 
     impl Default for TestHandler {
@@ -412,7 +405,7 @@ mod splitter_tests {
         let lengths = handler.lengths();
         let mut csv = std::fs::File::create("dedup-lengths.csv").unwrap();
         for (len, hits) in lengths {
-            write!(csv, "{}, {}\n", len, hits).expect("write failed");
+            writeln!(csv, "{}, {}", len, hits).expect("write failed");
         }
 
         eprintln!(

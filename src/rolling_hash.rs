@@ -20,9 +20,9 @@ fn gen_byte_table() -> [u32; 256] {
     let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(123);
     let mut byte_table = [0; 256];
     let mut total: u32 = 0;
-    for i in 0..256 {
-        byte_table[i] = rng.gen_range(0..=u32::MAX);
-        total = total.wrapping_add(byte_table[i]);
+    for b in &mut byte_table {
+        *b = rng.gen_range(0..=u32::MAX);
+        total = total.wrapping_add(*b);
     }
 
     // healthy paranoia
@@ -33,7 +33,7 @@ fn gen_byte_table() -> [u32; 256] {
 impl RollingHash {
     pub fn new(window_size: u32) -> Self {
         let byte_table = gen_byte_table();
-        let a_to_k_minus_1 = MULTIPLIER.wrapping_pow(window_size as u32 - 0);
+        let a_to_k_minus_1 = MULTIPLIER.wrapping_pow(window_size as u32);
         let mut hash: u32 = byte_table[0];
 
         for _ in 0..(window_size - 1) {
@@ -42,14 +42,12 @@ impl RollingHash {
                 .wrapping_add(byte_table[0]);
         }
 
-        let r = Self {
+        Self {
             a_to_k_minus_1,
             hash,
             window_size,
             byte_table,
-        };
-
-        r
+        }
     }
 
     fn hash_byte(&self, b: u8) -> u32 {

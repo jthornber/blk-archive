@@ -14,18 +14,17 @@ use std::sync::Arc;
 use thinp::commands::utils::*;
 use thinp::report::*;
 
-use crate::archive::*;
 use crate::config;
 use crate::content_sensitive_splitter::*;
-use crate::device_mapping::*;
 use crate::hash::*;
 use crate::iovec::*;
 use crate::slab::*;
 use crate::splitter::*;
+use crate::stream::*;
 
 //-----------------------------------------
 
-fn all_zeroes(iov: &IoVec) -> (usize, bool) {
+fn all_zeroes(iov: &IoVec) -> (u64, bool) {
     let mut len = 0;
     let mut zeroes = true;
     for v in iov {
@@ -40,7 +39,7 @@ fn all_zeroes(iov: &IoVec) -> (usize, bool) {
         len += v.len();
     }
 
-    (len, zeroes)
+    (len as u64, zeroes)
 }
 
 //-----------------------------------------
@@ -62,12 +61,9 @@ impl Packer {
         }
     }
 
-    fn write_iov(&mut self, iov: &IoVec) -> Result<()> {
-        for v in iov {
-            self.offset += v.len() as u32;
-            self.packer.write(v)?;
-        }
-
+    fn write(&mut self, v: &[u8]) -> Result<()> {
+        self.offset += v.len() as u32;
+        self.packer.write_all(v)?;
         Ok(())
     }
 
@@ -83,22 +79,26 @@ impl Packer {
 
 //-----------------------------------------
 
+const SLAB_SIZE_TARGET: usize = 4 * 1024 * 1024;
+
 struct DedupHandler {
     nr_chunks: usize,
 
     // Maps hashes to the slab they're in
-    hashes: BTreeMap<Hash32, MapEntry>,
+    // hashes: BTreeMap<Hash32, MapEntry>,
+    hashes: BTreeMap<Hash256, MapEntry>,
 
     data_file: SlabFile,
-    index_file: SlabFile,
+    hashes_file: SlabFile,
     stream_file: SlabFile,
 
-    data_entries: u32,
+    current_slab: u64,
+    current_entries: u32,
+
     data_buf: Vec<u8>,
-    index_buf: Vec<u8>,
+    hashes_buf: Vec<u8>,
     stream_buf: Vec<u8>,
 
-    slabs: Vec<Vec<SlabEntry>>,
     mapping_builder: MappingBuilder,
 }
 
@@ -108,109 +108,117 @@ fn mk_packer(file: &mut SlabFile) -> Packer {
 }
 
 impl DedupHandler {
-    fn new(data_file: SlabFile, index_file: SlabFile, stream_file: SlabFile) -> Self {
+    fn new(data_file: SlabFile, hashes_file: SlabFile, stream_file: SlabFile) -> Self {
         Self {
             nr_chunks: 0,
             hashes: BTreeMap::new(),
 
             data_file,
-            index_file,
+            hashes_file,
             stream_file,
 
-            data_entries: 0,
+            current_slab: 0,
+            current_entries: 0,
 
             data_buf: Vec::new(),
-            index_buf: Vec::new(),
+            hashes_buf: Vec::new(),
             stream_buf: Vec::new(),
 
-            slabs: Vec::new(),
             mapping_builder: MappingBuilder::default(),
         }
     }
 
-    fn complete_slab(slab: &mut SlabFile, buf: &mut Vec<u8>) -> Result<()> {
-        if buf.len() > 0 {
-            let mut packer = mk_packer(slab);
-            packer.write_iov(&vec![&buf[..]])?;
-            packer.complete()?;
-            buf.clear();
-        }
+    fn complete_slab_(slab: &mut SlabFile, buf: &mut Vec<u8>) -> Result<()> {
+        let mut packer = mk_packer(slab);
+        packer.write(buf)?;
+        packer.complete()?;
+        buf.clear();
         Ok(())
     }
 
-    fn maybe_complete_slab(slab: &mut SlabFile, buf: &mut Vec<u8>) -> Result<bool> {
-        if buf.len() > SLAB_SIZE_TARGET {
-            Self::complete_slab(slab, buf)?;
+    fn complete_slab(slab: &mut SlabFile, buf: &mut Vec<u8>, threshold: usize) -> Result<bool> {
+        if buf.len() > threshold {
+            Self::complete_slab_(slab, buf)?;
             Ok(true)
         } else {
             Ok(false)
         }
     }
 
-    fn add_data_entry(&mut self, iov: &IoVec) -> Result<()> {
-        for v in iov {
-            self.data_buf.extend(v.iter());
+    fn maybe_complete_data(&mut self) -> Result<()> {
+        if Self::complete_slab(&mut self.data_file, &mut self.data_buf, SLAB_SIZE_TARGET)? {
+            Self::complete_slab_(&mut self.hashes_file, &mut self.hashes_buf)?;
+            self.current_slab += 1;
+            self.current_entries = 0;
         }
-        self.data_entries += 1;
-
-        if Self::maybe_complete_slab(&mut self.data_file, &mut self.data_buf)? {
-            self.data_entries = 0;
-        }
-
         Ok(())
     }
 
-    fn add_index_entry(&mut self, h: Hash256, len: u32) -> Result<()> {
-        self.index_buf.write_all(&h)?;
-        self.index_buf.write_u32::<LittleEndian>(len)?;
-        Self::maybe_complete_slab(&mut self.index_file, &mut self.index_buf)?;
+    fn maybe_complete_stream(&mut self) -> Result<()> {
+        Self::complete_slab(
+            &mut self.stream_file,
+            &mut self.stream_buf,
+            SLAB_SIZE_TARGET,
+        )?;
+        Ok(())
+    }
+
+    // Returns the (slab, entry) for the newly added entry
+    fn add_data_entry(&mut self, iov: &IoVec) -> Result<(u64, u32)> {
+        let r = (self.current_slab, self.current_entries);
+        for v in iov {
+            self.data_buf.extend(v.iter());
+        }
+        self.current_entries += 1;
+        Ok(r)
+    }
+
+    fn add_hash_entry(&mut self, h: Hash256, len: u32) -> Result<()> {
+        self.hashes_buf.write_all(&h)?;
+        self.hashes_buf.write_u32::<LittleEndian>(len)?;
         Ok(())
     }
 
     fn add_stream_entry(&mut self, e: &MapEntry) -> Result<()> {
-        self.mapping_builder.next(e, &mut self.stream_buf)?;
-        Self::maybe_complete_slab(&mut self.stream_file, &mut self.stream_buf)?;
-        Ok(())
+        self.mapping_builder.next(e, &mut self.stream_buf)
     }
 }
 
-const SLAB_SIZE_TARGET: usize = 4 * 1024 * 1024;
-
 impl IoVecHandler for DedupHandler {
     fn handle(&mut self, iov: &IoVec) -> Result<()> {
-        use std::collections::btree_map::Entry::*;
-
         self.nr_chunks += 1;
-        let (len, zeroes) = all_zeroes(iov);
+        let (len, _zeroes) = all_zeroes(iov);
 
+/*
+	// FIXME: not sure zeroes isn't working
         if zeroes {
-            self.mapping_builder
-                .next(&MapEntry::Zero { len: len as u64 }, &mut self.stream_buf)?;
+            self.add_stream_entry(&MapEntry::Zero { len })?;
+            self.maybe_complete_stream()?;
         } else {
+            */
             let h = hash_256(iov);
+
+            /*
             // FIXME: can we just use the bottom 32 bits of h?
             let mh = hash_32(&vec![&h[..]]);
+            */
+            let mh = h;
 
             let me: MapEntry;
-            match self.hashes.entry(mh) {
-                e @ Vacant(_) => {
-                    me = e
-                        .or_insert(MapEntry::Data {
-                            slab: self.slabs.len() as u64,
-                            offset: self.data_entries as u32,
-                        })
-                        .clone();
-
-                    self.add_data_entry(iov)?;
-                    self.add_index_entry(h, len as u32)?;
-                }
-                Occupied(e) => {
-                    // FIXME: We need to double check the proper hash.
-                    me = *e.get();
-                }
+            if let Some(e) = self.hashes.get(&mh) {
+                // FIXME: We need to double check the proper hash.
+                me = *e;
+            } else {
+                self.add_hash_entry(h, len as u32)?;
+                let (slab, offset) = self.add_data_entry(iov)?;
+                me = MapEntry::Data { slab, offset };
+                self.hashes.insert(mh, me);
+                self.maybe_complete_data()?;
             }
+
             self.add_stream_entry(&me)?;
-        }
+            self.maybe_complete_stream()?;
+        //}
 
         Ok(())
     }
@@ -220,9 +228,9 @@ impl IoVecHandler for DedupHandler {
         std::mem::swap(&mut mapping_builder, &mut self.mapping_builder);
         mapping_builder.complete(&mut self.stream_buf)?;
 
-        Self::complete_slab(&mut self.data_file, &mut self.data_buf)?;
-        Self::complete_slab(&mut self.index_file, &mut self.index_buf)?;
-        Self::complete_slab(&mut self.stream_file, &mut self.stream_buf)?;
+        Self::complete_slab(&mut self.hashes_file, &mut self.hashes_buf, 0)?;
+        Self::complete_slab(&mut self.data_file, &mut self.data_buf, 0)?;
+        Self::complete_slab(&mut self.stream_file, &mut self.stream_buf, 0)?;
         Ok(())
     }
 }
@@ -241,7 +249,7 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
     let output_path: PathBuf = ["data", "data"].iter().collect();
     let output_file = SlabFile::create(&output_path, 128)?;
 
-    let index_path: PathBuf = ["data", "index"].iter().collect();
+    let index_path: PathBuf = ["data", "hashes"].iter().collect();
     let index_file = SlabFile::create(&index_path, 16)?;
 
     let stream_path: PathBuf = ["streams", "00000000"].iter().collect();
@@ -251,7 +259,7 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
 
     report.set_title(&format!("Packing {} ...", input_file.display()));
     report.progress(0);
-    const BUFFER_SIZE: usize = 4 * 1024 * 1024;
+    const BUFFER_SIZE: usize = 16 * 1024 * 1024;
     let mut total_read: u64 = 0;
     loop {
         let mut buffer = vec![0u8; BUFFER_SIZE];
