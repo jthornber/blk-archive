@@ -104,7 +104,6 @@ struct DedupHandler {
 
     data_written: u64,
     hashes_written: u64,
-    stream_written: u64,
 }
 
 fn mk_packer(file: &mut SlabFile) -> Packer {
@@ -134,7 +133,6 @@ impl DedupHandler {
             // Stats
             data_written: 0,
             hashes_written: 0,
-            stream_written: 0,
         }
     }
 
@@ -277,21 +275,23 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
     report.set_title(&format!("Packing {} ...", input_file.display()));
     report.progress(0);
     const BUFFER_SIZE: usize = 16 * 1024 * 1024;
+    let complete_blocks = input_size / BUFFER_SIZE as u64;
+    let remainder = input_size - (complete_blocks * BUFFER_SIZE as u64);
+
     let mut total_read: u64 = 0;
-    loop {
+    for _ in 0..complete_blocks {
         let mut buffer = vec![0u8; BUFFER_SIZE];
-        let n = input.read(&mut buffer[..])?;
+        input.read_exact(&mut buffer[..])?;
+        splitter.next(buffer, &mut handler)?;
+        total_read += BUFFER_SIZE as u64;
+        report.progress(((100 * total_read) / input_size) as u8);
+    }
 
-        if n == 0 {
-            break;
-        } else if n == BUFFER_SIZE {
-            splitter.next(buffer, &mut handler)?;
-        } else {
-            buffer.truncate(n);
-            splitter.next(buffer, &mut handler)?;
-        }
-
-        total_read += n as u64;
+    if remainder > 0 {
+        let mut buffer = vec![0u8; remainder as usize];
+        input.read_exact(&mut buffer[..])?;
+        splitter.next(buffer, &mut handler)?;
+        total_read += remainder as u64;
         report.progress(((100 * total_read) / input_size) as u8);
     }
 

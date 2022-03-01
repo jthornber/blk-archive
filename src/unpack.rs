@@ -148,15 +148,15 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     let output_file = Path::new(matches.value_of("OUTPUT").unwrap()); // .canonicalize()?;
     let report = std::sync::Arc::new(mk_progress_bar_report());
 
-    env::set_current_dir(&archive_dir)?;
-
-    report.set_title(&format!("Unpacking {} ...", output_file.display()));
     let mut output = OpenOptions::new()
         .read(false)
         .write(true)
         .create(true)
         .open(output_file)?;
 
+    env::set_current_dir(&archive_dir)?;
+
+    report.set_title(&format!("Unpacking {} ...", output_file.display()));
     let mut u = Unpacker::new()?;
     u.unpack(&report, &mut output)
 }
