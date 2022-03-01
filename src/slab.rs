@@ -140,6 +140,37 @@ impl SlabFile {
         })
     }
 
+    pub fn open_for_write<P: AsRef<Path>>(p: P, queue_depth: usize) -> Result<Self> {
+        let mut data = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(false)
+            .open(p)?;
+
+        let magic = data.read_u64::<LittleEndian>()?;
+        let version = data.read_u32::<LittleEndian>()?;
+
+        assert_eq!(magic, FILE_MAGIC); // FIXME: better error
+        assert_eq!(version, FORMAT_VERSION);
+
+        let (tx, rx) = sync_channel(queue_depth);
+        let offsets = read_slab_offsets(&mut data, 8 + 4)?;
+        let data = Arc::new(Mutex::new(data));
+
+        let tid = {
+            let data = data.clone();
+            thread::spawn(move || writer(data, rx))
+        };
+
+        Ok(Self {
+            data,
+            pending_index: 0,
+            offsets,
+            tx: Some(tx),
+            tid: Some(tid),
+        })
+    }
+
     pub fn open_for_read<P: AsRef<Path>>(p: P) -> Result<Self> {
         let mut data = OpenOptions::new()
             .read(true)
@@ -216,7 +247,8 @@ impl SlabFile {
     }
 
     pub fn get_file_size(&self) -> Result<u64> {
-        let data = self.data.lock().unwrap();
+        let mut data = self.data.lock().unwrap();
+        data.flush()?;
         Ok(data.metadata()?.len())
     }
 }

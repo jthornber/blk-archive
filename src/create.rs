@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use thinp::report::*;
 
 use crate::config::*;
+use crate::slab::*;
 
 //-----------------------------------------
 
@@ -75,6 +76,15 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     create_sub_dir(dir, "data")?;
     create_sub_dir(dir, "streams")?;
     create_sub_dir(dir, "indexes")?;
+
+
+    std::env::set_current_dir(&dir)?;
+
+    // Create empty data and hash slab files
+    let data_path: PathBuf = ["data", "data"].iter().collect();
+    let _data_file = SlabFile::create(&data_path, 1)?;
+    let hashes_path: PathBuf = ["data", "hashes"].iter().collect();
+    let _hashes_file = SlabFile::create(&hashes_path, 1)?;
 
     Ok(())
 }

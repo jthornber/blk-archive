@@ -1,9 +1,13 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use byteorder::{LittleEndian, WriteBytesExt};
 use clap::ArgMatches;
 use flate2::{write::ZlibEncoder, Compression};
 use io::prelude::*;
 use io::Write;
+use nom::{bytes::complete::*, multi::*, number::complete::*, IResult};
+use rand::prelude::*;
+use rand_chacha::ChaCha20Rng;
+use size_display::Size;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs::OpenOptions;
@@ -13,7 +17,6 @@ use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 use thinp::commands::utils::*;
 use thinp::report::*;
-use size_display::Size;
 
 use crate::config;
 use crate::content_sensitive_splitter::*;
@@ -103,7 +106,6 @@ struct DedupHandler {
     mapping_builder: MappingBuilder,
 
     data_written: u64,
-    hashes_written: u64,
 }
 
 fn mk_packer(file: &mut SlabFile) -> Packer {
@@ -112,10 +114,47 @@ fn mk_packer(file: &mut SlabFile) -> Packer {
 }
 
 impl DedupHandler {
-    fn new(data_file: SlabFile, hashes_file: SlabFile, stream_file: SlabFile) -> Self {
-        Self {
+    // Returns the len of the data entry
+    fn parse_hash_entry(input: &[u8]) -> IResult<&[u8], Hash256> {
+        let (input, hash) = take(std::mem::size_of::<Hash256>())(input)?;
+        let hash = Hash256::clone_from_slice(hash);
+        let (input, _len) = le_u32(input)?;
+        Ok((input, hash))
+    }
+
+    fn parse_hashes(input: &[u8]) -> IResult<&[u8], Vec<Hash256>> {
+        many0(Self::parse_hash_entry)(input)
+    }
+
+    fn read_hashes(hashes_file: &mut SlabFile) -> Result<BTreeMap<Hash256, MapEntry>> {
+        let mut r = BTreeMap::new();
+        let nr_slabs = hashes_file.get_nr_slabs();
+        for s in 0..nr_slabs {
+            let buf = hashes_file.read(s as u64)?;
+            let (_, hashes) =
+                Self::parse_hashes(&buf).map_err(|_| anyhow!("couldn't parse hashes"))?;
+
+            let mut i = 0;
+            for h in hashes {
+                r.insert(
+                    h,
+                    MapEntry::Data {
+                        slab: s as u64,
+                        offset: i,
+                    },
+                );
+                i += 1;
+            }
+        }
+
+        Ok(r)
+    }
+
+    fn new(data_file: SlabFile, mut hashes_file: SlabFile, stream_file: SlabFile) -> Result<Self> {
+        let hashes = Self::read_hashes(&mut hashes_file)?;
+        Ok(Self {
             nr_chunks: 0,
-            hashes: BTreeMap::new(),
+            hashes,
 
             data_file,
             hashes_file,
@@ -132,8 +171,7 @@ impl DedupHandler {
 
             // Stats
             data_written: 0,
-            hashes_written: 0,
-        }
+        })
     }
 
     fn complete_slab_(slab: &mut SlabFile, buf: &mut Vec<u8>) -> Result<()> {
@@ -175,7 +213,7 @@ impl DedupHandler {
     fn add_data_entry(&mut self, iov: &IoVec) -> Result<(u64, u32)> {
         let r = (self.current_slab, self.current_entries);
         for v in iov {
-            self.data_buf.extend(v.iter());  // FIXME: this looks slow
+            self.data_buf.extend(v.iter()); // FIXME: this looks slow
             self.data_written += v.len() as u64;
         }
         self.current_entries += 1;
@@ -183,11 +221,8 @@ impl DedupHandler {
     }
 
     fn add_hash_entry(&mut self, h: Hash256, len: u32) -> Result<()> {
-        use std::mem::size_of;
-
         self.hashes_buf.write_all(&h)?;
         self.hashes_buf.write_u32::<LittleEndian>(len)?;
-        self.hashes_written += size_of::<Hash256>() as u64 + size_of::<u32>() as u64;
         Ok(())
     }
 
@@ -201,35 +236,35 @@ impl IoVecHandler for DedupHandler {
         self.nr_chunks += 1;
         let (len, _zeroes) = all_zeroes(iov);
 
-/*
-	// FIXME: not sure zeroes isn't working
-        if zeroes {
-            self.add_stream_entry(&MapEntry::Zero { len })?;
-            self.maybe_complete_stream()?;
-        } else {
-            */
-            let h = hash_256(iov);
-
-            /*
-            // FIXME: can we just use the bottom 32 bits of h?
-            let mh = hash_32(&vec![&h[..]]);
-            */
-            let mh = h;
-
-            let me: MapEntry;
-            if let Some(e) = self.hashes.get(&mh) {
-                // FIXME: We need to double check the proper hash.
-                me = *e;
+        /*
+        // FIXME: not sure zeroes isn't working
+            if zeroes {
+                self.add_stream_entry(&MapEntry::Zero { len })?;
+                self.maybe_complete_stream()?;
             } else {
-                self.add_hash_entry(h, len as u32)?;
-                let (slab, offset) = self.add_data_entry(iov)?;
-                me = MapEntry::Data { slab, offset };
-                self.hashes.insert(mh, me);
-                self.maybe_complete_data()?;
-            }
+                */
+        let h = hash_256(iov);
 
-            self.add_stream_entry(&me)?;
-            self.maybe_complete_stream()?;
+        /*
+        // FIXME: can we just use the bottom 32 bits of h?
+        let mh = hash_32(&vec![&h[..]]);
+        */
+        let mh = h;
+
+        let me: MapEntry;
+        if let Some(e) = self.hashes.get(&mh) {
+            // FIXME: We need to double check the proper hash.
+            me = *e;
+        } else {
+            self.add_hash_entry(h, len as u32)?;
+            let (slab, offset) = self.add_data_entry(iov)?;
+            me = MapEntry::Data { slab, offset };
+            self.hashes.insert(mh, me);
+            self.maybe_complete_data()?;
+        }
+
+        self.add_stream_entry(&me)?;
+        self.maybe_complete_stream()?;
         //}
 
         Ok(())
@@ -249,6 +284,25 @@ impl IoVecHandler for DedupHandler {
 
 //-----------------------------------------
 
+// Assumes we've chdir'd to the archive
+fn new_stream_path() -> Result<PathBuf> {
+    loop {
+        // choose a random number
+        let mut rng = ChaCha20Rng::from_entropy();
+        let n: u64 = rng.gen();
+
+        // turn this into a path
+        let name = format!("{:>016x}", n);
+        let path: PathBuf = ["streams", &name].iter().collect();
+
+        if !path.exists() {
+            return Ok(path);
+        }
+    }
+
+    // Can't get here
+}
+
 pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Result<()> {
     let mut splitter = ContentSensitiveSplitter::new(block_size as u32);
 
@@ -259,18 +313,19 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
     let input_size = input.metadata()?.len();
 
     let data_path: PathBuf = ["data", "data"].iter().collect();
-    let data_file = SlabFile::create(&data_path, 128)?;
+    let data_file = SlabFile::open_for_write(&data_path, 128)?;
     let data_size = data_file.get_file_size()?;
 
     let hashes_path: PathBuf = ["data", "hashes"].iter().collect();
-    let hashes_file = SlabFile::create(&hashes_path, 16)?;
+    let hashes_file = SlabFile::open_for_write(&hashes_path, 16)?;
     let hashes_size = hashes_file.get_file_size()?;
 
-    let stream_path: PathBuf = ["streams", "00000000"].iter().collect();
+    let mut stream_path = new_stream_path()?;
+    std::fs::create_dir(stream_path.clone())?;
+    stream_path.push("stream");
     let stream_file = SlabFile::create(stream_path, 16)?;
-    let stream_size = stream_file.get_file_size()?;
 
-    let mut handler = DedupHandler::new(data_file, hashes_file, stream_file);
+    let mut handler = DedupHandler::new(data_file, hashes_file, stream_file)?;
 
     report.set_title(&format!("Packing {} ...", input_file.display()));
     report.progress(0);
@@ -298,18 +353,21 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
     splitter.complete(&mut handler)?;
     report.progress(100);
     report.info(&format!("file size: {:.2}", Size(total_read)));
-    report.info(&format!("duplicates found: {:.2}", Size(total_read - handler.data_written)));
+    report.info(&format!(
+        "duplicates found: {:.2}",
+        Size(total_read - handler.data_written)
+    ));
 
     let data_written = handler.data_file.get_file_size()? - data_size;
     let hashes_written = handler.hashes_file.get_file_size()? - hashes_size;
-    let stream_written = handler.stream_file.get_file_size()? - stream_size;
+    let stream_written = handler.stream_file.get_file_size()?;
 
     report.info(&format!("data written: {:.2}", Size(data_written)));
     report.info(&format!("hashes written: {:.2}", Size(hashes_written)));
     report.info(&format!("stream written: {:.2}", Size(stream_written)));
 
     let compression = ((data_written + hashes_written + stream_written) * 100) / total_read;
-    report.info(&format!("compression: {:.2}%", compression));
+    report.info(&format!("compression: {:.2}%", 100 - compression));
 
     Ok(())
 }
