@@ -13,6 +13,7 @@ use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 use thinp::commands::utils::*;
 use thinp::report::*;
+use size_display::Size;
 
 use crate::config;
 use crate::content_sensitive_splitter::*;
@@ -100,6 +101,10 @@ struct DedupHandler {
     stream_buf: Vec<u8>,
 
     mapping_builder: MappingBuilder,
+
+    data_written: u64,
+    hashes_written: u64,
+    stream_written: u64,
 }
 
 fn mk_packer(file: &mut SlabFile) -> Packer {
@@ -125,6 +130,11 @@ impl DedupHandler {
             stream_buf: Vec::new(),
 
             mapping_builder: MappingBuilder::default(),
+
+            // Stats
+            data_written: 0,
+            hashes_written: 0,
+            stream_written: 0,
         }
     }
 
@@ -167,15 +177,19 @@ impl DedupHandler {
     fn add_data_entry(&mut self, iov: &IoVec) -> Result<(u64, u32)> {
         let r = (self.current_slab, self.current_entries);
         for v in iov {
-            self.data_buf.extend(v.iter());
+            self.data_buf.extend(v.iter());  // FIXME: this looks slow
+            self.data_written += v.len() as u64;
         }
         self.current_entries += 1;
         Ok(r)
     }
 
     fn add_hash_entry(&mut self, h: Hash256, len: u32) -> Result<()> {
+        use std::mem::size_of;
+
         self.hashes_buf.write_all(&h)?;
         self.hashes_buf.write_u32::<LittleEndian>(len)?;
+        self.hashes_written += size_of::<Hash256>() as u64 + size_of::<u32>() as u64;
         Ok(())
     }
 
@@ -246,16 +260,19 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
         .open(input_file)?;
     let input_size = input.metadata()?.len();
 
-    let output_path: PathBuf = ["data", "data"].iter().collect();
-    let output_file = SlabFile::create(&output_path, 128)?;
+    let data_path: PathBuf = ["data", "data"].iter().collect();
+    let data_file = SlabFile::create(&data_path, 128)?;
+    let data_size = data_file.get_file_size()?;
 
-    let index_path: PathBuf = ["data", "hashes"].iter().collect();
-    let index_file = SlabFile::create(&index_path, 16)?;
+    let hashes_path: PathBuf = ["data", "hashes"].iter().collect();
+    let hashes_file = SlabFile::create(&hashes_path, 16)?;
+    let hashes_size = hashes_file.get_file_size()?;
 
     let stream_path: PathBuf = ["streams", "00000000"].iter().collect();
     let stream_file = SlabFile::create(stream_path, 16)?;
+    let stream_size = stream_file.get_file_size()?;
 
-    let mut handler = DedupHandler::new(output_file, index_file, stream_file);
+    let mut handler = DedupHandler::new(data_file, hashes_file, stream_file);
 
     report.set_title(&format!("Packing {} ...", input_file.display()));
     report.progress(0);
@@ -280,6 +297,19 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
 
     splitter.complete(&mut handler)?;
     report.progress(100);
+    report.info(&format!("file size: {:.2}", Size(total_read)));
+    report.info(&format!("duplicates found: {:.2}", Size(total_read - handler.data_written)));
+
+    let data_written = handler.data_file.get_file_size()? - data_size;
+    let hashes_written = handler.hashes_file.get_file_size()? - hashes_size;
+    let stream_written = handler.stream_file.get_file_size()? - stream_size;
+
+    report.info(&format!("data written: {:.2}", Size(data_written)));
+    report.info(&format!("hashes written: {:.2}", Size(hashes_written)));
+    report.info(&format!("stream written: {:.2}", Size(stream_written)));
+
+    let compression = ((data_written + hashes_written + stream_written) * 100) / total_read;
+    report.info(&format!("compression: {:.2}%", compression));
 
     Ok(())
 }

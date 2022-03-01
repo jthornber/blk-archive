@@ -185,12 +185,12 @@ impl SlabFile {
         assert_eq!(magic, SLAB_MAGIC);
 
         let mut expected_csum: Hash64 = Hash64::default();
-        data.read_exact(&mut expected_csum[..])?;
+        data.read_exact(&mut expected_csum)?;
 
         let mut buf = vec![0; len as usize];
-        data.read_exact(&mut buf[..])?;
+        data.read_exact(&mut buf)?;
 
-        let actual_csum = hash_64(&vec![&buf[..]]);
+        let actual_csum = hash_64(&vec![&buf]);
         assert_eq!(actual_csum, expected_csum);
 
         let mut z = ZlibDecoder::new(&buf[..]);
@@ -213,6 +213,11 @@ impl SlabFile {
 
     pub fn get_nr_slabs(&self) -> usize {
         self.offsets.len()
+    }
+
+    pub fn get_file_size(&self) -> Result<u64> {
+        let data = self.data.lock().unwrap();
+        Ok(data.metadata()?.len())
     }
 }
 
