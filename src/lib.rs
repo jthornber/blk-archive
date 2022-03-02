@@ -10,4 +10,5 @@ pub mod slab;
 pub mod splitter;
 pub mod stream;
 pub mod unpack;
+pub mod verify;
 pub mod version;

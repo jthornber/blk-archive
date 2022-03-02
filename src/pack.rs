@@ -356,9 +356,9 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
 
     splitter.complete(&mut handler)?;
     report.progress(100);
-    report.info(&format!("stream id       : {}", stream_id));
-    report.info(&format!("file size       : {:.2}", Size(total_read)));
-    report.info(&format!("duplicates found: {:.2}",
+    report.info(&format!("stream id        : {}", stream_id));
+    report.info(&format!("file size        : {:.2}", Size(total_read)));
+    report.info(&format!("duplicate data   : {:.2}",
         Size(total_read - handler.data_written)
     ));
 
@@ -366,12 +366,12 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
     let hashes_written = handler.hashes_file.get_file_size()? - hashes_size;
     let stream_written = handler.stream_file.get_file_size()?;
 
-    report.info(&format!("data written    : {:.2}", Size(data_written)));
-    report.info(&format!("hashes written  : {:.2}", Size(hashes_written)));
-    report.info(&format!("stream written  : {:.2}", Size(stream_written)));
+    report.info(&format!("data written     : {:.2}", Size(data_written)));
+    report.info(&format!("hashes written   : {:.2}", Size(hashes_written)));
+    report.info(&format!("stream written   : {:.2}", Size(stream_written)));
 
     let compression = ((data_written + hashes_written + stream_written) * 100) / total_read;
-    report.info(&format!("compression     : {:.2}%", 100 - compression));
+    report.info(&format!("compression      : {:.2}%", 100 - compression));
 
     Ok(())
 }

@@ -5,6 +5,7 @@ use std::process::exit;
 use dm_archive::create;
 use dm_archive::pack;
 use dm_archive::unpack;
+use dm_archive::verify;
 
 //-----------------------
 
@@ -54,8 +55,15 @@ fn main_() -> Result<()> {
                         .value_name("ARCHIVE")
                         .takes_value(true),
                 )
+                .arg(
+                    Arg::new("VALIDATE_STREAM")
+                        .help("validate stream compression is correct")
+                        .required(false)
+                        .value_name("VALIDATE_STREAM")
+                        .long("validate-stream")
+                        .takes_value(false)
+                )
         )
-
         .subcommand(
             Command::new("unpack")
                 .about("unpacks a stream from the archive")
@@ -85,7 +93,35 @@ fn main_() -> Result<()> {
                         .takes_value(true),
                 )
         )
-
+        .subcommand(
+            Command::new("verify")
+                .about("verifies stream in the archive against the original file/dev")
+                .arg(
+                    Arg::new("INPUT")
+                        .help("Specify a device or file containing the correct version of the data")
+                        .required(true)
+                        .value_name("INPUT")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::new("ARCHIVE")
+                        .help("Specify archive directory")
+                        .required(true)
+                        .long("archive")
+                        .short('a')
+                        .value_name("ARCHIVE")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::new("STREAM")
+                        .help("Specify an archived stream to unpack")
+                        .required(true)
+                        .long("stream")
+                        .short('s')
+                        .value_name("STREAM")
+                        .takes_value(true),
+                )
+        )
         .get_matches();
 
     match matches.subcommand() {
@@ -97,6 +133,9 @@ fn main_() -> Result<()> {
         }
         Some(("unpack", sub_matches)) => {
             unpack::run(sub_matches)?;
+        }
+        Some(("verify", sub_matches)) => {
+            verify::run(sub_matches)?;
         }
         _ => unreachable!("Exhausted list of subcommands and subcommand_required prevents 'None'"),
     }
