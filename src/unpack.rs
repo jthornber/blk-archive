@@ -4,7 +4,7 @@ use io::Write;
 use nom::{bytes::complete::*, multi::*, number::complete::*, IResult};
 use std::collections::BTreeMap;
 use std::env;
-use std::fs::OpenOptions;
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -143,7 +143,8 @@ impl Unpacker {
                     // update progress bar
                     let entry_fraction = i as f64 / nr_entries as f64;
                     let slab_fraction = s as f64 / nr_slabs as f64;
-                    let percent = ((slab_fraction + (entry_fraction / nr_slabs as f64)) * 100.0) as u8;
+                    let percent =
+                        ((slab_fraction + (entry_fraction / nr_slabs as f64)) * 100.0) as u8;
                     report.progress(percent as u8);
                 }
             }
@@ -161,7 +162,7 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     let stream = matches.value_of("STREAM").unwrap();
     let report = std::sync::Arc::new(mk_progress_bar_report());
 
-    let mut output = OpenOptions::new()
+    let mut output = fs::OpenOptions::new()
         .read(false)
         .write(true)
         .create(true)
