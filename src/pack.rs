@@ -89,7 +89,6 @@ struct DedupHandler {
     nr_chunks: usize,
 
     // Maps hashes to the slab they're in
-    // hashes: BTreeMap<Hash32, MapEntry>,
     hashes: BTreeMap<Hash256, MapEntry>,
 
     data_file: SlabFile,
@@ -278,6 +277,11 @@ impl IoVecHandler for DedupHandler {
         Self::complete_slab(&mut self.hashes_file, &mut self.hashes_buf, 0)?;
         Self::complete_slab(&mut self.data_file, &mut self.data_buf, 0)?;
         Self::complete_slab(&mut self.stream_file, &mut self.stream_buf, 0)?;
+
+        self.hashes_file.close()?;
+        self.data_file.close()?;
+        self.stream_file.close()?;
+
         Ok(())
     }
 }

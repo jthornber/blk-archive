@@ -197,9 +197,11 @@ impl SlabFile {
         })
     }
 
-    pub fn close(mut self) -> Result<()> {
+    pub fn close(&mut self) -> Result<()> {
         self.tx = None;
-        if let Some(tid) = self.tid {
+        let mut tid = None;
+        std::mem::swap(&mut tid, &mut self.tid);
+        if let Some(tid) = tid {
             tid.join().expect("join failed");
         }
         Ok(())
