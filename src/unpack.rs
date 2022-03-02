@@ -34,14 +34,14 @@ struct Unpacker {
 
 impl Unpacker {
     // Assumes current directory is the root of the archive.
-    fn new() -> Result<Self> {
+    fn new(stream: &str) -> Result<Self> {
         let data_path: PathBuf = ["data", "data"].iter().collect();
         let data_file = SlabFile::open_for_read(&data_path)?;
 
         let hashes_path: PathBuf = ["data", "hashes"].iter().collect();
         let hashes_file = SlabFile::open_for_read(&hashes_path)?;
 
-        let stream_path: PathBuf = ["streams", "00000000"].iter().collect();
+        let stream_path: PathBuf = ["streams", stream, "stream"].iter().collect();
         let stream_file = SlabFile::open_for_read(stream_path)?;
 
         Ok(Self {
@@ -128,12 +128,24 @@ impl Unpacker {
     pub fn unpack<W: Write>(&mut self, report: &Arc<Report>, w: &mut W) -> Result<()> {
         report.progress(0);
 
-        for s in 0..self.stream_file.get_nr_slabs() {
+        let nr_slabs = self.stream_file.get_nr_slabs();
+
+        for s in 0..nr_slabs {
             let stream_data = self.stream_file.read(s as u64)?;
             let entries = stream::unpack(&stream_data[..])?;
+            let nr_entries = entries.len();
 
-            for e in entries {
+            for (i, e) in entries.iter().enumerate() {
                 self.unpack_entry(&e, w)?;
+
+                if i % 10240 == 0 {
+                    // update progress bar
+                    let entry_fraction = i as f64 / nr_entries as f64;
+                    let slab_fraction = s as f64 / nr_slabs as f64;
+                    let percent = ((slab_fraction + (entry_fraction / nr_slabs as f64)) * 100.0) as u8;
+                    report.progress(percent as u8);
+
+                }
             }
         }
 
@@ -145,7 +157,8 @@ impl Unpacker {
 
 pub fn run(matches: &ArgMatches) -> Result<()> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
-    let output_file = Path::new(matches.value_of("OUTPUT").unwrap()); // .canonicalize()?;
+    let output_file = Path::new(matches.value_of("OUTPUT").unwrap());
+    let stream = matches.value_of("STREAM").unwrap();
     let report = std::sync::Arc::new(mk_progress_bar_report());
 
     let mut output = OpenOptions::new()
@@ -157,7 +170,7 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     env::set_current_dir(&archive_dir)?;
 
     report.set_title(&format!("Unpacking {} ...", output_file.display()));
-    let mut u = Unpacker::new()?;
+    let mut u = Unpacker::new(&stream)?;
     u.unpack(&report, &mut output)
 }
 

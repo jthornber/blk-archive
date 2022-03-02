@@ -75,6 +75,15 @@ fn main_() -> Result<()> {
                         .value_name("ARCHIVE")
                         .takes_value(true),
                 )
+                .arg(
+                    Arg::new("STREAM")
+                        .help("Specify an archived stream to unpack")
+                        .required(true)
+                        .long("stream")
+                        .short('s')
+                        .value_name("STREAM")
+                        .takes_value(true),
+                )
         )
 
         .get_matches();
