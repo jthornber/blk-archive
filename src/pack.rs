@@ -285,7 +285,7 @@ impl IoVecHandler for DedupHandler {
 //-----------------------------------------
 
 // Assumes we've chdir'd to the archive
-fn new_stream_path() -> Result<PathBuf> {
+fn new_stream_path() -> Result<(String, PathBuf)> {
     loop {
         // choose a random number
         let mut rng = ChaCha20Rng::from_entropy();
@@ -296,7 +296,7 @@ fn new_stream_path() -> Result<PathBuf> {
         let path: PathBuf = ["streams", &name].iter().collect();
 
         if !path.exists() {
-            return Ok(path);
+            return Ok((name, path));
         }
     }
 
@@ -320,7 +320,7 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
     let hashes_file = SlabFile::open_for_write(&hashes_path, 16)?;
     let hashes_size = hashes_file.get_file_size()?;
 
-    let mut stream_path = new_stream_path()?;
+    let (stream_id, mut stream_path) = new_stream_path()?;
     std::fs::create_dir(stream_path.clone())?;
     stream_path.push("stream");
     let stream_file = SlabFile::create(stream_path, 16)?;
@@ -352,6 +352,7 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
 
     splitter.complete(&mut handler)?;
     report.progress(100);
+    report.info(&format!("stream id       : {}", stream_id));
     report.info(&format!("file size       : {:.2}", Size(total_read)));
     report.info(&format!("duplicates found: {:.2}",
         Size(total_read - handler.data_written)
