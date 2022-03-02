@@ -433,7 +433,7 @@ impl MappingBuilder {
 //-----------------------------------------
 
 #[derive(Default)]
-struct MappingUnpacker {
+pub struct MappingUnpacker {
     vm_state: VMState,
 }
 
@@ -448,7 +448,7 @@ impl MappingUnpacker {
         }
     }
 
-    fn unpack(&mut self, buf: &[u8]) -> Result<Vec<MapEntry>> {
+    pub fn unpack(&mut self, buf: &[u8]) -> Result<Vec<MapEntry>> {
         use MapInstruction::*;
 
         let mut r = Vec::new();
@@ -513,6 +513,8 @@ impl MappingUnpacker {
 
 //-----------------------------------------
 
+// This starts from a fresh vm state each time, so don't use
+// for cases where you get the stream in chunks (ie. slabs).
 pub fn unpack(buf: &[u8]) -> Result<Vec<MapEntry>> {
     let mut unpacker = MappingUnpacker::default();
     let r = unpacker.unpack(buf)?;

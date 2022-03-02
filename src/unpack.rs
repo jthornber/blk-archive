@@ -129,10 +129,11 @@ impl Unpacker {
         report.progress(0);
 
         let nr_slabs = self.stream_file.get_nr_slabs();
+        let mut unpacker = stream::MappingUnpacker::default();
 
         for s in 0..nr_slabs {
             let stream_data = self.stream_file.read(s as u64)?;
-            let entries = stream::unpack(&stream_data[..])?;
+            let entries = unpacker.unpack(&stream_data[..])?;
             let nr_entries = entries.len();
 
             for (i, e) in entries.iter().enumerate() {
@@ -144,7 +145,6 @@ impl Unpacker {
                     let slab_fraction = s as f64 / nr_slabs as f64;
                     let percent = ((slab_fraction + (entry_fraction / nr_slabs as f64)) * 100.0) as u8;
                     report.progress(percent as u8);
-
                 }
             }
         }
