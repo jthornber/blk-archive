@@ -36,10 +36,10 @@ impl Verifier {
     // Assumes current directory is the root of the archive.
     fn new(stream: &str) -> Result<Self> {
         let data_path: PathBuf = ["data", "data"].iter().collect();
-        let data_file = SlabFile::open_for_read(&data_path)?;
+        let data_file = SlabFile::open_for_read(data_path)?;
 
         let hashes_path: PathBuf = ["data", "hashes"].iter().collect();
-        let hashes_file = SlabFile::open_for_read(&hashes_path)?;
+        let hashes_file = SlabFile::open_for_read(hashes_path)?;
 
         let stream_path: PathBuf = ["streams", stream, "stream"].iter().collect();
         let stream_file = SlabFile::open_for_read(stream_path)?;

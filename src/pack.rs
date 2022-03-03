@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Result, Context};
 use byteorder::{LittleEndian, WriteBytesExt};
 use clap::ArgMatches;
 use flate2::{write::ZlibEncoder, Compression};
@@ -15,7 +15,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
-use thinp::commands::utils::*;
 use thinp::report::*;
 
 use crate::config;
@@ -313,26 +312,33 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
     let mut input = OpenOptions::new()
         .read(true)
         .write(false)
-        .open(input_file)?;
+        .open(input_file)
+        .context("couldn't open input file/dev")?;
     let input_size = input.metadata()?.len();
 
     let data_path: PathBuf = ["data", "data"].iter().collect();
-    let data_file = SlabFile::open_for_write(&data_path, 128)?;
+    let data_file = SlabFile::open_for_write(&data_path, 128)
+        .context("couldn't open data slab file")?;
     let data_size = data_file.get_file_size()?;
 
-    let hashes_path: PathBuf = ["data", "hashes"].iter().collect();
-    let hashes_file = SlabFile::open_for_write(&hashes_path, 16)?;
-    let hashes_size = hashes_file.get_file_size()?;
 
+    let hashes_path: PathBuf = ["data", "hashes"].iter().collect();
+    let hashes_file = SlabFile::open_for_write(&hashes_path, 16)
+        .context("couldn't open hashes slab file")?;
+    let hashes_size = hashes_file.get_file_size()?;
     let (stream_id, mut stream_path) = new_stream_path()?;
+
     std::fs::create_dir(stream_path.clone())?;
     stream_path.push("stream");
-    let stream_file = SlabFile::create(stream_path, 16)?;
+
+    let stream_file = SlabFile::create(stream_path, 16)
+        .context("couldn't open stream slab file")?;
 
     let mut handler = DedupHandler::new(data_file, hashes_file, stream_file)?;
 
     report.set_title(&format!("Packing {} ...", input_file.display()));
     report.progress(0);
+
     const BUFFER_SIZE: usize = 16 * 1024 * 1024;
     let complete_blocks = input_size / BUFFER_SIZE as u64;
     let remainder = input_size - (complete_blocks * BUFFER_SIZE as u64);
@@ -392,7 +398,6 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
     let input_file = Path::new(matches.value_of("INPUT").unwrap()).canonicalize()?;
     let report = std::sync::Arc::new(mk_progress_bar_report());
-    check_input_file(&input_file, &report);
 
     env::set_current_dir(&archive_dir)?;
     let config = config::read_config(".")?;

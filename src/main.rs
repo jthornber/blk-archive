@@ -163,7 +163,7 @@ fn main() {
         Ok(()) => 0,
         Err(e) => {
             // FIXME: write to report
-            eprintln!("{}", e);
+            eprintln!("{:?}", e);
             // We don't print out the error since -q may be set
             1
         }

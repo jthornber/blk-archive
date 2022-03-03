@@ -77,14 +77,16 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     create_sub_dir(dir, "streams")?;
     create_sub_dir(dir, "indexes")?;
 
-
     std::env::set_current_dir(&dir)?;
 
     // Create empty data and hash slab files
     let data_path: PathBuf = ["data", "data"].iter().collect();
-    let _data_file = SlabFile::create(&data_path, 1)?;
+    let mut data_file = SlabFile::create(&data_path, 1)?;
+    data_file.close()?;
+
     let hashes_path: PathBuf = ["data", "hashes"].iter().collect();
-    let _hashes_file = SlabFile::create(&hashes_path, 1)?;
+    let mut hashes_file = SlabFile::create(&hashes_path, 1)?;
+    hashes_file.close()?;
 
     Ok(())
 }

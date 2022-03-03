@@ -1,10 +1,10 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use flate2::{read::ZlibDecoder};
+use flate2::read::ZlibDecoder;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{PathBuf, Path};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -13,6 +13,67 @@ use crate::hash::*;
 
 //------------------------------------------------
 
+#[derive(Default)]
+struct SlabOffsets {
+    offsets: Vec<u64>,
+}
+
+impl SlabOffsets {
+    #[allow(dead_code)]
+    fn scan_slab_file(r: &mut File, mut offset: u64) -> Result<Self> {
+        let file_len = r.metadata()?.len();
+        let mut offsets = Vec::new();
+        while offset < file_len {
+            let magic = r.read_u64::<LittleEndian>()?;
+            let len = r.read_u64::<LittleEndian>()?;
+            assert_eq!(magic, SLAB_MAGIC);
+            let mut csum: Hash64 = Hash64::default();
+            r.read_exact(&mut csum[..])?;
+
+            r.seek(SeekFrom::Current(len as i64))?;
+
+            offsets.push(offset);
+            offset += 8 + 8 + 8 + len;
+        }
+
+        Ok(Self { offsets })
+    }
+
+    fn read_offset_file<P: AsRef<Path>>(p: P) -> Result<Self> {
+        let mut r = OpenOptions::new()
+            .read(true)
+            .write(false)
+            .create(false)
+            .open(p)
+            .context("opening offset file")?;
+
+        let len = r.metadata().context("offset metadata")?.len();
+        let nr_entries = len / std::mem::size_of::<u64>() as u64;
+        let mut offsets = Vec::with_capacity(nr_entries as usize);
+        for _ in 0..nr_entries {
+            offsets.push(r.read_u64::<LittleEndian>().context("offsets read failed")?);
+        }
+
+        Ok(Self { offsets })
+    }
+
+    fn write_offset_file<P: AsRef<Path>>(&self, p: P) -> Result<()> {
+        let mut w = OpenOptions::new()
+            .read(false)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(p)?;
+
+        for o in &self.offsets {
+            w.write_u64::<LittleEndian>(*o)?;
+        }
+
+        Ok(())
+    }
+}
+
+//------------------------------------------------
 // Slab files are used to store 'slabs' of data.  You
 // may only append to a slab file, or read an existing
 // slab.
@@ -40,25 +101,32 @@ pub struct SlabData {
 // FIXME: add index file
 pub struct SlabFile {
     data: Arc<Mutex<File>>,
+    offsets_path: PathBuf,
     pending_index: u64,
-    offsets: Vec<u64>,
+    offsets: Arc<Mutex<SlabOffsets>>,
 
     tx: Option<SyncSender<SlabData>>,
     tid: Option<thread::JoinHandle<()>>,
 }
 
 // FIXME: the writer doesn't update the slab_offsets
-fn write_slab(data: &Arc<Mutex<File>>, buf: SlabData) -> Result<()> {
+fn write_slab(data: &Arc<Mutex<File>>, offsets: &Arc<Mutex<SlabOffsets>>, buf: SlabData) -> Result<()> {
     let mut data = data.lock().unwrap();
+    {
+        let mut o = offsets.lock().unwrap();
+        o.offsets.push(data.metadata()?.len());
+    }
+
     data.write_u64::<LittleEndian>(SLAB_MAGIC)?;
     data.write_u64::<LittleEndian>(buf.data.len() as u64)?;
     let csum = hash_64(&vec![&buf.data[..]]);
     data.write_all(&csum)?;
     data.write_all(&buf.data[..])?;
+
     Ok(())
 }
 
-fn writer_(data: Arc<Mutex<File>>, rx: Receiver<SlabData>) -> Result<()> {
+fn writer_(data: Arc<Mutex<File>>, offsets: Arc<Mutex<SlabOffsets>>, rx: Receiver<SlabData>) -> Result<()> {
     let mut write_index = 0;
     let mut queued = BTreeMap::new();
 
@@ -71,11 +139,11 @@ fn writer_(data: Arc<Mutex<File>>, rx: Receiver<SlabData>) -> Result<()> {
 
         let buf = buf.unwrap();
         if buf.index == write_index {
-            write_slab(&data, buf)?;
+            write_slab(&data, &offsets, buf)?;
             write_index += 1;
 
             while let Some(buf) = queued.remove(&write_index) {
-                write_slab(&data, buf)?;
+                write_slab(&data, &offsets, buf)?;
                 write_index += 1;
             }
         } else {
@@ -87,83 +155,81 @@ fn writer_(data: Arc<Mutex<File>>, rx: Receiver<SlabData>) -> Result<()> {
     Ok(())
 }
 
-fn writer(data: Arc<Mutex<File>>, rx: Receiver<SlabData>) {
+fn writer(data: Arc<Mutex<File>>, offsets: Arc<Mutex<SlabOffsets>>, rx: Receiver<SlabData>) {
     // FIXME: pass on error
-    writer_(data, rx).expect("write failed");
+    writer_(data, offsets, rx).expect("write failed");
 }
 
-fn read_slab_offsets(r: &mut File, mut offset: u64) -> Result<Vec<u64>> {
-    let file_len = r.metadata()?.len();
-    let mut offsets = Vec::new();
-    while offset < file_len {
-        let magic = r.read_u64::<LittleEndian>()?;
-        let len = r.read_u64::<LittleEndian>()?;
-        assert_eq!(magic, SLAB_MAGIC);
-        let mut csum: Hash64 = Hash64::default();
-        r.read_exact(&mut csum[..])?;
-
-        r.seek(SeekFrom::Current(len as i64))?;
-
-        offsets.push(offset);
-        offset += 8 + 8 + 8 + len;
-    }
-
-    Ok(offsets)
+fn offsets_path<P: AsRef<Path>>(p: P) -> PathBuf {
+    let mut offsets_path = PathBuf::new();
+    offsets_path.push(p);
+    offsets_path.set_extension("offsets");
+    offsets_path
 }
 
 impl SlabFile {
-    pub fn create<P: AsRef<Path>>(p: P, queue_depth: usize) -> Result<Self> {
+    pub fn create<P: AsRef<Path>>(data_path: P, queue_depth: usize) -> Result<Self> {
+        let offsets_path = offsets_path(&data_path);
+
         let mut data = OpenOptions::new()
             .read(false)
             .write(true)
             .create(true)
             .truncate(true)
-            .open(p)?;
-        let (tx, rx) = sync_channel(queue_depth);
+            .open(data_path)?;
 
+        let (tx, rx) = sync_channel(queue_depth);
         data.write_u64::<LittleEndian>(FILE_MAGIC)?;
         data.write_u32::<LittleEndian>(FORMAT_VERSION)?;
 
         let data = Arc::new(Mutex::new(data));
+        let offsets = Arc::new(Mutex::new(SlabOffsets::default()));
 
         let tid = {
             let data = data.clone();
-            thread::spawn(move || writer(data, rx))
+            let offsets = offsets.clone();
+            thread::spawn(move || writer(data, offsets, rx))
         };
 
         Ok(Self {
             data,
+            offsets_path,
             pending_index: 0,
-            offsets: Vec::new(),
+            offsets: offsets,
             tx: Some(tx),
             tid: Some(tid),
         })
     }
 
-    pub fn open_for_write<P: AsRef<Path>>(p: P, queue_depth: usize) -> Result<Self> {
+    pub fn open_for_write<P: AsRef<Path>>(data_path: P, queue_depth: usize) -> Result<Self> {
+        let offsets_path = offsets_path(&data_path);
+
         let mut data = OpenOptions::new()
             .read(true)
             .write(true)
             .create(false)
-            .open(p)?;
+            .open(data_path)
+            .context("open offsets")?;
 
-        let magic = data.read_u64::<LittleEndian>()?;
-        let version = data.read_u32::<LittleEndian>()?;
+        let magic = data.read_u64::<LittleEndian>().context("couldn't read magic")?;
+        let version = data.read_u32::<LittleEndian>().context("couldn't read version")?;
 
         assert_eq!(magic, FILE_MAGIC); // FIXME: better error
         assert_eq!(version, FORMAT_VERSION);
 
         let (tx, rx) = sync_channel(queue_depth);
-        let offsets = read_slab_offsets(&mut data, 8 + 4)?;
+        let offsets = Arc::new(Mutex::new(SlabOffsets::read_offset_file(&offsets_path)?));
         let data = Arc::new(Mutex::new(data));
 
         let tid = {
             let data = data.clone();
-            thread::spawn(move || writer(data, rx))
+            let offsets = offsets.clone();
+            thread::spawn(move || writer(data, offsets, rx))
         };
 
         Ok(Self {
             data,
+            offsets_path,
             pending_index: 0,
             offsets,
             tx: Some(tx),
@@ -171,12 +237,14 @@ impl SlabFile {
         })
     }
 
-    pub fn open_for_read<P: AsRef<Path>>(p: P) -> Result<Self> {
+    pub fn open_for_read<P: AsRef<Path>>(data_path: P) -> Result<Self> {
+        let offsets_path = offsets_path(&data_path);
+
         let mut data = OpenOptions::new()
             .read(true)
             .write(false)
             .create(false)
-            .open(p)?;
+            .open(data_path)?;
 
         let magic = data.read_u64::<LittleEndian>()?;
         let version = data.read_u32::<LittleEndian>()?;
@@ -184,12 +252,12 @@ impl SlabFile {
         assert_eq!(magic, FILE_MAGIC); // FIXME: better error
         assert_eq!(version, FORMAT_VERSION);
 
-        let offsets = read_slab_offsets(&mut data, 8 + 4)?;
-
+        let offsets = Arc::new(Mutex::new(SlabOffsets::read_offset_file(&offsets_path)?));
         let data = Arc::new(Mutex::new(data));
 
         Ok(Self {
             data,
+            offsets_path,
             pending_index: 0,
             offsets,
             tx: None,
@@ -204,14 +272,20 @@ impl SlabFile {
         if let Some(tid) = tid {
             tid.join().expect("join failed");
         }
+
+        let offsets = self.offsets.lock().unwrap();
+        offsets.write_offset_file(&self.offsets_path)?;
         Ok(())
     }
 
     pub fn read(&mut self, slab: u64) -> Result<Vec<u8>> {
         let mut data = self.data.lock().unwrap();
 
-        let offset = self.offsets[slab as usize];
-        data.seek(SeekFrom::Start(offset))?;
+	{
+    	    let offsets = self.offsets.lock().unwrap();
+            let offset = offsets.offsets[slab as usize];
+            data.seek(SeekFrom::Start(offset))?;
+	}
 
         let magic = data.read_u64::<LittleEndian>()?;
         let len = data.read_u64::<LittleEndian>()?;
@@ -245,7 +319,8 @@ impl SlabFile {
     }
 
     pub fn get_nr_slabs(&self) -> usize {
-        self.offsets.len()
+        let offsets = self.offsets.lock().unwrap();
+        offsets.offsets.len()
     }
 
     pub fn get_file_size(&self) -> Result<u64> {
