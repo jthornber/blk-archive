@@ -3,6 +3,7 @@ use clap::{command, Arg, Command};
 use std::process::exit;
 
 use dm_archive::create;
+use dm_archive::list;
 use dm_archive::pack;
 use dm_archive::unpack;
 use dm_archive::verify;
@@ -14,7 +15,6 @@ fn main_() -> Result<()> {
         .propagate_version(true)
         .subcommand_required(true)
         .arg_required_else_help(true)
-
         .subcommand(
             Command::new("create")
                 .about("creates a new archive")
@@ -35,7 +35,6 @@ fn main_() -> Result<()> {
                         .takes_value(true),
                 ),
         )
-
         .subcommand(
             Command::new("pack")
                 .about("packs a stream into the archive")
@@ -61,8 +60,8 @@ fn main_() -> Result<()> {
                         .required(false)
                         .value_name("VALIDATE_STREAM")
                         .long("validate-stream")
-                        .takes_value(false)
-                )
+                        .takes_value(false),
+                ),
         )
         .subcommand(
             Command::new("unpack")
@@ -91,7 +90,7 @@ fn main_() -> Result<()> {
                         .short('s')
                         .value_name("STREAM")
                         .takes_value(true),
-                )
+                ),
         )
         .subcommand(
             Command::new("verify")
@@ -120,7 +119,20 @@ fn main_() -> Result<()> {
                         .short('s')
                         .value_name("STREAM")
                         .takes_value(true),
-                )
+                ),
+        )
+        .subcommand(
+            Command::new("list")
+                .about("lists the streams in the archive")
+                .arg(
+                    Arg::new("ARCHIVE")
+                        .help("Specify archive directory")
+                        .required(true)
+                        .long("archive")
+                        .short('a')
+                        .value_name("ARCHIVE")
+                        .takes_value(true),
+                ),
         )
         .get_matches();
 
@@ -136,6 +148,9 @@ fn main_() -> Result<()> {
         }
         Some(("verify", sub_matches)) => {
             verify::run(sub_matches)?;
+        }
+        Some(("list", sub_matches)) => {
+            list::run(sub_matches)?;
         }
         _ => unreachable!("Exhausted list of subcommands and subcommand_required prevents 'None'"),
     }

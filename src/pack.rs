@@ -376,10 +376,10 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
     // write the stream config
     let cfg = config::StreamConfig {
         name: None,
-        origin_path: input_file.display().to_string(),
+        source_path: input_file.display().to_string(),
         pack_time: config::now(),
-        len: input_size,
-        compression: (data_written + hashes_written + stream_written) as f64 / total_read as f64,
+        size: input_size,
+        packed_size: data_written + hashes_written + stream_written,
     };
     config::write_stream_config(&stream_id, &cfg)?;
 

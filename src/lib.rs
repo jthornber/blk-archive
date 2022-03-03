@@ -4,6 +4,7 @@ pub mod content_sensitive_splitter;
 pub mod create;
 pub mod hash;
 pub mod iovec;
+pub mod list;
 pub mod pack;
 pub mod rolling_hash;
 pub mod slab;

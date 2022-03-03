@@ -24,13 +24,13 @@ pub fn read_config<P: AsRef<Path>>(root: P) -> Result<Config> {
 
 //-----------------------------------------
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct StreamConfig {
     pub name: Option<String>,
-    pub origin_path: String,
+    pub source_path: String,
     pub pack_time: toml::value::Datetime,
-    pub len: u64,
-    pub compression: f64,
+    pub size: u64,
+    pub packed_size: u64,
 }
 
 fn stream_cfg_path(stream_id: &str) -> PathBuf {
@@ -61,6 +61,10 @@ pub fn now() -> toml::value::Datetime {
     let dt = Utc::now();
     let str = dt.to_rfc3339();
     str.parse::<toml::value::Datetime>().unwrap()
+}
+
+pub fn to_date_time(t: &toml::value::Datetime) -> chrono::DateTime<FixedOffset> {
+    DateTime::parse_from_rfc3339(&t.to_string()).unwrap()
 }
 
 //-----------------------------------------
