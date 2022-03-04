@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use flate2::read::ZlibDecoder;
+use flate2::{read, write::ZlibEncoder, Compression};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{PathBuf, Path};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -33,7 +33,7 @@ impl SlabOffsets {
             r.seek(SeekFrom::Current(len as i64))?;
 
             offsets.push(offset);
-            offset += 8 + 8 + 8 + len;
+            offset += 8 + 8 + 8 + 4 + len;
         }
 
         Ok(Self { offsets })
@@ -51,7 +51,10 @@ impl SlabOffsets {
         let nr_entries = len / std::mem::size_of::<u64>() as u64;
         let mut offsets = Vec::with_capacity(nr_entries as usize);
         for _ in 0..nr_entries {
-            offsets.push(r.read_u64::<LittleEndian>().context("offsets read failed")?);
+            offsets.push(
+                r.read_u64::<LittleEndian>()
+                    .context("offsets read failed")?,
+            );
         }
 
         Ok(Self { offsets })
@@ -100,6 +103,7 @@ pub struct SlabData {
 
 // FIXME: add index file
 pub struct SlabFile {
+    compressed: bool,
     data: Arc<Mutex<File>>,
     offsets_path: PathBuf,
     pending_index: u64,
@@ -110,7 +114,11 @@ pub struct SlabFile {
 }
 
 // FIXME: the writer doesn't update the slab_offsets
-fn write_slab(data: &Arc<Mutex<File>>, offsets: &Arc<Mutex<SlabOffsets>>, buf: SlabData) -> Result<()> {
+fn write_slab(
+    data: &Arc<Mutex<File>>,
+    offsets: &Arc<Mutex<SlabOffsets>>,
+    buf: SlabData,
+) -> Result<()> {
     let mut data = data.lock().unwrap();
     {
         let mut o = offsets.lock().unwrap();
@@ -126,7 +134,11 @@ fn write_slab(data: &Arc<Mutex<File>>, offsets: &Arc<Mutex<SlabOffsets>>, buf: S
     Ok(())
 }
 
-fn writer_(data: Arc<Mutex<File>>, offsets: Arc<Mutex<SlabOffsets>>, rx: Receiver<SlabData>) -> Result<()> {
+fn writer_(
+    data: Arc<Mutex<File>>,
+    offsets: Arc<Mutex<SlabOffsets>>,
+    rx: Receiver<SlabData>,
+) -> Result<()> {
     let mut write_index = 0;
     let mut queued = BTreeMap::new();
 
@@ -168,7 +180,11 @@ fn offsets_path<P: AsRef<Path>>(p: P) -> PathBuf {
 }
 
 impl SlabFile {
-    pub fn create<P: AsRef<Path>>(data_path: P, queue_depth: usize) -> Result<Self> {
+    pub fn create<P: AsRef<Path>>(
+        data_path: P,
+        queue_depth: usize,
+        compressed: bool,
+    ) -> Result<Self> {
         let offsets_path = offsets_path(&data_path);
 
         let mut data = OpenOptions::new()
@@ -179,8 +195,10 @@ impl SlabFile {
             .open(data_path)?;
 
         let (tx, rx) = sync_channel(queue_depth);
+        let flags = if compressed { 1 } else { 0 };
         data.write_u64::<LittleEndian>(FILE_MAGIC)?;
         data.write_u32::<LittleEndian>(FORMAT_VERSION)?;
+        data.write_u32::<LittleEndian>(flags)?;
 
         let data = Arc::new(Mutex::new(data));
         let offsets = Arc::new(Mutex::new(SlabOffsets::default()));
@@ -192,6 +210,7 @@ impl SlabFile {
         };
 
         Ok(Self {
+            compressed,
             data,
             offsets_path,
             pending_index: 0,
@@ -211,11 +230,21 @@ impl SlabFile {
             .open(data_path)
             .context("open offsets")?;
 
-        let magic = data.read_u64::<LittleEndian>().context("couldn't read magic")?;
-        let version = data.read_u32::<LittleEndian>().context("couldn't read version")?;
+        let magic = data
+            .read_u64::<LittleEndian>()
+            .context("couldn't read magic")?;
+        let version = data
+            .read_u32::<LittleEndian>()
+            .context("couldn't read version")?;
+        let flags = data
+            .read_u32::<LittleEndian>()
+            .context("couldn't read flags")?;
 
         assert_eq!(magic, FILE_MAGIC); // FIXME: better error
         assert_eq!(version, FORMAT_VERSION);
+
+        assert!(flags == 0 || flags == 1);
+        let compressed = if flags == 1 { true } else { false };
 
         let (tx, rx) = sync_channel(queue_depth);
         let offsets = Arc::new(Mutex::new(SlabOffsets::read_offset_file(&offsets_path)?));
@@ -228,6 +257,7 @@ impl SlabFile {
         };
 
         Ok(Self {
+            compressed,
             data,
             offsets_path,
             pending_index: 0,
@@ -248,14 +278,21 @@ impl SlabFile {
 
         let magic = data.read_u64::<LittleEndian>()?;
         let version = data.read_u32::<LittleEndian>()?;
+        let flags = data
+            .read_u32::<LittleEndian>()
+            .context("couldn't read flags")?;
 
         assert_eq!(magic, FILE_MAGIC); // FIXME: better error
         assert_eq!(version, FORMAT_VERSION);
+
+        assert!(flags == 0 || flags == 1);
+        let compressed = if flags == 1 { true } else { false };
 
         let offsets = Arc::new(Mutex::new(SlabOffsets::read_offset_file(&offsets_path)?));
         let data = Arc::new(Mutex::new(data));
 
         Ok(Self {
+            compressed,
             data,
             offsets_path,
             pending_index: 0,
@@ -281,11 +318,11 @@ impl SlabFile {
     pub fn read(&mut self, slab: u64) -> Result<Vec<u8>> {
         let mut data = self.data.lock().unwrap();
 
-	{
-    	    let offsets = self.offsets.lock().unwrap();
+        {
+            let offsets = self.offsets.lock().unwrap();
             let offset = offsets.offsets[slab as usize];
             data.seek(SeekFrom::Start(offset))?;
-	}
+        }
 
         let magic = data.read_u64::<LittleEndian>()?;
         let len = data.read_u64::<LittleEndian>()?;
@@ -300,14 +337,17 @@ impl SlabFile {
         let actual_csum = hash_64(&vec![&buf]);
         assert_eq!(actual_csum, expected_csum);
 
-        let mut z = ZlibDecoder::new(&buf[..]);
-        let mut buffer = Vec::new();
-        z.read_to_end(&mut buffer)?;
-
-        Ok(buffer)
+        if self.compressed {
+            let mut z = read::ZlibDecoder::new(&buf[..]);
+            let mut buffer = Vec::new();
+            z.read_to_end(&mut buffer)?;
+            Ok(buffer)
+        } else {
+            Ok(buf)
+        }
     }
 
-    pub fn reserve_slab(&mut self) -> (SlabIndex, SyncSender<SlabData>) {
+    fn reserve_slab(&mut self) -> (SlabIndex, SyncSender<SlabData>) {
         let index = self.pending_index;
         self.pending_index += 1;
         let tx = self.tx.as_ref().unwrap().clone();
@@ -329,6 +369,95 @@ impl SlabFile {
         Ok(data.metadata()?.len())
     }
 }
+
+//-----------------------------------------
+
+pub trait Packer {
+    fn write(&mut self, v: &[u8]) -> Result<()>;
+    fn complete(&mut self) -> Result<()>;
+}
+
+struct CompressedPacker {
+    index: SlabIndex,
+    offset: u32,
+    packer: ZlibEncoder<Vec<u8>>,
+    tx: SyncSender<SlabData>,
+}
+
+impl CompressedPacker {
+    fn new(index: SlabIndex, tx: SyncSender<SlabData>) -> Self {
+        Self {
+            index,
+            offset: 0,
+            packer: ZlibEncoder::new(Vec::new(), Compression::default()),
+            tx,
+        }
+    }
+}
+
+impl Packer for CompressedPacker {
+    fn write(&mut self, v: &[u8]) -> Result<()> {
+        self.offset += v.len() as u32;
+        self.packer.write_all(v)?;
+        Ok(())
+    }
+
+    fn complete(&mut self) -> Result<()> {
+        let data = self.packer.reset(Vec::new())?;
+        self.tx.send(SlabData {
+            index: self.index,
+            data,
+        })?;
+        Ok(())
+    }
+}
+
+struct UncompressedPacker {
+    index: SlabIndex,
+    offset: u32,
+    data: Vec<u8>,
+    tx: SyncSender<SlabData>,
+}
+
+impl UncompressedPacker {
+    fn new(index: SlabIndex, tx: SyncSender<SlabData>) -> Self {
+        Self {
+            index,
+            offset: 0,
+            data: Vec::new(),
+            tx,
+        }
+    }
+}
+
+impl Packer for UncompressedPacker {
+    fn write(&mut self, v: &[u8]) -> Result<()> {
+        self.offset += v.len() as u32;
+        self.data.extend_from_slice(v);
+        Ok(())
+    }
+
+    fn complete(&mut self) -> Result<()> {
+        let mut data = Vec::new();
+        std::mem::swap(&mut data, &mut self.data);
+        self.tx.send(SlabData {
+            index: self.index,
+            data,
+        })?;
+        Ok(())
+    }
+}
+
+pub fn mk_packer(file: &mut SlabFile) -> Box<dyn Packer> {
+    let (index, tx) = file.reserve_slab();
+    if file.compressed {
+        Box::new(CompressedPacker::new(index, tx))
+    } else {
+        Box::new(UncompressedPacker::new(index, tx))
+    }
+}
+
+//------------------------------------------------
 
 pub fn repair<P: AsRef<Path>>(_p: P) -> Result<()> {
     todo!();

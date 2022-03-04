@@ -1,7 +1,6 @@
 use anyhow::{anyhow, Result, Context};
 use byteorder::{LittleEndian, WriteBytesExt};
 use clap::ArgMatches;
-use flate2::{write::ZlibEncoder, Compression};
 use io::prelude::*;
 use io::Write;
 use nom::{bytes::complete::*, multi::*, number::complete::*, IResult};
@@ -13,7 +12,6 @@ use std::env;
 use std::fs::OpenOptions;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 use thinp::report::*;
 
@@ -47,41 +45,6 @@ fn all_zeroes(iov: &IoVec) -> (u64, bool) {
 
 //-----------------------------------------
 
-struct Packer {
-    index: SlabIndex,
-    offset: u32,
-    packer: ZlibEncoder<Vec<u8>>,
-    tx: SyncSender<SlabData>,
-}
-
-impl Packer {
-    fn new(index: SlabIndex, tx: SyncSender<SlabData>) -> Self {
-        Self {
-            index,
-            offset: 0,
-            packer: ZlibEncoder::new(Vec::new(), Compression::default()),
-            tx,
-        }
-    }
-
-    fn write(&mut self, v: &[u8]) -> Result<()> {
-        self.offset += v.len() as u32;
-        self.packer.write_all(v)?;
-        Ok(())
-    }
-
-    fn complete(mut self) -> Result<()> {
-        let data = self.packer.reset(Vec::new())?;
-        self.tx.send(SlabData {
-            index: self.index,
-            data,
-        })?;
-        Ok(())
-    }
-}
-
-//-----------------------------------------
-
 const SLAB_SIZE_TARGET: usize = 4 * 1024 * 1024;
 
 struct DedupHandler {
@@ -104,11 +67,6 @@ struct DedupHandler {
     mapping_builder: MappingBuilder,
 
     data_written: u64,
-}
-
-fn mk_packer(file: &mut SlabFile) -> Packer {
-    let (index, tx) = file.reserve_slab();
-    Packer::new(index, tx)
 }
 
 impl DedupHandler {
@@ -331,7 +289,7 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
     std::fs::create_dir(stream_path.clone())?;
     stream_path.push("stream");
 
-    let stream_file = SlabFile::create(stream_path, 16)
+    let stream_file = SlabFile::create(stream_path, 16, true)
         .context("couldn't open stream slab file")?;
 
     let mut handler = DedupHandler::new(data_file, hashes_file, stream_file)?;

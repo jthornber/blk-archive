@@ -81,11 +81,11 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
 
     // Create empty data and hash slab files
     let data_path: PathBuf = ["data", "data"].iter().collect();
-    let mut data_file = SlabFile::create(&data_path, 1)?;
+    let mut data_file = SlabFile::create(&data_path, 1, true)?;
     data_file.close()?;
 
     let hashes_path: PathBuf = ["data", "hashes"].iter().collect();
-    let mut hashes_file = SlabFile::create(&hashes_path, 1)?;
+    let mut hashes_file = SlabFile::create(&hashes_path, 1, false)?;
     hashes_file.close()?;
 
     Ok(())
