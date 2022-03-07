@@ -1,0 +1,35 @@
+#!/usr/bin/bash
+
+set -e
+archive=test-archive
+cmd=./target/release/dm-archive
+
+pack() {
+	echo Packing $1
+	$cmd pack -a $archive ../dm-archive-tests/linux-$1.tar
+}
+
+get_id() {
+	$cmd list -a $archive 2>&1 | grep $1 | cut -f1 -d' '
+}
+
+verify() {
+	echo Verifying $1
+	$cmd verify -a $archive --stream `get_id $1` ../dm-archive-tests/linux-$1.tar
+}
+
+cycle() {
+	pack $1
+	verify $1
+}
+
+cargo build --release
+rm -r $archive
+echo Creating archive ...
+$cmd create --dir $archive --block-size 256
+
+for f in v5.0 v5.1 v5.2 v5.3 v5.4 v5.5 v5.6 v5.7 v5.8 v5.9 v5.10 v5.11 v5.12 v5.13
+do
+	cycle $f
+done
+
