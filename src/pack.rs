@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result, Context};
+use anyhow::{anyhow, Context, Result};
 use byteorder::{LittleEndian, WriteBytesExt};
 use clap::ArgMatches;
 use io::prelude::*;
@@ -275,22 +275,21 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
     let input_size = input.metadata()?.len();
 
     let data_path: PathBuf = ["data", "data"].iter().collect();
-    let data_file = SlabFile::open_for_write(&data_path, 128)
-        .context("couldn't open data slab file")?;
+    let data_file =
+        SlabFile::open_for_write(&data_path, 128).context("couldn't open data slab file")?;
     let data_size = data_file.get_file_size()?;
 
-
     let hashes_path: PathBuf = ["data", "hashes"].iter().collect();
-    let hashes_file = SlabFile::open_for_write(&hashes_path, 16)
-        .context("couldn't open hashes slab file")?;
+    let hashes_file =
+        SlabFile::open_for_write(&hashes_path, 16).context("couldn't open hashes slab file")?;
     let hashes_size = hashes_file.get_file_size()?;
     let (stream_id, mut stream_path) = new_stream_path()?;
 
     std::fs::create_dir(stream_path.clone())?;
     stream_path.push("stream");
 
-    let stream_file = SlabFile::create(stream_path, 16, true)
-        .context("couldn't open stream slab file")?;
+    let stream_file =
+        SlabFile::create(stream_path, 16, true).context("couldn't open stream slab file")?;
 
     let mut handler = DedupHandler::new(data_file, hashes_file, stream_file)?;
 
@@ -322,7 +321,8 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
     report.progress(100);
     report.info(&format!("stream id        : {}", stream_id));
     report.info(&format!("file size        : {:.2}", Size(total_read)));
-    report.info(&format!("duplicate data   : {:.2}",
+    report.info(&format!(
+        "duplicate data   : {:.2}",
         Size(total_read - handler.data_written)
     ));
 
