@@ -14,6 +14,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thinp::report::*;
+use chrono::prelude::*;
 
 use crate::config;
 use crate::content_sensitive_splitter::*;
@@ -265,6 +266,7 @@ fn new_stream_path() -> Result<(String, PathBuf)> {
 }
 
 pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Result<()> {
+    let start_time: DateTime<Utc> = Utc::now();
     let mut splitter = ContentSensitiveSplitter::new(block_size as u32);
 
     let mut input = OpenOptions::new()
@@ -319,6 +321,10 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
 
     splitter.complete(&mut handler)?;
     report.progress(100);
+    let end_time: DateTime<Utc> = Utc::now();
+    let elapsed = end_time - start_time;
+    let elapsed = elapsed.num_milliseconds() as f64 / 1000.0;
+
     report.info(&format!("stream id        : {}", stream_id));
     report.info(&format!("file size        : {:.2}", Size(total_read)));
     report.info(&format!(
@@ -336,6 +342,7 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
 
     let compression = ((data_written + hashes_written + stream_written) * 100) / total_read;
     report.info(&format!("compression      : {:.2}%", 100 - compression));
+    report.info(&format!("speed            : {:.2}/s", Size((total_read as f64 / elapsed) as u64)));
 
     // write the stream config
     let cfg = config::StreamConfig {
