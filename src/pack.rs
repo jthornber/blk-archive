@@ -132,7 +132,7 @@ impl DedupHandler {
     }
 
     fn complete_slab_(slab: &mut SlabFile, buf: &mut Vec<u8>) -> Result<()> {
-        let mut packer = mk_packer(slab);
+        let mut packer = slab.new_packer();
         packer.write(buf)?;
         packer.complete()?;
         buf.clear();

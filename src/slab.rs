@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use threadpool::ThreadPool;
 
 use crate::hash::*;
 
@@ -110,6 +111,7 @@ struct SlabShared {
 // FIXME: add index file
 pub struct SlabFile {
     compressed: bool,
+    compressor: Option<CompressionService>,
     offsets_path: PathBuf,
     pending_index: u64,
 
@@ -127,7 +129,9 @@ fn write_slab(shared: &Arc<Mutex<SlabShared>>, buf: SlabData) -> Result<()> {
     shared.file_size += 8 + 8 + 8 + buf.data.len() as u64;
 
     shared.data.write_u64::<LittleEndian>(SLAB_MAGIC)?;
-    shared.data.write_u64::<LittleEndian>(buf.data.len() as u64)?;
+    shared
+        .data
+        .write_u64::<LittleEndian>(buf.data.len() as u64)?;
     let csum = hash_64(&vec![&buf.data[..]]);
     shared.data.write_all(&csum)?;
     shared.data.write_all(&buf.data[..])?;
@@ -135,10 +139,7 @@ fn write_slab(shared: &Arc<Mutex<SlabShared>>, buf: SlabData) -> Result<()> {
     Ok(())
 }
 
-fn writer_(
-    shared: Arc<Mutex<SlabShared>>,
-    rx: Receiver<SlabData>,
-) -> Result<()> {
+fn writer_(shared: Arc<Mutex<SlabShared>>, rx: Receiver<SlabData>) -> Result<()> {
     let mut write_index = 0;
     let mut queued = BTreeMap::new();
 
@@ -208,6 +209,13 @@ impl SlabFile {
             file_size,
         }));
 
+        let (compressor, tx) = if flags == 1 {
+            let (c, tx) = CompressionService::new(8, tx.clone());
+            (Some(c), tx)
+        } else {
+            (None, tx)
+        };
+
         let tid = {
             let shared = shared.clone();
             thread::spawn(move || writer(shared, rx))
@@ -215,6 +223,7 @@ impl SlabFile {
 
         Ok(Self {
             compressed,
+            compressor,
             offsets_path,
             pending_index: 0,
             shared,
@@ -247,9 +256,16 @@ impl SlabFile {
         assert_eq!(version, FORMAT_VERSION);
 
         assert!(flags == 0 || flags == 1);
-        let compressed = if flags == 1 { true } else { false };
 
+	let compressed = flags == 1;
         let (tx, rx) = sync_channel(queue_depth);
+        let (compressor, tx) = if flags == 1 {
+            let (c, tx) = CompressionService::new(4, tx.clone());
+            (Some(c), tx)
+        } else {
+            (None, tx)
+        };
+
         let offsets = SlabOffsets::read_offset_file(&offsets_path)?;
         let file_size = data.metadata()?.len();
         let shared = Arc::new(Mutex::new(SlabShared {
@@ -265,6 +281,7 @@ impl SlabFile {
 
         Ok(Self {
             compressed,
+            compressor,
             offsets_path,
             pending_index: 0,
             shared,
@@ -292,7 +309,9 @@ impl SlabFile {
         assert_eq!(version, FORMAT_VERSION);
 
         assert!(flags == 0 || flags == 1);
-        let compressed = if flags == 1 { true } else { false };
+
+        let compressed = flags == 1;
+        let compressor = None;
 
         let offsets = SlabOffsets::read_offset_file(&offsets_path)?;
         let file_size = data.metadata()?.len();
@@ -302,9 +321,9 @@ impl SlabFile {
             file_size,
         }));
 
-
         Ok(Self {
             compressed,
+            compressor,
             offsets_path,
             pending_index: 0,
             shared,
@@ -366,6 +385,11 @@ impl SlabFile {
         (index, tx)
     }
 
+    pub fn new_packer(&mut self) -> Packer {
+        let (index, tx) = self.reserve_slab();
+        Packer::new(index, tx)
+    }
+
     pub fn index(&self) -> SlabIndex {
         self.pending_index
     }
@@ -383,54 +407,67 @@ impl SlabFile {
 
 //-----------------------------------------
 
-pub trait Packer {
-    fn write(&mut self, v: &[u8]) -> Result<()>;
-    fn complete(&mut self) -> Result<()>;
+struct CompressionService {
+    pool: ThreadPool,
 }
 
-struct CompressedPacker {
-    index: SlabIndex,
-    offset: u32,
-    packer: ZlibEncoder<Vec<u8>>,
-    tx: SyncSender<SlabData>,
-}
+fn compression_worker_(rx: Arc<Mutex<Receiver<SlabData>>>, tx: SyncSender<SlabData>) -> Result<()> {
+    loop {
+        let data = {
+            let rx = rx.lock().unwrap();
+            rx.recv()
+        };
 
-impl CompressedPacker {
-    fn new(index: SlabIndex, tx: SyncSender<SlabData>) -> Self {
-        Self {
-            index,
-            offset: 0,
-            packer: ZlibEncoder::new(Vec::new(), Compression::default()),
-            tx,
+        if data.is_err() {
+            break;
         }
-    }
-}
 
-impl Packer for CompressedPacker {
-    fn write(&mut self, v: &[u8]) -> Result<()> {
-        self.offset += v.len() as u32;
-        self.packer.write_all(v)?;
-        Ok(())
-    }
+        let data = data.unwrap();
 
-    fn complete(&mut self) -> Result<()> {
-        let data = self.packer.reset(Vec::new())?;
-        self.tx.send(SlabData {
-            index: self.index,
-            data,
+        let mut packer = ZlibEncoder::new(Vec::new(), Compression::default());
+        packer.write_all(&data.data)?;
+        tx.send(SlabData {
+            index: data.index,
+            data: packer.reset(Vec::new())?,
         })?;
-        Ok(())
+    }
+
+    Ok(())
+}
+
+fn compression_worker(rx: Arc<Mutex<Receiver<SlabData>>>, tx: SyncSender<SlabData>) {
+    // FIXME: handle error
+    compression_worker_(rx, tx).unwrap();
+}
+
+impl CompressionService {
+    fn new(nr_threads: usize, tx: SyncSender<SlabData>) -> (Self, SyncSender<SlabData>) {
+        let pool = ThreadPool::new(nr_threads);
+        let (self_tx, rx) = sync_channel(nr_threads * 64);
+
+        // we can only have a single receiver
+        let rx = Arc::new(Mutex::new(rx));
+
+        for _ in 0..nr_threads {
+            let tx = tx.clone();
+            let rx = rx.clone();
+            pool.execute(move || compression_worker(rx, tx));
+        }
+
+        (Self { pool }, self_tx)
     }
 }
 
-struct UncompressedPacker {
+//-----------------------------------------
+
+pub struct Packer {
     index: SlabIndex,
     offset: u32,
     data: Vec<u8>,
     tx: SyncSender<SlabData>,
 }
 
-impl UncompressedPacker {
+impl Packer {
     fn new(index: SlabIndex, tx: SyncSender<SlabData>) -> Self {
         Self {
             index,
@@ -439,16 +476,14 @@ impl UncompressedPacker {
             tx,
         }
     }
-}
 
-impl Packer for UncompressedPacker {
-    fn write(&mut self, v: &[u8]) -> Result<()> {
+    pub fn write(&mut self, v: &[u8]) -> Result<()> {
         self.offset += v.len() as u32;
         self.data.extend_from_slice(v);
         Ok(())
     }
 
-    fn complete(&mut self) -> Result<()> {
+    pub fn complete(&mut self) -> Result<()> {
         let mut data = Vec::new();
         std::mem::swap(&mut data, &mut self.data);
         self.tx.send(SlabData {
@@ -456,15 +491,6 @@ impl Packer for UncompressedPacker {
             data,
         })?;
         Ok(())
-    }
-}
-
-pub fn mk_packer(file: &mut SlabFile) -> Box<dyn Packer> {
-    let (index, tx) = file.reserve_slab();
-    if file.compressed {
-        Box::new(CompressedPacker::new(index, tx))
-    } else {
-        Box::new(UncompressedPacker::new(index, tx))
     }
 }
 
