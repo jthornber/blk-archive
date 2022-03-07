@@ -277,12 +277,12 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
     let data_path: PathBuf = ["data", "data"].iter().collect();
     let data_file =
         SlabFile::open_for_write(&data_path, 128).context("couldn't open data slab file")?;
-    let data_size = data_file.get_file_size()?;
+    let data_size = data_file.get_file_size();
 
     let hashes_path: PathBuf = ["data", "hashes"].iter().collect();
     let hashes_file =
         SlabFile::open_for_write(&hashes_path, 16).context("couldn't open hashes slab file")?;
-    let hashes_size = hashes_file.get_file_size()?;
+    let hashes_size = hashes_file.get_file_size();
     let (stream_id, mut stream_path) = new_stream_path()?;
 
     std::fs::create_dir(stream_path.clone())?;
@@ -326,9 +326,9 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
         Size(total_read - handler.data_written)
     ));
 
-    let data_written = handler.data_file.get_file_size()? - data_size;
-    let hashes_written = handler.hashes_file.get_file_size()? - hashes_size;
-    let stream_written = handler.stream_file.get_file_size()?;
+    let data_written = handler.data_file.get_file_size() - data_size;
+    let hashes_written = handler.hashes_file.get_file_size() - hashes_size;
+    let stream_written = handler.stream_file.get_file_size();
 
     report.info(&format!("data written     : {:.2}", Size(data_written)));
     report.info(&format!("hashes written   : {:.2}", Size(hashes_written)));
