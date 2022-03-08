@@ -394,6 +394,11 @@ impl MappingBuilder {
         let mut instrs = Vec::new();
         match e {
             Zero { len } => {
+                let mut run = None;
+                std::mem::swap(&mut run, &mut self.run);
+                if let Some(run) = run {
+                    self.vm_state.encode_run(&run, &mut instrs)?;
+                }
                 self.vm_state.encode_zero(*len, &mut instrs)?;
             }
             Data { slab, offset } => {

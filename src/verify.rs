@@ -171,7 +171,7 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
     let input_file = Path::new(matches.value_of("INPUT").unwrap());
     let stream = matches.value_of("STREAM").unwrap();
-    let report = std::sync::Arc::new(mk_simple_report()); // progress_bar_report());
+    let report = std::sync::Arc::new(mk_progress_bar_report());
 
     let mut input = OpenOptions::new()
         .read(true)

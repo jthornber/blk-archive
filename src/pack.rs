@@ -210,34 +210,29 @@ impl DedupHandler {
 impl IoVecHandler for DedupHandler {
     fn handle(&mut self, iov: &IoVec) -> Result<()> {
         self.nr_chunks += 1;
-        let (len, _zeroes) = all_zeroes(iov);
+        let (len, zeroes) = all_zeroes(iov);
 
-        /*
-        // FIXME: not sure zeroes isn't working
-            if zeroes {
-                self.add_stream_entry(&MapEntry::Zero { len })?;
-                self.maybe_complete_stream()?;
-            } else {
-                */
+        if zeroes {
+            self.add_stream_entry(&MapEntry::Zero { len })?;
+            self.maybe_complete_stream()?;
+        } else {
+            let h = hash_256_iov(iov);
+            let mini_hash = hash_64(&h);
 
-        let h = hash_256_iov(iov);
-        let mini_hash = hash_64(&h);
-
-        let me: MapEntry;
-        if self.seen.contains(&mini_hash) {
-            if let Some(e) = self.hashes.get(&h) {
-                me = *e;
+            let me: MapEntry;
+            if self.seen.contains(&mini_hash) {
+                if let Some(e) = self.hashes.get(&h) {
+                    me = *e;
+                } else {
+                    me = self.do_add(h, mini_hash, iov, len)?;
+                }
             } else {
                 me = self.do_add(h, mini_hash, iov, len)?;
             }
-        } else {
-            me = self.do_add(h, mini_hash, iov, len)?;
+
+            self.add_stream_entry(&me)?;
+            self.maybe_complete_stream()?;
         }
-
-        self.add_stream_entry(&me)?;
-        self.maybe_complete_stream()?;
-
-        //}
 
         Ok(())
     }
@@ -382,9 +377,9 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     let input_file = Path::new(matches.value_of("INPUT").unwrap()).canonicalize()?;
 
     let report = if atty::is(atty::Stream::Stdout) {
-        Arc::new(mk_simple_report())
-    } else {
         Arc::new(mk_progress_bar_report())
+    } else {
+        Arc::new(mk_simple_report())
     };
 
     env::set_current_dir(&archive_dir)?;
