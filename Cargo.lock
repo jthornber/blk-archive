@@ -244,6 +244,7 @@ name = "dm-archive"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atty",
  "blake2",
  "byteorder",
  "chrono",
