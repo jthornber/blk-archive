@@ -114,7 +114,7 @@ impl Unpacker {
 
                 // FIXME: make this paranioa check optional
                 // Verify hash
-                let actual_hash = hash_256(&vec![&info.data[data_begin..data_end]]);
+                let actual_hash = hash_256(&info.data[data_begin..data_end]);
                 assert_eq!(actual_hash, expected_hash);
 
                 // Copy data

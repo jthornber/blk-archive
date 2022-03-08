@@ -8,7 +8,7 @@ use nom::{bytes::complete::*, multi::*, number::complete::*, IResult};
 use rand::prelude::*;
 use rand_chacha::ChaCha20Rng;
 use size_display::Size;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs::OpenOptions;
 use std::io;
@@ -52,6 +52,7 @@ struct DedupHandler {
     nr_chunks: usize,
 
     // Maps hashes to the slab they're in
+    seen: BTreeSet<Hash64>,
     hashes: BTreeMap<Hash256, MapEntry>,
 
     data_file: SlabFile,
@@ -83,8 +84,11 @@ impl DedupHandler {
         many0(Self::parse_hash_entry)(input)
     }
 
-    fn read_hashes(hashes_file: &mut SlabFile) -> Result<BTreeMap<Hash256, MapEntry>> {
+    fn read_hashes(
+        hashes_file: &mut SlabFile,
+    ) -> Result<(BTreeSet<Hash64>, BTreeMap<Hash256, MapEntry>)> {
         let mut r = BTreeMap::new();
+        let mut seen = BTreeSet::new();
         let nr_slabs = hashes_file.get_nr_slabs();
         for s in 0..nr_slabs {
             let buf = hashes_file.read(s as u64)?;
@@ -93,6 +97,8 @@ impl DedupHandler {
 
             let mut i = 0;
             for h in hashes {
+                let mini_hash = hash_64(&h[..]);
+                seen.insert(mini_hash);
                 r.insert(
                     h,
                     MapEntry::Data {
@@ -104,16 +110,18 @@ impl DedupHandler {
             }
         }
 
-        Ok(r)
+        Ok((seen, r))
     }
 
     fn new(data_file: SlabFile, mut hashes_file: SlabFile, stream_file: SlabFile) -> Result<Self> {
-        let hashes = Self::read_hashes(&mut hashes_file)?;
+        let (seen, hashes) = Self::read_hashes(&mut hashes_file)?;
         let nr_slabs = data_file.get_nr_slabs() as u64;
         assert_eq!(data_file.get_nr_slabs(), hashes_file.get_nr_slabs());
 
         Ok(Self {
             nr_chunks: 0,
+
+            seen,
             hashes,
 
             data_file,
@@ -187,6 +195,16 @@ impl DedupHandler {
     fn add_stream_entry(&mut self, e: &MapEntry) -> Result<()> {
         self.mapping_builder.next(e, &mut self.stream_buf)
     }
+
+    fn do_add(&mut self, h: Hash256, mini_hash: Hash64, iov: &IoVec, len: u64) -> Result<MapEntry> {
+        self.add_hash_entry(h, len as u32)?;
+        let (slab, offset) = self.add_data_entry(iov)?;
+        let me = MapEntry::Data { slab, offset };
+        self.seen.insert(mini_hash);
+        self.hashes.insert(h, me);
+        self.maybe_complete_data()?;
+        Ok(me)
+    }
 }
 
 impl IoVecHandler for DedupHandler {
@@ -201,28 +219,24 @@ impl IoVecHandler for DedupHandler {
                 self.maybe_complete_stream()?;
             } else {
                 */
-        let h = hash_256(iov);
 
-        /*
-        // FIXME: can we just use the bottom 32 bits of h?
-        let mh = hash_32(&vec![&h[..]]);
-        */
-        let mh = h;
+        let h = hash_256_iov(iov);
+        let mini_hash = hash_64(&h);
 
         let me: MapEntry;
-        if let Some(e) = self.hashes.get(&mh) {
-            // FIXME: We need to double check the proper hash.
-            me = *e;
+        if self.seen.contains(&mini_hash) {
+            if let Some(e) = self.hashes.get(&h) {
+                me = *e;
+            } else {
+                me = self.do_add(h, mini_hash, iov, len)?;
+            }
         } else {
-            self.add_hash_entry(h, len as u32)?;
-            let (slab, offset) = self.add_data_entry(iov)?;
-            me = MapEntry::Data { slab, offset };
-            self.hashes.insert(mh, me);
-            self.maybe_complete_data()?;
+            me = self.do_add(h, mini_hash, iov, len)?;
         }
 
         self.add_stream_entry(&me)?;
         self.maybe_complete_stream()?;
+
         //}
 
         Ok(())

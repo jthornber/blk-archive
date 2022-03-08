@@ -4,7 +4,6 @@ use flate2::{read, write::ZlibEncoder, Compression};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -145,8 +144,10 @@ fn write_slab(shared: &Arc<Mutex<SlabShared>>, data: &[u8]) -> Result<()> {
 
     shared.data.seek(SeekFrom::End(0))?;
     shared.data.write_u64::<LittleEndian>(SLAB_MAGIC)?;
-    shared.data.write_u64::<LittleEndian>(data.len() as u64)?;
-    let csum = hash_64(&vec![&data]);
+    shared
+        .data
+        .write_u64::<LittleEndian>(data.len() as u64)?;
+    let csum = hash_64(&data);
     shared.data.write_all(&csum)?;
     shared.data.write_all(&data)?;
 
@@ -380,7 +381,7 @@ impl SlabFile {
         let mut buf = vec![0; len as usize];
         shared.data.read_exact(&mut buf)?;
 
-        let actual_csum = hash_64(&vec![&buf]);
+        let actual_csum = hash_64(&buf);
         assert_eq!(actual_csum, expected_csum);
 
         if self.compressed {
