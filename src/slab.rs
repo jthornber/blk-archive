@@ -4,6 +4,7 @@ use flate2::{read, write::ZlibEncoder, Compression};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -20,6 +21,7 @@ struct SlabOffsets {
 }
 
 impl SlabOffsets {
+    /*
     #[allow(dead_code)]
     fn scan_slab_file(r: &mut File, mut offset: u64) -> Result<Self> {
         let file_len = r.metadata()?.len();
@@ -39,6 +41,7 @@ impl SlabOffsets {
 
         Ok(Self { offsets })
     }
+    */
 
     fn read_offset_file<P: AsRef<Path>>(p: P) -> Result<Self> {
         let mut r = OpenOptions::new()
@@ -121,42 +124,54 @@ pub struct SlabFile {
     tid: Option<thread::JoinHandle<()>>,
 }
 
-fn write_slab(shared: &Arc<Mutex<SlabShared>>, buf: SlabData) -> Result<()> {
+impl Drop for SlabFile {
+    fn drop(&mut self) {
+        let mut compressor = None;
+        std::mem::swap(&mut compressor, &mut self.compressor);
+        if let Some(c) = compressor {
+            c.pool.join();
+        }
+    }
+}
+
+fn write_slab(shared: &Arc<Mutex<SlabShared>>, data: &[u8]) -> Result<()> {
+    assert!(data.len() > 0);
+
     let mut shared = shared.lock().unwrap();
 
     let offset = shared.file_size;
     shared.offsets.offsets.push(offset);
-    shared.file_size += 8 + 8 + 8 + buf.data.len() as u64;
+    shared.file_size += 8 + 8 + 8 + data.len() as u64;
 
+    shared.data.seek(SeekFrom::End(0))?;
     shared.data.write_u64::<LittleEndian>(SLAB_MAGIC)?;
-    shared
-        .data
-        .write_u64::<LittleEndian>(buf.data.len() as u64)?;
-    let csum = hash_64(&vec![&buf.data[..]]);
+    shared.data.write_u64::<LittleEndian>(data.len() as u64)?;
+    let csum = hash_64(&vec![&data]);
     shared.data.write_all(&csum)?;
-    shared.data.write_all(&buf.data[..])?;
+    shared.data.write_all(&data)?;
 
     Ok(())
 }
 
 fn writer_(shared: Arc<Mutex<SlabShared>>, rx: Receiver<SlabData>) -> Result<()> {
     let mut write_index = 0;
-    let mut queued = BTreeMap::new();
+    let mut queued: BTreeMap<SlabIndex, SlabData> = BTreeMap::new();
 
     loop {
         let buf = rx.recv();
         if buf.is_err() {
             // all send ends have been closed, so we're done.
+            assert!(queued.len() == 0);
             break;
         }
 
         let buf = buf.unwrap();
         if buf.index == write_index {
-            write_slab(&shared, buf)?;
+            write_slab(&shared, &buf.data)?;
             write_index += 1;
 
             while let Some(buf) = queued.remove(&write_index) {
-                write_slab(&shared, buf)?;
+                write_slab(&shared, &buf.data)?;
                 write_index += 1;
             }
         } else {
@@ -170,7 +185,7 @@ fn writer_(shared: Arc<Mutex<SlabShared>>, rx: Receiver<SlabData>) -> Result<()>
 
 fn writer(shared: Arc<Mutex<SlabShared>>, rx: Receiver<SlabData>) {
     // FIXME: pass on error
-    writer_(shared, rx).expect("write failed");
+    writer_(shared, rx).expect("write of slab failed");
 }
 
 fn offsets_path<P: AsRef<Path>>(p: P) -> PathBuf {
@@ -257,7 +272,7 @@ impl SlabFile {
 
         assert!(flags == 0 || flags == 1);
 
-	let compressed = flags == 1;
+        let compressed = flags == 1;
         let (tx, rx) = sync_channel(queue_depth);
         let (compressor, tx) = if flags == 1 {
             let (c, tx) = CompressionService::new(4, tx.clone());
@@ -385,9 +400,13 @@ impl SlabFile {
         (index, tx)
     }
 
-    pub fn new_packer(&mut self) -> Packer {
+    pub fn write_slab(&mut self, data: &[u8]) -> Result<()> {
         let (index, tx) = self.reserve_slab();
-        Packer::new(index, tx)
+        tx.send(SlabData {
+            index,
+            data: data.to_vec(),
+        })?;
+        Ok(())
     }
 
     pub fn index(&self) -> SlabIndex {
@@ -459,42 +478,6 @@ impl CompressionService {
 }
 
 //-----------------------------------------
-
-pub struct Packer {
-    index: SlabIndex,
-    offset: u32,
-    data: Vec<u8>,
-    tx: SyncSender<SlabData>,
-}
-
-impl Packer {
-    fn new(index: SlabIndex, tx: SyncSender<SlabData>) -> Self {
-        Self {
-            index,
-            offset: 0,
-            data: Vec::new(),
-            tx,
-        }
-    }
-
-    pub fn write(&mut self, v: &[u8]) -> Result<()> {
-        self.offset += v.len() as u32;
-        self.data.extend_from_slice(v);
-        Ok(())
-    }
-
-    pub fn complete(&mut self) -> Result<()> {
-        let mut data = Vec::new();
-        std::mem::swap(&mut data, &mut self.data);
-        self.tx.send(SlabData {
-            index: self.index,
-            data,
-        })?;
-        Ok(())
-    }
-}
-
-//------------------------------------------------
 
 pub fn repair<P: AsRef<Path>>(_p: P) -> Result<()> {
     todo!();

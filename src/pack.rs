@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use byteorder::{LittleEndian, WriteBytesExt};
+use chrono::prelude::*;
 use clap::ArgMatches;
 use io::prelude::*;
 use io::Write;
@@ -14,7 +15,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thinp::report::*;
-use chrono::prelude::*;
 
 use crate::config;
 use crate::content_sensitive_splitter::*;
@@ -109,6 +109,9 @@ impl DedupHandler {
 
     fn new(data_file: SlabFile, mut hashes_file: SlabFile, stream_file: SlabFile) -> Result<Self> {
         let hashes = Self::read_hashes(&mut hashes_file)?;
+        let nr_slabs = data_file.get_nr_slabs() as u64;
+        assert_eq!(data_file.get_nr_slabs(), hashes_file.get_nr_slabs());
+
         Ok(Self {
             nr_chunks: 0,
             hashes,
@@ -117,7 +120,7 @@ impl DedupHandler {
             hashes_file,
             stream_file,
 
-            current_slab: 0,
+            current_slab: nr_slabs,
             current_entries: 0,
 
             data_buf: Vec::new(),
@@ -132,9 +135,7 @@ impl DedupHandler {
     }
 
     fn complete_slab_(slab: &mut SlabFile, buf: &mut Vec<u8>) -> Result<()> {
-        let mut packer = slab.new_packer();
-        packer.write(buf)?;
-        packer.complete()?;
+        slab.write_slab(&buf)?;
         buf.clear();
         Ok(())
     }
@@ -342,7 +343,10 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
 
     let compression = ((data_written + hashes_written + stream_written) * 100) / total_read;
     report.info(&format!("compression      : {:.2}%", 100 - compression));
-    report.info(&format!("speed            : {:.2}/s", Size((total_read as f64 / elapsed) as u64)));
+    report.info(&format!(
+        "speed            : {:.2}/s",
+        Size((total_read as f64 / elapsed) as u64)
+    ));
 
     // write the stream config
     let cfg = config::StreamConfig {
@@ -362,7 +366,12 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
 pub fn run(matches: &ArgMatches) -> Result<()> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
     let input_file = Path::new(matches.value_of("INPUT").unwrap()).canonicalize()?;
-    let report = std::sync::Arc::new(mk_progress_bar_report());
+
+    let report = if atty::is(atty::Stream::Stdout) {
+        Arc::new(mk_simple_report())
+    } else {
+        Arc::new(mk_progress_bar_report())
+    };
 
     env::set_current_dir(&archive_dir)?;
     let config = config::read_config(".")?;

@@ -30,6 +30,7 @@ struct Verifier {
     stream_file: SlabFile,
 
     slabs: BTreeMap<u64, Arc<SlabInfo>>,
+    total_verified: u64,
 }
 
 impl Verifier {
@@ -49,6 +50,7 @@ impl Verifier {
             hashes_file,
             stream_file,
             slabs: BTreeMap::new(),
+            total_verified: 0,
         })
     }
 
@@ -106,6 +108,7 @@ impl Verifier {
                 let mut actual = vec![0; *len as usize];
                 r.read_exact(&mut actual)?;
                 assert_eq!(&actual, &zeroes);
+                self.total_verified += *len as u64;
             }
             MapEntry::Data { slab, offset } => {
                 let info = self.get_info(*slab)?;
@@ -122,7 +125,12 @@ impl Verifier {
                 // Verify data
                 let mut actual = vec![0; data_end - data_begin];
                 r.read_exact(&mut actual)?;
-                assert_eq!(&actual, &info.data[data_begin..data_end]);
+                if actual != &info.data[data_begin..data_end] {
+                    eprintln!("mismatched data at offset {}", self.total_verified);
+                    assert!(false);
+                }
+
+                self.total_verified += actual.len() as u64;
             }
         }
 
@@ -146,9 +154,9 @@ impl Verifier {
                     // update progress bar
                     let entry_fraction = i as f64 / nr_entries as f64;
                     let slab_fraction = s as f64 / nr_slabs as f64;
-                    let percent = ((slab_fraction + (entry_fraction / nr_slabs as f64)) * 100.0) as u8;
+                    let percent =
+                        ((slab_fraction + (entry_fraction / nr_slabs as f64)) * 100.0) as u8;
                     report.progress(percent as u8);
-
                 }
             }
         }
@@ -163,7 +171,7 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
     let input_file = Path::new(matches.value_of("INPUT").unwrap());
     let stream = matches.value_of("STREAM").unwrap();
-    let report = std::sync::Arc::new(mk_progress_bar_report());
+    let report = std::sync::Arc::new(mk_simple_report()); // progress_bar_report());
 
     let mut input = OpenOptions::new()
         .read(true)
@@ -173,7 +181,11 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
 
     env::set_current_dir(&archive_dir)?;
 
-    report.set_title(&format!("Verifying {} and {} match ...", input_file.display(), &stream));
+    report.set_title(&format!(
+        "Verifying {} and {} match ...",
+        input_file.display(),
+        &stream
+    ));
     let mut v = Verifier::new(&stream)?;
     v.verify(&report, &mut input)
 }

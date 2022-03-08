@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0"
+atty = "0.2"
 blake2 = "0.10"
 byteorder = "1.4"
 chrono = "0.4"
