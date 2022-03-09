@@ -24,7 +24,7 @@ cycle() {
 }
 
 cargo build --release
-rm -r $archive
+rm -rf $archive
 echo Creating archive ...
 $cmd create --dir $archive --block-size 256
 
