@@ -2,6 +2,7 @@ pub mod archive;
 pub mod config;
 pub mod content_sensitive_splitter;
 pub mod create;
+pub mod cuckoo_filter;
 pub mod hash;
 pub mod iovec;
 pub mod list;

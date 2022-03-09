@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
-use byteorder::{LittleEndian, WriteBytesExt};
+use byteorder::{LittleEndian, WriteBytesExt, ReadBytesExt};
+use std::io::Cursor;
 use chrono::prelude::*;
 use clap::ArgMatches;
 use io::prelude::*;
@@ -8,7 +9,7 @@ use nom::{bytes::complete::*, multi::*, number::complete::*, IResult};
 use rand::prelude::*;
 use rand_chacha::ChaCha20Rng;
 use size_display::Size;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::env;
 use std::fs::OpenOptions;
 use std::io;
@@ -18,6 +19,7 @@ use thinp::report::*;
 
 use crate::config;
 use crate::content_sensitive_splitter::*;
+use crate::cuckoo_filter::*;
 use crate::hash::*;
 use crate::iovec::*;
 use crate::slab::*;
@@ -52,7 +54,8 @@ struct DedupHandler {
     nr_chunks: usize,
 
     // Maps hashes to the slab they're in
-    seen: BTreeSet<Hash64>,
+    // seen: BTreeSet<Hash64>,
+    seen: CuckooFilter,
     hashes: BTreeMap<Hash256, MapEntry>,
 
     data_file: SlabFile,
@@ -86,9 +89,9 @@ impl DedupHandler {
 
     fn read_hashes(
         hashes_file: &mut SlabFile,
-    ) -> Result<(BTreeSet<Hash64>, BTreeMap<Hash256, MapEntry>)> {
+    ) -> Result<(CuckooFilter, BTreeMap<Hash256, MapEntry>)> {
         let mut r = BTreeMap::new();
-        let mut seen = BTreeSet::new();
+        let mut seen = CuckooFilter::with_capacity(2 << 24);  // FIXME: handle resizing
         let nr_slabs = hashes_file.get_nr_slabs();
         for s in 0..nr_slabs {
             let buf = hashes_file.read(s as u64)?;
@@ -98,7 +101,9 @@ impl DedupHandler {
             let mut i = 0;
             for h in hashes {
                 let mini_hash = hash_64(&h[..]);
-                seen.insert(mini_hash);
+                let mut c = Cursor::new(&mini_hash);
+                let mini_hash = c.read_u64::<LittleEndian>()?;
+                seen.test_and_set(mini_hash)?;
                 r.insert(
                     h,
                     MapEntry::Data {
@@ -196,11 +201,10 @@ impl DedupHandler {
         self.mapping_builder.next(e, &mut self.stream_buf)
     }
 
-    fn do_add(&mut self, h: Hash256, mini_hash: Hash64, iov: &IoVec, len: u64) -> Result<MapEntry> {
+    fn do_add(&mut self, h: Hash256, iov: &IoVec, len: u64) -> Result<MapEntry> {
         self.add_hash_entry(h, len as u32)?;
         let (slab, offset) = self.add_data_entry(iov)?;
         let me = MapEntry::Data { slab, offset };
-        self.seen.insert(mini_hash);
         self.hashes.insert(h, me);
         self.maybe_complete_data()?;
         Ok(me)
@@ -218,16 +222,18 @@ impl IoVecHandler for DedupHandler {
         } else {
             let h = hash_256_iov(iov);
             let mini_hash = hash_64(&h);
+            let mut c = Cursor::new(&mini_hash);
+            let mini_hash = c.read_u64::<LittleEndian>()?;
 
             let me: MapEntry;
-            if self.seen.contains(&mini_hash) {
+            if self.seen.test_and_set(mini_hash)? {
+                me = self.do_add(h, iov, len)?;
+            } else {
                 if let Some(e) = self.hashes.get(&h) {
                     me = *e;
                 } else {
-                    me = self.do_add(h, mini_hash, iov, len)?;
+                    me = self.do_add(h, iov, len)?;
                 }
-            } else {
-                me = self.do_add(h, mini_hash, iov, len)?;
             }
 
             self.add_stream_entry(&me)?;
@@ -249,6 +255,8 @@ impl IoVecHandler for DedupHandler {
         self.hashes_file.close()?;
         self.data_file.close()?;
         self.stream_file.close()?;
+
+        eprintln!("{} hash entries", self.seen.len());
 
         Ok(())
     }
@@ -276,7 +284,6 @@ fn new_stream_path() -> Result<(String, PathBuf)> {
 }
 
 pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Result<()> {
-    let start_time: DateTime<Utc> = Utc::now();
     let mut splitter = ContentSensitiveSplitter::new(block_size as u32);
 
     let mut input = OpenOptions::new()
@@ -307,6 +314,7 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
 
     report.set_title(&format!("Packing {} ...", input_file.display()));
     report.progress(0);
+    let start_time: DateTime<Utc> = Utc::now();
 
     const BUFFER_SIZE: usize = 16 * 1024 * 1024;
     let complete_blocks = input_size / BUFFER_SIZE as u64;

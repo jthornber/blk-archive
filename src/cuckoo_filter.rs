@@ -66,7 +66,7 @@ impl CuckooFilter {
     }
 
     pub fn contains(&self, h: u64) -> bool {
-        let fingerprint: u8 = (h & 0b1111111) as u8;
+        let fingerprint: u8 = (h & 0xff) as u8;
         let index1: usize = ((h >> 8) as usize) & self.mask;
 
         if self.present(fingerprint, index1) {
