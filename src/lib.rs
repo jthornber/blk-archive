@@ -11,6 +11,7 @@ pub mod rolling_hash;
 pub mod slab;
 pub mod splitter;
 pub mod stream;
+pub mod thin_metadata;
 pub mod unpack;
 pub mod verify;
 pub mod version;

@@ -54,14 +54,26 @@ fn main_() -> Result<()> {
                         .value_name("ARCHIVE")
                         .takes_value(true),
                 )
+        )
+        .subcommand(
+            Command::new("pack-thin")
+                .about("packs a thin device into the archive")
                 .arg(
-                    Arg::new("VALIDATE_STREAM")
-                        .help("validate stream compression is correct")
-                        .required(false)
-                        .value_name("VALIDATE_STREAM")
-                        .long("validate-stream")
-                        .takes_value(false),
-                ),
+                    Arg::new("INPUT")
+                        .help("Specify a thin device to archive")
+                        .required(true)
+                        .value_name("INPUT")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::new("ARCHIVE")
+                        .help("Specify archive directory")
+                        .required(true)
+                        .long("archive")
+                        .short('a')
+                        .value_name("ARCHIVE")
+                        .takes_value(true),
+                )
         )
         .subcommand(
             Command::new("unpack")
@@ -141,6 +153,9 @@ fn main_() -> Result<()> {
             create::run(sub_matches)?;
         }
         Some(("pack", sub_matches)) => {
+            pack::run(sub_matches)?;
+        }
+        Some(("pack-thin", sub_matches)) => {
             pack::run(sub_matches)?;
         }
         Some(("unpack", sub_matches)) => {

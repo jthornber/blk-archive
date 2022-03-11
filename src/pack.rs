@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use byteorder::{LittleEndian, WriteBytesExt, ReadBytesExt};
-use std::io::Cursor;
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use chrono::prelude::*;
 use clap::ArgMatches;
 use io::prelude::*;
@@ -8,11 +7,15 @@ use io::Write;
 use nom::{bytes::complete::*, multi::*, number::complete::*, IResult};
 use rand::prelude::*;
 use rand_chacha::ChaCha20Rng;
+use roaring::*;
 use size_display::Size;
 use std::collections::BTreeMap;
 use std::env;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io;
+use std::io::Cursor;
+use std::ops::Range;
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thinp::report::*;
@@ -91,7 +94,7 @@ impl DedupHandler {
         hashes_file: &mut SlabFile,
     ) -> Result<(CuckooFilter, BTreeMap<Hash256, MapEntry>)> {
         let mut r = BTreeMap::new();
-        let mut seen = CuckooFilter::with_capacity(2 << 24);  // FIXME: handle resizing
+        let mut seen = CuckooFilter::with_capacity(2 << 24); // FIXME: handle resizing
         let nr_slabs = hashes_file.get_nr_slabs();
         for s in 0..nr_slabs {
             let buf = hashes_file.read(s as u64)?;
@@ -264,6 +267,154 @@ impl IoVecHandler for DedupHandler {
 
 //-----------------------------------------
 
+pub enum Chunk {
+    Mapped(Vec<u8>),
+    Unmapped(u64),
+}
+
+struct FileChunker {
+    input: File,
+    input_size: u64,
+    total_read: u64,
+    block_size: usize,
+}
+
+impl FileChunker {
+    fn new(input: File, block_size: usize) -> Result<Self> {
+        let input_size = input.metadata()?.len();
+
+        Ok(Self {
+            input,
+            input_size,
+            total_read: 0,
+            block_size,
+        })
+    }
+
+    // FIXME: stop reallocating and zeroing these buffers
+    fn do_read(&mut self, mut buffer: Vec<u8>) -> Result<Option<Chunk>> {
+        self.input.read_exact(&mut buffer)?;
+        self.total_read += buffer.len() as u64;
+        return Ok(Some(Chunk::Mapped(buffer)));
+    }
+
+    fn next_chunk(&mut self) -> Result<Option<Chunk>> {
+        let remaining = self.input_size - self.total_read;
+
+        if remaining == 0 {
+            Ok(None)
+        } else if remaining >= self.block_size as u64 {
+            let buf = vec![0; self.block_size];
+            self.do_read(buf)
+        } else {
+            let buf = vec![0; remaining as usize];
+            self.do_read(buf)
+        }
+    }
+}
+
+impl Iterator for FileChunker {
+    type Item = Result<Chunk>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.next_chunk() {
+            Err(e) => Some(Err(e)),
+            Ok(None) => None,
+            Ok(Some(c)) => Some(Ok(c)),
+        }
+    }
+}
+
+//-----------------------------------------
+
+struct ThinChunker {
+    input: File,
+
+    input_blocks: u64,
+    data_block_size: u64,
+    current_block: u64,
+
+    max_read_size: usize,
+    provisioned_blocks: RoaringBitmap,
+    current_run: Option<Range<u64>>,
+    current_pos: u64,
+}
+
+impl ThinChunker {
+    fn next_run_blocks(&mut self) -> Option<Range<u64>> {
+        if self.current_block >= self.input_blocks {
+            None
+        } else {
+            // FIXME: roaring only supports u32 as index
+            while !self.provisioned_blocks.contains(self.current_block as u32) {
+                self.current_block += 1;
+                if self.current_block >= self.input_blocks {
+                    return None;
+                }
+            }
+            let start = self.current_block;
+
+            self.current_block += 1;
+            while self.provisioned_blocks.contains(self.current_block as u32)
+                && self.current_block < self.input_blocks
+            {
+                self.current_block += 1;
+            }
+            let end = self.current_block;
+
+            Some(start..end)
+        }
+    }
+
+    fn next_run_bytes(&mut self) -> Option<Range<u64>> {
+        self.next_run_blocks()
+            .map(|r| (r.start * self.data_block_size)..(r.end * self.data_block_size))
+    }
+
+    fn next_chunk(&mut self) -> Result<Option<Chunk>> {
+        let mut run = None;
+        std::mem::swap(&mut run, &mut self.current_run);
+        if let Some(run) = run {
+            let run_len = run.end - run.start;
+            if run_len <= self.max_read_size as u64 {
+                let mut buf = vec![0; run_len as usize];
+                self.input.read_exact_at(&mut buf, run.start)?;
+                self.current_pos = run.end;
+                Ok(Some(Chunk::Mapped(buf)))
+            } else {
+                let mut buf = vec![0; self.max_read_size];
+                self.input.read_exact_at(&mut buf, run.start)?;
+                self.current_run = Some((run.start + buf.len() as u64)..run.end);
+                Ok(Some(Chunk::Mapped(buf)))
+            }
+        } else {
+            if let Some(run) = self.next_run_bytes() {
+                let start = run.start;
+                let r = Ok(Some(Chunk::Unmapped(run.start - self.current_pos)));
+                self.current_run = Some(run);
+                self.current_pos = start;
+                r
+            } else if self.current_pos < (self.input_blocks * self.data_block_size) {
+                let r = Ok(Some(Chunk::Unmapped((self.input_blocks * self.data_block_size) - self.current_pos)));
+                self.current_pos = self.input_blocks * self.data_block_size;
+                r
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
+
+impl Iterator for ThinChunker {
+    type Item = Result<Chunk>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        todo!()
+    }
+}
+
+//-----------------------------------------
+
 // Assumes we've chdir'd to the archive
 fn new_stream_path() -> Result<(String, PathBuf)> {
     loop {
@@ -283,15 +434,17 @@ fn new_stream_path() -> Result<(String, PathBuf)> {
     // Can't get here
 }
 
-pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Result<()> {
+pub fn pack_<'a, I>(
+    report: &Arc<Report>,
+    input_path: &str,
+    it: I,
+    input_size: u64,
+    block_size: usize,
+) -> Result<()>
+where
+    I: Iterator<Item = Result<Chunk>>,
+{
     let mut splitter = ContentSensitiveSplitter::new(block_size as u32);
-
-    let mut input = OpenOptions::new()
-        .read(true)
-        .write(false)
-        .open(input_file)
-        .context("couldn't open input file/dev")?;
-    let input_size = input.metadata()?.len();
 
     let data_path: PathBuf = ["data", "data"].iter().collect();
     let data_file =
@@ -312,29 +465,22 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
 
     let mut handler = DedupHandler::new(data_file, hashes_file, stream_file)?;
 
-    report.set_title(&format!("Packing {} ...", input_file.display()));
     report.progress(0);
     let start_time: DateTime<Utc> = Utc::now();
 
-    const BUFFER_SIZE: usize = 16 * 1024 * 1024;
-    let complete_blocks = input_size / BUFFER_SIZE as u64;
-    let remainder = input_size - (complete_blocks * BUFFER_SIZE as u64);
-
-    let mut total_read: u64 = 0;
-    for _ in 0..complete_blocks {
-        let mut buffer = vec![0u8; BUFFER_SIZE];
-        input.read_exact(&mut buffer[..])?;
-        splitter.next(buffer, &mut handler)?;
-        total_read += BUFFER_SIZE as u64;
-        report.progress(((100 * total_read) / input_size) as u8);
-    }
-
-    if remainder > 0 {
-        let mut buffer = vec![0u8; remainder as usize];
-        input.read_exact(&mut buffer[..])?;
-        splitter.next(buffer, &mut handler)?;
-        total_read += remainder as u64;
-        report.progress(((100 * total_read) / input_size) as u8);
+    let mut total_read = 0;
+    for chunk in it {
+        match chunk? {
+            Chunk::Mapped(buffer) => {
+                let len = buffer.len();
+                splitter.next(buffer, &mut handler)?;
+                total_read += len as u64;
+                report.progress(((100 * total_read) / input_size) as u8);
+            }
+            Chunk::Unmapped(_) => {
+                todo!();
+            }
+        }
     }
 
     splitter.complete(&mut handler)?;
@@ -368,7 +514,7 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
     // write the stream config
     let cfg = config::StreamConfig {
         name: None,
-        source_path: input_file.display().to_string(),
+        source_path: input_path.to_string(),
         pack_time: config::now(),
         size: input_size,
         packed_size: data_written + hashes_written + stream_written,
@@ -378,17 +524,48 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
     Ok(())
 }
 
+pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Result<()> {
+    let input = OpenOptions::new()
+        .read(true)
+        .write(false)
+        .open(input_file)
+        .context("couldn't open input file/dev")?;
+    let input_size = input.metadata()?.len();
+    let input_iter = FileChunker::new(input, 16 * 1024 * 1024)?;
+    report.set_title(&format!("Packing {} ...", input_file.display()));
+    pack_(
+        report,
+        &input_file.display().to_string(),
+        input_iter,
+        input_size,
+        block_size,
+    )
+}
+
 //-----------------------------------------
+
+fn mk_report() -> Arc<Report> {
+    if atty::is(atty::Stream::Stdout) {
+        Arc::new(mk_progress_bar_report())
+    } else {
+        Arc::new(mk_simple_report())
+    }
+}
 
 pub fn run(matches: &ArgMatches) -> Result<()> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
     let input_file = Path::new(matches.value_of("INPUT").unwrap()).canonicalize()?;
+    let report = mk_report();
 
-    let report = if atty::is(atty::Stream::Stdout) {
-        Arc::new(mk_progress_bar_report())
-    } else {
-        Arc::new(mk_simple_report())
-    };
+    env::set_current_dir(&archive_dir)?;
+    let config = config::read_config(".")?;
+    pack(&report, &input_file, config.block_size)
+}
+
+pub fn run_thin(matches: &ArgMatches) -> Result<()> {
+    let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
+    let input_file = Path::new(matches.value_of("INPUT").unwrap()).canonicalize()?;
+    let report = mk_report();
 
     env::set_current_dir(&archive_dir)?;
     let config = config::read_config(".")?;
