@@ -8,9 +8,16 @@ use std::io;
 
 //-----------------------------------------
 
+// FIXME: when encoding it will be common to switch to a different
+// stack entry, emit, switch back and increment a similar amount to
+// what was just emitted.  How do we compile this efficiently?  Keep
+// an array of stack entries in slab order, then do a binary search for
+// the lower bound?
+
 #[derive(Copy, Clone, Debug)]
 enum MapInstruction {
-    Zero4 { len: u8 },
+    Rot { index: u8 },
+
     Zero12 { len: u16 },
     Zero20 { len: u32 },
     Zero36 { len: u64 },
@@ -38,27 +45,27 @@ enum MapInstruction {
 #[derive(Eq, PartialEq, TryFromPrimitive)]
 #[repr(u8)]
 enum MapTag {
-    TagZero4 = 0,
-    TagZero12 = 1,
-    TagZero20 = 2,
-    TagZero36 = 3,
+    TagRot,
+    TagZero12,
+    TagZero20,
+    TagZero36,
 
-    TagSlab16 = 4,
-    TagSlab32 = 5,
+    TagSlab16,
+    TagSlab32,
 
-    TagSlabDelta4 = 6,
-    TagSlabDelta12 = 7,
+    TagSlabDelta4,
+    TagSlabDelta12,
 
-    TagOffset4 = 8,
-    TagOffset12 = 9,
-    TagOffset20 = 10,
+    TagOffset4,
+    TagOffset12,
+    TagOffset20,
 
-    TagOffsetDelta4 = 11,
-    TagOffsetDelta12 = 12,
+    TagOffsetDelta4,
+    TagOffsetDelta12,
 
-    TagEmit4 = 13,
-    TagEmit12 = 14,
-    TagEmit20 = 15,
+    TagEmit4,
+    TagEmit12,
+    TagEmit20,
 }
 
 fn pack_tag(tag: MapTag, nibble: u8) -> u8 {
@@ -76,10 +83,9 @@ impl MapInstruction {
         use MapInstruction::*;
         use MapTag::*;
         match self {
-            Zero4 { len } => {
-                assert!(*len != 0);
-                assert!((len & 0xf0) == 0);
-                w.write_u8(pack_tag(TagZero4, *len))?;
+            Rot { index } => {
+                assert!(*index < STACK_SIZE as u8);
+                w.write_u8(pack_tag(TagRot, *index))?;
             }
             Zero12 { len } => {
                 assert!(*len != 0);
@@ -159,7 +165,7 @@ impl MapInstruction {
         let (tag, nibble) = unpack_tag(b);
 
         let v = match tag {
-            TagZero4 => (input, Zero4 { len: nibble }),
+            TagRot => (input, Rot { index: nibble }),
             TagZero12 => {
                 let (input, b) = le_u8(input)?;
                 (
@@ -264,29 +270,77 @@ impl MapInstruction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MapEntry {
     Zero { len: u64 },
-    Data { slab: u64, offset: u32 },
+    Data { slab: u32, offset: u32 },
 }
 
 // FIXME: support runs of zeroed regions
 struct Run {
-    slab: u64,
+    slab: u32,
     offset: u32,
     len: u16,
 }
 
-#[derive(Default)]
-struct VMState {
-    slab: u64,
+#[derive(Default, Copy, Clone)]
+struct Register {
+    slab: u32,
     offset: u32,
 }
 
+const STACK_SIZE: usize = 16;
+
+#[derive(Default)]
+struct VMState {
+    stack: [Register; STACK_SIZE],
+}
+
 impl VMState {
+    fn top(&mut self) -> &mut Register {
+        &mut self.stack[STACK_SIZE - 1]
+    }
+
+    // FIXME: slow
+    fn rot_stack(&mut self, index: usize) {
+        let tmp = self.stack[index];
+        for i in index..(STACK_SIZE - 1) {
+            self.stack[i] = self.stack[i + 1];
+        }
+        self.stack[STACK_SIZE - 1] = tmp;
+    }
+
+    // Finds the register with the nearest, but lower slab
+    // FIXME: slow
+    fn select_slab(&mut self, slab: u32, instrs: &mut IVec) -> Result<()> {
+        use MapInstruction::*;
+
+        if self.top().slab == slab {
+            // The common case
+            return Ok(());
+        }
+
+        let mut min = u32::MAX;
+        let mut index = 0;   // default to the oldest stack entry
+        for (i, r) in self.stack.iter().enumerate() {
+            if r.slab <= slab {
+                let delta = slab - r.slab;
+                if delta < min {
+                    min = delta;
+                    index = i;
+                }
+            }
+        }
+
+        if index != STACK_SIZE - 1 {
+            instrs.push(Rot { index: index as u8 });
+            self.rot_stack(index);
+        }
+
+        Ok(())
+    }
+
     fn encode_zero(&mut self, len: u64, instrs: &mut IVec) -> Result<()> {
         use MapInstruction::*;
 
-        if len < 0x10 {
-            instrs.push(Zero4 { len: len as u8 });
-        } else if len < 0x1000 {
+        if len < 0x1000 {
             instrs.push(Zero12 { len: len as u16 });
         } else if len < 0x100000 {
             instrs.push(Zero20 { len: len as u32 });
@@ -298,25 +352,28 @@ impl VMState {
         Ok(())
     }
 
-    fn encode_slab(&mut self, slab: u64, instrs: &mut IVec) -> Result<()> {
+    fn encode_slab(&mut self, slab: u32, instrs: &mut IVec) -> Result<()> {
         use MapInstruction::*;
 
-        if slab != self.slab {
-            let delta: u64 = slab.wrapping_sub(self.slab);
+        self.select_slab(slab, instrs)?;
+
+	let top = self.top();
+        if slab != top.slab {
+            let delta: u32 = slab.wrapping_sub(top.slab);
             if delta < 0x10 {
                 instrs.push(SlabDelta4 { delta: delta as u8 });
             } else if delta < 0x1000 {
                 instrs.push(SlabDelta12 {
                     delta: delta as u16,
                 });
-            } else if slab <= u16::MAX as u64 {
+            } else if slab <= u16::MAX as u32 {
                 instrs.push(Slab16 { slab: slab as u16 });
-            } else if slab <= u32::MAX as u64 {
+            } else if slab <= u32::MAX as u32 {
                 instrs.push(Slab32 { slab: slab as u32 });
             } else {
                 return Err(anyhow!("slab index too large"));
             }
-            self.slab = slab;
+            top.slab = slab;
         }
         Ok(())
     }
@@ -324,8 +381,9 @@ impl VMState {
     fn encode_offset(&mut self, offset: u32, instrs: &mut IVec) -> Result<()> {
         use MapInstruction::*;
 
-        if offset != self.offset {
-            let delta: u32 = offset.wrapping_sub(self.offset);
+	let top = self.top();
+        if offset != top.offset {
+            let delta: u32 = offset.wrapping_sub(top.offset);
             if delta < 0x10 {
                 instrs.push(OffsetDelta4 { delta: delta as u8 });
             } else if delta < 0x1000 {
@@ -345,13 +403,14 @@ impl VMState {
             } else {
                 return Err(anyhow!("offset too large"));
             }
-            self.offset = offset;
+            top.offset = offset;
         }
         Ok(())
     }
 
     fn encode_emit(&mut self, len: u32, instrs: &mut IVec) -> Result<()> {
         use MapInstruction::*;
+
 
         if len < 0x10 {
             instrs.push(Emit4 { len: len as u8 });
@@ -360,7 +419,8 @@ impl VMState {
         } else if len < 0x100000 {
             instrs.push(Emit20 { len });
         }
-        self.offset += len;
+        let top = self.top();
+        top.offset += len;
         Ok(())
     }
 
@@ -444,12 +504,13 @@ pub struct MappingUnpacker {
 
 impl MappingUnpacker {
     fn emit_run(&mut self, r: &mut Vec<MapEntry>, len: usize) {
+        let top = self.vm_state.top();
         for _ in 0..len {
             r.push(MapEntry::Data {
-                slab: self.vm_state.slab,
-                offset: self.vm_state.offset,
+                slab: top.slab,
+                offset: top.offset,
             });
-            self.vm_state.offset += 1;
+            top.offset += 1;
         }
     }
 
@@ -462,8 +523,8 @@ impl MappingUnpacker {
 
         for instr in instrs {
             match instr {
-                Zero4 { len } => {
-                    r.push(MapEntry::Zero { len: len as u64 });
+                Rot { index } => {
+                    self.vm_state.rot_stack(index as usize);
                 }
                 Zero12 { len } => {
                     r.push(MapEntry::Zero { len: len as u64 });
@@ -475,31 +536,31 @@ impl MappingUnpacker {
                     r.push(MapEntry::Zero { len: len as u64 });
                 }
                 Slab16 { slab } => {
-                    self.vm_state.slab = slab as u64;
+                    self.vm_state.top().slab = slab as u32;
                 }
                 Slab32 { slab } => {
-                    self.vm_state.slab = slab as u64;
+                    self.vm_state.top().slab = slab as u32;
                 }
                 SlabDelta4 { delta } => {
-                    self.vm_state.slab += delta as u64;
+                    self.vm_state.top().slab += delta as u32;
                 }
                 SlabDelta12 { delta } => {
-                    self.vm_state.slab += delta as u64;
+                    self.vm_state.top().slab += delta as u32;
                 }
                 Offset4 { offset } => {
-                    self.vm_state.offset = offset as u32;
+                    self.vm_state.top().offset = offset as u32;
                 }
                 Offset12 { offset } => {
-                    self.vm_state.offset = offset as u32;
+                    self.vm_state.top().offset = offset as u32;
                 }
                 Offset20 { offset } => {
-                    self.vm_state.offset = offset as u32;
+                    self.vm_state.top().offset = offset as u32;
                 }
                 OffsetDelta4 { delta } => {
-                    self.vm_state.offset += delta as u32;
+                    self.vm_state.top().offset += delta as u32;
                 }
                 OffsetDelta12 { delta } => {
-                    self.vm_state.offset += delta as u32;
+                    self.vm_state.top().offset += delta as u32;
                 }
                 Emit4 { len } => {
                     self.emit_run(&mut r, len as usize);

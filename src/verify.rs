@@ -29,7 +29,7 @@ struct Verifier {
     hashes_file: SlabFile,
     stream_file: SlabFile,
 
-    slabs: BTreeMap<u64, Arc<SlabInfo>>,
+    slabs: BTreeMap<u32, Arc<SlabInfo>>,
     total_verified: u64,
 }
 
@@ -75,7 +75,7 @@ impl Verifier {
         Ok((input, r))
     }
 
-    fn read_info(&mut self, slab: u64) -> Result<Arc<SlabInfo>> {
+    fn read_info(&mut self, slab: u32) -> Result<Arc<SlabInfo>> {
         // Read the hashes slab
         let hashes = self.hashes_file.read(slab)?;
 
@@ -89,7 +89,7 @@ impl Verifier {
         Ok(Arc::new(SlabInfo { offsets, data }))
     }
 
-    fn get_info(&mut self, slab: u64) -> Result<Arc<SlabInfo>> {
+    fn get_info(&mut self, slab: u32) -> Result<Arc<SlabInfo>> {
         if let Some(info) = self.slabs.get(&slab) {
             Ok(info.clone())
         } else {
@@ -143,7 +143,7 @@ impl Verifier {
         let nr_slabs = self.stream_file.get_nr_slabs();
 
         for s in 0..nr_slabs {
-            let stream_data = self.stream_file.read(s as u64)?;
+            let stream_data = self.stream_file.read(s as u32)?;
             let entries = stream::unpack(&stream_data[..])?;
             let nr_entries = entries.len();
 

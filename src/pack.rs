@@ -65,7 +65,7 @@ struct DedupHandler {
     hashes_file: SlabFile,
     stream_file: SlabFile,
 
-    current_slab: u64,
+    current_slab: u32,
     current_entries: u32,
 
     data_buf: Vec<u8>,
@@ -97,7 +97,7 @@ impl DedupHandler {
         let mut seen = CuckooFilter::with_capacity(2 << 24); // FIXME: handle resizing
         let nr_slabs = hashes_file.get_nr_slabs();
         for s in 0..nr_slabs {
-            let buf = hashes_file.read(s as u64)?;
+            let buf = hashes_file.read(s as u32)?;
             let (_, hashes) =
                 Self::parse_hashes(&buf).map_err(|_| anyhow!("couldn't parse hashes"))?;
 
@@ -110,7 +110,7 @@ impl DedupHandler {
                 r.insert(
                     h,
                     MapEntry::Data {
-                        slab: s as u64,
+                        slab: s as u32,
                         offset: i,
                     },
                 );
@@ -123,7 +123,7 @@ impl DedupHandler {
 
     fn new(data_file: SlabFile, mut hashes_file: SlabFile, stream_file: SlabFile) -> Result<Self> {
         let (seen, hashes) = Self::read_hashes(&mut hashes_file)?;
-        let nr_slabs = data_file.get_nr_slabs() as u64;
+        let nr_slabs = data_file.get_nr_slabs() as u32;
         assert_eq!(data_file.get_nr_slabs(), hashes_file.get_nr_slabs());
 
         Ok(Self {
@@ -184,7 +184,7 @@ impl DedupHandler {
     }
 
     // Returns the (slab, entry) for the newly added entry
-    fn add_data_entry(&mut self, iov: &IoVec) -> Result<(u64, u32)> {
+    fn add_data_entry(&mut self, iov: &IoVec) -> Result<(u32, u32)> {
         let r = (self.current_slab, self.current_entries);
         for v in iov {
             self.data_buf.extend(v.iter()); // FIXME: this looks slow

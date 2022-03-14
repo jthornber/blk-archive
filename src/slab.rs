@@ -361,7 +361,7 @@ impl SlabFile {
         Ok(())
     }
 
-    pub fn read(&mut self, slab: u64) -> Result<Vec<u8>> {
+    pub fn read(&mut self, slab: u32) -> Result<Vec<u8>> {
         let mut shared = self.shared.lock().unwrap();
 
         {
