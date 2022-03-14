@@ -416,18 +416,26 @@ impl Iterator for ThinChunker {
 //-----------------------------------------
 
 // Assumes we've chdir'd to the archive
+fn new_stream_path_(rng: &mut ChaCha20Rng) -> Result<Option<(String, PathBuf)>> {
+    // choose a random number
+    let n: u64 = rng.gen();
+
+    // turn this into a path
+    let name = format!("{:>016x}", n);
+    let path: PathBuf = ["streams", &name].iter().collect();
+
+    if path.exists() {
+        Ok(None)
+    } else {
+        Ok(Some((name, path)))
+    }
+}
+
 fn new_stream_path() -> Result<(String, PathBuf)> {
+    let mut rng = ChaCha20Rng::from_entropy();
     loop {
-        // choose a random number
-        let mut rng = ChaCha20Rng::from_entropy();
-        let n: u64 = rng.gen();
-
-        // turn this into a path
-        let name = format!("{:>016x}", n);
-        let path: PathBuf = ["streams", &name].iter().collect();
-
-        if !path.exists() {
-            return Ok((name, path));
+        if let Some(r)= new_stream_path_(&mut rng)? {
+            return Ok(r);
         }
     }
 
