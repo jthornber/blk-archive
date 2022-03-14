@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use byteorder::{LittleEndian, WriteBytesExt};
 use io::Write;
-use nom::{multi::*, number::complete::*, IResult};
+use nom::{combinator::fail, multi::*, number::complete::*, IResult};
 use num_enum::TryFromPrimitive;
 use std::convert::TryFrom;
 use std::io;
@@ -18,9 +18,15 @@ use std::io;
 enum MapInstruction {
     Rot { index: u8 },
 
-    Zero12 { len: u16 },
-    Zero20 { len: u32 },
-    Zero36 { len: u64 },
+    Zero8 { len: u8 },
+    Zero16 { len: u16 },
+    Zero32 { len: u32 },
+    Zero64 { len: u64 },
+
+    Unmapped8 { len: u8 },
+    Unmapped16 { len: u16 },
+    Unmapped32 { len: u32 },
+    Unmapped64 { len: u64 },
 
     Slab16 { slab: u16 },
     Slab32 { slab: u32 },
@@ -46,9 +52,10 @@ enum MapInstruction {
 #[repr(u8)]
 enum MapTag {
     TagRot,
-    TagZero12,
-    TagZero20,
-    TagZero36,
+
+    // These have the operand length packed in the low nibble
+    TagZero,
+    TagUnmapped,
 
     TagSlab16,
     TagSlab32,
@@ -87,22 +94,37 @@ impl MapInstruction {
                 assert!(*index < STACK_SIZE as u8);
                 w.write_u8(pack_tag(TagRot, *index))?;
             }
-            Zero12 { len } => {
-                assert!(*len != 0);
-                assert!((len & 0xf000) == 0);
-                w.write_u8(pack_tag(TagZero12, (*len & 0xf) as u8))?;
-                w.write_u8((len >> 4) as u8)?;
+            Zero8 { len } => {
+                w.write_u8(pack_tag(TagZero, 1))?;
+                w.write_u8(*len)?;
             }
-            Zero20 { len } => {
-                assert!(*len != 0);
-                assert!((len & 0xf00000) == 0);
-                w.write_u8(pack_tag(TagZero20, (*len & 0xf) as u8))?;
-                w.write_u16::<LittleEndian>((len >> 4) as u16)?;
+            Zero16 { len } => {
+                w.write_u8(pack_tag(TagZero, 2))?;
+                w.write_u16::<LittleEndian>(*len)?;
             }
-            Zero36 { len } => {
-                assert!(*len != 0);
-                w.write_u8(pack_tag(TagZero36, (*len & 0xf) as u8))?;
-                w.write_u32::<LittleEndian>((len >> 4) as u32)?;
+            Zero32 { len } => {
+                w.write_u8(pack_tag(TagZero, 4))?;
+                w.write_u32::<LittleEndian>(*len)?;
+            }
+            Zero64 { len } => {
+                w.write_u8(pack_tag(TagZero, 8))?;
+                w.write_u64::<LittleEndian>(*len)?;
+            }
+            Unmapped8 { len } => {
+                w.write_u8(pack_tag(TagUnmapped, 1))?;
+                w.write_u8(*len)?;
+            }
+            Unmapped16 { len } => {
+                w.write_u8(pack_tag(TagUnmapped, 2))?;
+                w.write_u16::<LittleEndian>(*len)?;
+            }
+            Unmapped32 { len } => {
+                w.write_u8(pack_tag(TagUnmapped, 4))?;
+                w.write_u32::<LittleEndian>(*len)?;
+            }
+            Unmapped64 { len } => {
+                w.write_u8(pack_tag(TagUnmapped, 8))?;
+                w.write_u64::<LittleEndian>(*len)?;
             }
             Slab16 { slab } => {
                 w.write_u8(pack_tag(TagSlab16, 0))?;
@@ -166,33 +188,50 @@ impl MapInstruction {
 
         let v = match tag {
             TagRot => (input, Rot { index: nibble }),
-            TagZero12 => {
-                let (input, b) = le_u8(input)?;
-                (
-                    input,
-                    Zero12 {
-                        len: ((b as u16) << 4) | (nibble as u16),
-                    },
-                )
-            }
-            TagZero20 => {
-                let (input, w) = le_u16(input)?;
-                (
-                    input,
-                    Zero20 {
-                        len: ((w as u32) << 4) | (nibble as u32),
-                    },
-                )
-            }
-            TagZero36 => {
-                let (input, w) = le_u32(input)?;
-                (
-                    input,
-                    Zero36 {
-                        len: ((w as u64) << 4) | (nibble as u64),
-                    },
-                )
-            }
+            TagZero => match nibble {
+                1 => {
+                    let (input, len) = le_u8(input)?;
+                    (input, Zero8 { len })
+                }
+                2 => {
+                    let (input, len) = le_u16(input)?;
+                    (input, Zero16 { len })
+                }
+                4 => {
+                    let (input, len) = le_u32(input)?;
+                    (input, Zero32 { len })
+                }
+                8 => {
+                    let (input, len) = le_u64(input)?;
+                    (input, Zero64 { len })
+                }
+                _ => {
+                    // Bad length for zero tag
+                    fail(input)?
+                }
+            },
+            TagUnmapped => match nibble {
+                1 => {
+                    let (input, len) = le_u8(input)?;
+                    (input, Unmapped8 { len })
+                }
+                2 => {
+                    let (input, len) = le_u16(input)?;
+                    (input, Unmapped16 { len })
+                }
+                4 => {
+                    let (input, len) = le_u32(input)?;
+                    (input, Unmapped32 { len })
+                }
+                8 => {
+                    let (input, len) = le_u64(input)?;
+                    (input, Unmapped64 { len })
+                }
+                _ => {
+                    // Bad length for unmapped tag
+                    fail(input)?
+                }
+            },
             TagSlab16 => {
                 let (input, w) = le_u16(input)?;
                 (input, Slab16 { slab: w })
@@ -270,6 +309,7 @@ impl MapInstruction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MapEntry {
     Zero { len: u64 },
+    Unmapped { len: u64 },
     Data { slab: u32, offset: u32 },
 }
 
@@ -318,7 +358,7 @@ impl VMState {
         }
 
         let mut min = u32::MAX;
-        let mut index = 0;   // default to the oldest stack entry
+        let mut index = 0; // default to the oldest stack entry
         for (i, r) in self.stack.iter().enumerate() {
             if r.slab <= slab {
                 let delta = slab - r.slab;
@@ -340,15 +380,16 @@ impl VMState {
     fn encode_zero(&mut self, len: u64, instrs: &mut IVec) -> Result<()> {
         use MapInstruction::*;
 
-        if len < 0x1000 {
-            instrs.push(Zero12 { len: len as u16 });
-        } else if len < 0x100000 {
-            instrs.push(Zero20 { len: len as u32 });
-        } else if len < 0x10000000 {
-            instrs.push(Zero36 { len });
+        if len < 0x10 {
+            instrs.push(Zero8 { len: len as u8 });
+        } else if len < 0x10000 {
+            instrs.push(Zero16 { len: len as u16 });
+        } else if len < 0x100000000 {
+            instrs.push(Zero32 { len: len as u32 });
         } else {
-            return Err(anyhow!("Zero len too long"));
+            instrs.push(Zero64 { len });
         }
+
         Ok(())
     }
 
@@ -357,7 +398,7 @@ impl VMState {
 
         self.select_slab(slab, instrs)?;
 
-	let top = self.top();
+        let top = self.top();
         if slab != top.slab {
             let delta: u32 = slab.wrapping_sub(top.slab);
             if delta < 0x10 {
@@ -381,7 +422,7 @@ impl VMState {
     fn encode_offset(&mut self, offset: u32, instrs: &mut IVec) -> Result<()> {
         use MapInstruction::*;
 
-	let top = self.top();
+        let top = self.top();
         if offset != top.offset {
             let delta: u32 = offset.wrapping_sub(top.offset);
             if delta < 0x10 {
@@ -410,7 +451,6 @@ impl VMState {
 
     fn encode_emit(&mut self, len: u32, instrs: &mut IVec) -> Result<()> {
         use MapInstruction::*;
-
 
         if len < 0x10 {
             instrs.push(Emit4 { len: len as u8 });
@@ -460,6 +500,9 @@ impl MappingBuilder {
                     self.vm_state.encode_run(&run, &mut instrs)?;
                 }
                 self.vm_state.encode_zero(*len, &mut instrs)?;
+            }
+            Unmapped { .. } => {
+                todo!();
             }
             Data { slab, offset } => {
                 let new_run = Run {
@@ -526,15 +569,33 @@ impl MappingUnpacker {
                 Rot { index } => {
                     self.vm_state.rot_stack(index as usize);
                 }
-                Zero12 { len } => {
+
+                Zero8 { len } => {
                     r.push(MapEntry::Zero { len: len as u64 });
                 }
-                Zero20 { len } => {
+                Zero16 { len } => {
                     r.push(MapEntry::Zero { len: len as u64 });
                 }
-                Zero36 { len } => {
+                Zero32 { len } => {
                     r.push(MapEntry::Zero { len: len as u64 });
                 }
+                Zero64 { len } => {
+                    r.push(MapEntry::Zero { len: len as u64 });
+                }
+
+                Unmapped8 { len } => {
+                    r.push(MapEntry::Unmapped { len: len as u64 });
+                }
+                Unmapped16 { len } => {
+                    r.push(MapEntry::Unmapped { len: len as u64 });
+                }
+                Unmapped32 { len } => {
+                    r.push(MapEntry::Unmapped { len: len as u64 });
+                }
+                Unmapped64 { len } => {
+                    r.push(MapEntry::Unmapped { len: len as u64 });
+                }
+
                 Slab16 { slab } => {
                     self.vm_state.top().slab = slab as u32;
                 }

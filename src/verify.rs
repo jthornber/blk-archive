@@ -100,8 +100,10 @@ impl Verifier {
     }
 
     fn verify_entry<R: Read>(&mut self, e: &MapEntry, r: &mut R) -> Result<()> {
+        use MapEntry::*;
+
         match e {
-            MapEntry::Zero { len } => {
+            Zero { len } => {
                 // FIXME: don't keep initialising this buffer,
                 // keep a suitable one around instead
                 let zeroes: Vec<u8> = vec![0; *len as usize];
@@ -110,7 +112,10 @@ impl Verifier {
                 assert_eq!(&actual, &zeroes);
                 self.total_verified += *len as u64;
             }
-            MapEntry::Data { slab, offset } => {
+            Unmapped { .. } => {
+                todo!();
+            }
+            Data { slab, offset } => {
                 let info = self.get_info(*slab)?;
                 let (expected_hash, offset, len) = info.offsets[*offset as usize];
                 let data_begin = offset as usize;
