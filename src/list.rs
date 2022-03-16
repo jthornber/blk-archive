@@ -51,9 +51,9 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     }
 
     for (id, time, cfg) in streams {
-        let source = Path::new(&cfg.source_path);
+        let source = cfg.name.unwrap();
         let size  = cfg.size;
-        report.info(&format!("{} {:width$} {} {}", id, size, &fmt_time(&time), source.file_name().unwrap().to_str().unwrap()));
+        report.info(&format!("{} {:width$} {} {}", id, size, &fmt_time(&time), &source));
     }
 
     Ok(())

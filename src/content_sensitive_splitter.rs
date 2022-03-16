@@ -151,7 +151,7 @@ impl ContentSensitiveSplitter {
 
 const DIGEST_LEN: usize = 32;
 impl Splitter for ContentSensitiveSplitter {
-    fn next(&mut self, buffer: Vec<u8>, handler: &mut dyn IoVecHandler) -> Result<()> {
+    fn next_data(&mut self, buffer: Vec<u8>, handler: &mut dyn IoVecHandler) -> Result<()> {
         self.blocks.push_back(buffer);
 
         while !self.eof() {
@@ -159,7 +159,7 @@ impl Splitter for ContentSensitiveSplitter {
             self.advance(); // So the current byte is included in the block
 
             if self.hit_break(self.div) && self.len > DIGEST_LEN * 2 {
-                handler.handle(&self.consume(self.len))?;
+                handler.handle_data(&self.consume(self.len))?;
                 self.drop_old_blocks();
             }
         }
@@ -167,12 +167,20 @@ impl Splitter for ContentSensitiveSplitter {
         Ok(())
     }
 
-    fn complete(mut self, handler: &mut dyn IoVecHandler) -> Result<()> {
+    fn next_break(&mut self, len: u64, handler: &mut dyn IoVecHandler) -> Result<()> {
         let iov = self.consume_all();
         if !iov.is_empty() {
-            handler.handle(&iov)?;
+            handler.handle_data(&iov)?;
+            if len > 0 {
+                handler.handle_gap(len)?;
+            }
             self.drop_old_blocks();
         }
+        Ok(())
+    }
+
+    fn complete(mut self, handler: &mut dyn IoVecHandler) -> Result<()> {
+        self.next_break(0, handler)?;
         handler.complete()?;
         Ok(())
     }
@@ -241,12 +249,16 @@ mod splitter_tests {
     }
 
     impl<'a, W: Write> IoVecHandler for CatHandler<'a, W> {
-        fn handle(&mut self, iov: &IoVec) -> Result<()> {
+        fn handle_data(&mut self, iov: &IoVec) -> Result<()> {
             for v in iov {
                 println!("{:?}", v);
                 self.output.write(v)?;
             }
 
+            Ok(())
+        }
+
+        fn handle_gap(&mut self, len: u64) -> Result<()> {
             Ok(())
         }
 
@@ -321,7 +333,7 @@ mod splitter_tests {
     }
 
     impl IoVecHandler for TestHandler {
-        fn handle(&mut self, iov: &IoVec) -> Result<()> {
+        fn handle_data(&mut self, iov: &IoVec) -> Result<()> {
             self.nr_chunks += 1;
 
             let mut len = 0;
@@ -339,6 +351,10 @@ mod splitter_tests {
             e.hits += 1;
             e.len = len;
 
+            Ok(())
+        }
+
+        fn handle_gap(&mut self, len: u64) -> Result<()> {
             Ok(())
         }
 
@@ -362,10 +378,10 @@ mod splitter_tests {
             if n == 0 {
                 break;
             } else if n == BUFFER_SIZE {
-                splitter.next(buffer, handler).expect("split next failed");
+                splitter.next_data(buffer, handler).expect("split next failed");
             } else {
                 buffer.truncate(n);
-                splitter.next(buffer, handler).expect("split next failed");
+                splitter.next_data(buffer, handler).expect("split next failed");
             }
         }
 

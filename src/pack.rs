@@ -7,7 +7,6 @@ use io::Write;
 use nom::{bytes::complete::*, multi::*, number::complete::*, IResult};
 use rand::prelude::*;
 use rand_chacha::ChaCha20Rng;
-use roaring::*;
 use size_display::Size;
 use std::collections::BTreeMap;
 use std::env;
@@ -25,9 +24,11 @@ use crate::content_sensitive_splitter::*;
 use crate::cuckoo_filter::*;
 use crate::hash::*;
 use crate::iovec::*;
+use crate::run_iter::*;
 use crate::slab::*;
 use crate::splitter::*;
 use crate::stream::*;
+use crate::thin_metadata::*;
 
 //-----------------------------------------
 
@@ -75,6 +76,8 @@ struct DedupHandler {
     mapping_builder: MappingBuilder,
 
     data_written: u64,
+    mapped_size: u64,
+    zeroes_size: u64,
 }
 
 impl DedupHandler {
@@ -147,6 +150,8 @@ impl DedupHandler {
 
             // Stats
             data_written: 0,
+            mapped_size: 0,
+            zeroes_size: 0,
         })
     }
 
@@ -215,11 +220,13 @@ impl DedupHandler {
 }
 
 impl IoVecHandler for DedupHandler {
-    fn handle(&mut self, iov: &IoVec) -> Result<()> {
+    fn handle_data(&mut self, iov: &IoVec) -> Result<()> {
         self.nr_chunks += 1;
         let (len, zeroes) = all_zeroes(iov);
+        self.mapped_size += len;
 
         if zeroes {
+            self.zeroes_size += len;
             self.add_stream_entry(&MapEntry::Zero { len })?;
             self.maybe_complete_stream()?;
         } else {
@@ -246,6 +253,13 @@ impl IoVecHandler for DedupHandler {
         Ok(())
     }
 
+    fn handle_gap(&mut self, len: u64) -> Result<()> {
+        self.add_stream_entry(&MapEntry::Unmapped { len })?;
+        self.maybe_complete_stream()?;
+
+        Ok(())
+    }
+
     fn complete(&mut self) -> Result<()> {
         let mut mapping_builder = MappingBuilder::default();
         std::mem::swap(&mut mapping_builder, &mut self.mapping_builder);
@@ -259,14 +273,13 @@ impl IoVecHandler for DedupHandler {
         self.data_file.close()?;
         self.stream_file.close()?;
 
-        eprintln!("{} hash entries", self.seen.len());
-
         Ok(())
     }
 }
 
 //-----------------------------------------
 
+#[derive(Debug)]
 pub enum Chunk {
     Mapped(Vec<u8>),
     Unmapped(u64),
@@ -327,89 +340,73 @@ impl Iterator for FileChunker {
 
 //-----------------------------------------
 
-struct ThinChunker {
+struct ThinChunker<'a> {
     input: File,
-
-    input_blocks: u64,
+    run_iter: RunIter<'a>,
     data_block_size: u64,
-    current_block: u64,
 
     max_read_size: usize,
-    provisioned_blocks: RoaringBitmap,
-    current_run: Option<Range<u64>>,
-    current_pos: u64,
+    current_run: Option<(bool, Range<u64>)>,
 }
 
-impl ThinChunker {
-    fn next_run_blocks(&mut self) -> Option<Range<u64>> {
-        if self.current_block >= self.input_blocks {
-            None
-        } else {
-            // FIXME: roaring only supports u32 as index
-            while !self.provisioned_blocks.contains(self.current_block as u32) {
-                self.current_block += 1;
-                if self.current_block >= self.input_blocks {
-                    return None;
-                }
-            }
-            let start = self.current_block;
+impl<'a> ThinChunker<'a> {
+    fn new(input: File, run_iter: RunIter<'a>, data_block_size: u64) -> Self {
+        Self {
+            input,
+            run_iter,
+            data_block_size,
 
-            self.current_block += 1;
-            while self.provisioned_blocks.contains(self.current_block as u32)
-                && self.current_block < self.input_blocks
-            {
-                self.current_block += 1;
-            }
-            let end = self.current_block;
-
-            Some(start..end)
+            max_read_size: 16 * 1024 * 1024,
+            current_run: None,
         }
     }
 
-    fn next_run_bytes(&mut self) -> Option<Range<u64>> {
-        self.next_run_blocks()
-            .map(|r| (r.start * self.data_block_size)..(r.end * self.data_block_size))
+    fn next_run_bytes(&mut self) -> Option<(bool, Range<u64>)> {
+        self.run_iter.next().map(|(b, Range { start, end })| {
+            (
+                b,
+                Range {
+                    start: start as u64 * self.data_block_size,
+                    end: end as u64 * self.data_block_size,
+                },
+            )
+        })
     }
 
     fn next_chunk(&mut self) -> Result<Option<Chunk>> {
         let mut run = None;
         std::mem::swap(&mut run, &mut self.current_run);
-        if let Some(run) = run {
-            let run_len = run.end - run.start;
-            if run_len <= self.max_read_size as u64 {
-                let mut buf = vec![0; run_len as usize];
-                self.input.read_exact_at(&mut buf, run.start)?;
-                self.current_pos = run.end;
-                Ok(Some(Chunk::Mapped(buf)))
-            } else {
-                let mut buf = vec![0; self.max_read_size];
-                self.input.read_exact_at(&mut buf, run.start)?;
-                self.current_run = Some((run.start + buf.len() as u64)..run.end);
-                Ok(Some(Chunk::Mapped(buf)))
+
+        match run.or_else(|| self.next_run_bytes()) {
+            Some((false, run)) => Ok(Some(Chunk::Unmapped(run.end - run.start))),
+            Some((true, run)) => {
+                let run_len = run.end - run.start;
+                if run_len <= self.max_read_size as u64 {
+                    let mut buf = vec![0; run_len as usize];
+                    self.input.read_exact_at(&mut buf, run.start)?;
+                    Ok(Some(Chunk::Mapped(buf)))
+                } else {
+                    let mut buf = vec![0; self.max_read_size];
+                    self.input.read_exact_at(&mut buf, run.start)?;
+                    self.current_run = Some((true, (run.start + buf.len() as u64)..run.end));
+                    Ok(Some(Chunk::Mapped(buf)))
+                }
             }
-        } else {
-            if let Some(run) = self.next_run_bytes() {
-                let start = run.start;
-                let r = Ok(Some(Chunk::Unmapped(run.start - self.current_pos)));
-                self.current_run = Some(run);
-                self.current_pos = start;
-                r
-            } else if self.current_pos < (self.input_blocks * self.data_block_size) {
-                let r = Ok(Some(Chunk::Unmapped((self.input_blocks * self.data_block_size) - self.current_pos)));
-                self.current_pos = self.input_blocks * self.data_block_size;
-                r
-            } else {
-                Ok(None)
-            }
+            None => Ok(None),
         }
     }
 }
 
-impl Iterator for ThinChunker {
+impl<'a> Iterator for ThinChunker<'a> {
     type Item = Result<Chunk>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        todo!()
+        let mc = self.next_chunk();
+        match mc {
+            Err(e) => Some(Err(e)),
+            Ok(Some(c)) => Some(Ok(c)),
+            Ok(None) => None,
+        }
     }
 }
 
@@ -434,7 +431,7 @@ fn new_stream_path_(rng: &mut ChaCha20Rng) -> Result<Option<(String, PathBuf)>> 
 fn new_stream_path() -> Result<(String, PathBuf)> {
     let mut rng = ChaCha20Rng::from_entropy();
     loop {
-        if let Some(r)= new_stream_path_(&mut rng)? {
+        if let Some(r) = new_stream_path_(&mut rng)? {
             return Ok(r);
         }
     }
@@ -445,8 +442,10 @@ fn new_stream_path() -> Result<(String, PathBuf)> {
 pub fn pack_<'a, I>(
     report: &Arc<Report>,
     input_path: &str,
+    stream_name: &str,
     it: I,
     input_size: u64,
+    mapped_size: u64,
     block_size: usize,
 ) -> Result<()>
 where
@@ -481,12 +480,12 @@ where
         match chunk? {
             Chunk::Mapped(buffer) => {
                 let len = buffer.len();
-                splitter.next(buffer, &mut handler)?;
+                splitter.next_data(buffer, &mut handler)?;
                 total_read += len as u64;
-                report.progress(((100 * total_read) / input_size) as u8);
+                report.progress(((100 * total_read) / mapped_size) as u8);
             }
-            Chunk::Unmapped(_) => {
-                todo!();
+            Chunk::Unmapped(len) => {
+                splitter.next_break(len, &mut handler)?;
             }
         }
     }
@@ -498,10 +497,15 @@ where
     let elapsed = elapsed.num_milliseconds() as f64 / 1000.0;
 
     report.info(&format!("stream id        : {}", stream_id));
-    report.info(&format!("file size        : {:.2}", Size(total_read)));
+    report.info(&format!("file size        : {:.2}", Size(input_size)));
+    report.info(&format!("mapped size      : {:.2}", Size(mapped_size)));
+    report.info(&format!(
+        "zeroes size      : {:.2}",
+        Size(handler.zeroes_size)
+    ));
     report.info(&format!(
         "duplicate data   : {:.2}",
-        Size(total_read - handler.data_written)
+        Size(total_read - handler.data_written - handler.zeroes_size)
     ));
 
     let data_written = handler.data_file.get_file_size() - data_size;
@@ -512,8 +516,8 @@ where
     report.info(&format!("hashes written   : {:.2}", Size(hashes_written)));
     report.info(&format!("stream written   : {:.2}", Size(stream_written)));
 
-    let compression = ((data_written + hashes_written + stream_written) * 100) / total_read;
-    report.info(&format!("compression      : {:.2}%", 100 - compression));
+    let compression = ((data_written + hashes_written + stream_written) * 100) as f64 / total_read as f64;
+    report.info(&format!("compression      : {:.2}%", compression));
     report.info(&format!(
         "speed            : {:.2}/s",
         Size((total_read as f64 / elapsed) as u64)
@@ -521,7 +525,7 @@ where
 
     // write the stream config
     let cfg = config::StreamConfig {
-        name: None,
+        name: Some(stream_name.to_string()),
         source_path: input_path.to_string(),
         pack_time: config::now(),
         size: input_size,
@@ -532,7 +536,7 @@ where
     Ok(())
 }
 
-pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Result<()> {
+pub fn pack(report: &Arc<Report>, input_file: &Path, input_name: &str, block_size: usize) -> Result<()> {
     let input = OpenOptions::new()
         .read(true)
         .write(false)
@@ -544,7 +548,9 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, block_size: usize) -> Resul
     pack_(
         report,
         &input_file.display().to_string(),
+        &input_name,
         input_iter,
+        input_size,
         input_size,
         block_size,
     )
@@ -562,22 +568,51 @@ fn mk_report() -> Arc<Report> {
 
 pub fn run(matches: &ArgMatches) -> Result<()> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
+    let input_file = Path::new(matches.value_of("INPUT").unwrap());
+    let input_name = input_file.file_name().unwrap();
     let input_file = Path::new(matches.value_of("INPUT").unwrap()).canonicalize()?;
     let report = mk_report();
 
     env::set_current_dir(&archive_dir)?;
     let config = config::read_config(".")?;
-    pack(&report, &input_file, config.block_size)
+    pack(&report, &input_file, &input_name.to_str().unwrap(), config.block_size)
 }
 
 pub fn run_thin(matches: &ArgMatches) -> Result<()> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
-    let input_file = Path::new(matches.value_of("INPUT").unwrap()).canonicalize()?;
+    let input_file = Path::new(matches.value_of("INPUT").unwrap());
+    let input_name = input_file.file_name().unwrap();
+    let input_file = input_file.canonicalize()?;
     let report = mk_report();
 
     env::set_current_dir(&archive_dir)?;
     let config = config::read_config(".")?;
-    pack(&report, &input_file, config.block_size)
+
+    let mappings = read_thin_mappings(input_file.clone())?;
+
+    let input = OpenOptions::new()
+        .read(true)
+        .write(false)
+        .open(input_file.clone())
+        .context("couldn't open input file/dev")?;
+    let input_size = thinp::file_utils::file_size(&input_file)?;
+    let mapped_size =
+        mappings.provisioned_blocks.len() as u64 * mappings.data_block_size as u64 * 512;
+    let run_iter = RunIter::new(
+        &mappings.provisioned_blocks,
+        (input_size / (mappings.data_block_size as u64 * 512)) as u32,
+    );
+    let input_iter = ThinChunker::new(input, run_iter, mappings.data_block_size as u64 * 512);
+    report.set_title(&format!("Packing {} ...", input_file.display()));
+    pack_(
+        &report,
+        &input_file.display().to_string(),
+        &input_name.to_str().unwrap(),
+        input_iter,
+        input_size,
+        mapped_size,
+        config.block_size,
+    )
 }
 
 //-----------------------------------------

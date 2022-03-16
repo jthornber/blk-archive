@@ -156,7 +156,7 @@ fn main_() -> Result<()> {
             pack::run(sub_matches)?;
         }
         Some(("pack-thin", sub_matches)) => {
-            pack::run(sub_matches)?;
+            pack::run_thin(sub_matches)?;
         }
         Some(("unpack", sub_matches)) => {
             unpack::run(sub_matches)?;

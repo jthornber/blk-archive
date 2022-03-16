@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use clap::ArgMatches;
-use io::Write;
+use io::{Seek, Write};
 use nom::{bytes::complete::*, multi::*, number::complete::*, IResult};
 use std::collections::BTreeMap;
 use std::env;
@@ -97,30 +97,34 @@ impl Unpacker {
         }
     }
 
-    fn unpack_entry<W: Write>(&mut self, e: &MapEntry, w: &mut W) -> Result<()> {
+    fn unpack_entry<W: Seek + Write>(&mut self, e: &MapEntry, w: &mut W) -> Result<()> {
         use MapEntry::*;
 
         match e {
             Zero { len } => {
-                // FIXME: don't keep initialising this buffer,
-                // keep a suitable one around instead
-                let zeroes: Vec<u8> = vec![0; *len as usize];
-                w.write_all(&zeroes)?;
+                // len may be very big, so we have to be prepared to write in chunks.
+                // FIXME: if we're writing to a file would this be zeroes anyway?  fallocate?
+                const MAX_BUFFER: u64 = 16 * 1024 * 1024;
+                let mut written = 0;
+                while written < *len {
+                    let write_len = std::cmp::min(*len - written, MAX_BUFFER);
+
+                    // FIXME: don't keep initialising this buffer,
+                    // keep a suitable one around instead
+                    let zeroes: Vec<u8> = vec![0; write_len as usize];
+                    w.write_all(&zeroes)?;
+                    written += write_len;
+                }
             }
-            Unmapped { .. } => {
-                todo!();
+            Unmapped { len } => {
+                w.seek(std::io::SeekFrom::Current(*len as i64))?;
             }
             Data { slab, offset } => {
                 let info = self.get_info(*slab)?;
-                let (expected_hash, offset, len) = info.offsets[*offset as usize];
+                let (_expected_hash, offset, len) = info.offsets[*offset as usize];
                 let data_begin = offset as usize;
                 let data_end = data_begin + len as usize;
                 assert!(data_end <= info.data.len());
-
-                // FIXME: make this paranioa check optional
-                // Verify hash
-                let actual_hash = hash_256(&info.data[data_begin..data_end]);
-                assert_eq!(actual_hash, expected_hash);
 
                 // Copy data
                 w.write_all(&info.data[data_begin..data_end])?;
@@ -130,7 +134,7 @@ impl Unpacker {
         Ok(())
     }
 
-    pub fn unpack<W: Write>(&mut self, report: &Arc<Report>, w: &mut W) -> Result<()> {
+    pub fn unpack<W: Seek + Write>(&mut self, report: &Arc<Report>, w: &mut W) -> Result<()> {
         report.progress(0);
 
         let nr_slabs = self.stream_file.get_nr_slabs();
@@ -154,6 +158,7 @@ impl Unpacker {
                 }
             }
         }
+        report.progress(100);
 
         Ok(())
     }

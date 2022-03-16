@@ -393,6 +393,22 @@ impl VMState {
         Ok(())
     }
 
+    fn encode_unmapped(&mut self, len: u64, instrs: &mut IVec) -> Result<()> {
+        use MapInstruction::*;
+
+        if len < 0x10 {
+            instrs.push(Unmapped8 { len: len as u8 });
+        } else if len < 0x10000 {
+            instrs.push(Unmapped16 { len: len as u16 });
+        } else if len < 0x100000000 {
+            instrs.push(Unmapped32 { len: len as u32 });
+        } else {
+            instrs.push(Unmapped64 { len });
+        }
+
+        Ok(())
+    }
+
     fn encode_slab(&mut self, slab: u32, instrs: &mut IVec) -> Result<()> {
         use MapInstruction::*;
 
@@ -501,8 +517,14 @@ impl MappingBuilder {
                 }
                 self.vm_state.encode_zero(*len, &mut instrs)?;
             }
-            Unmapped { .. } => {
-                todo!();
+            Unmapped { len } => {
+                // FIXME: factor out common code
+                let mut run = None;
+                std::mem::swap(&mut run, &mut self.run);
+                if let Some(run) = run {
+                    self.vm_state.encode_run(&run, &mut instrs)?;
+                }
+                self.vm_state.encode_unmapped(*len, &mut instrs)?;
             }
             Data { slab, offset } => {
                 let new_run = Run {
@@ -654,7 +676,7 @@ pub fn unpack(buf: &[u8]) -> Result<Vec<MapEntry>> {
 mod stream_tests {
     use super::*;
 
-    fn mk_run(slab: u64, b: u32, e: u32) -> Vec<MapEntry> {
+    fn mk_run(slab: u32, b: u32, e: u32) -> Vec<MapEntry> {
         assert!((e - b) < u16::MAX as u32);
         let mut r = Vec::new();
         for i in b..e {

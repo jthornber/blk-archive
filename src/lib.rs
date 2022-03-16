@@ -8,6 +8,7 @@ pub mod iovec;
 pub mod list;
 pub mod pack;
 pub mod rolling_hash;
+pub mod run_iter;
 pub mod slab;
 pub mod splitter;
 pub mod stream;
