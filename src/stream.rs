@@ -17,6 +17,7 @@ use std::io;
 #[derive(Copy, Clone, Debug)]
 enum MapInstruction {
     Rot { index: u8 },
+    Dup { index: u8 },
 
     Zero8 { len: u8 },
     Zero16 { len: u16 },
@@ -52,6 +53,7 @@ enum MapInstruction {
 #[repr(u8)]
 enum MapTag {
     TagRot,
+    TagDup,
 
     // These have the operand length packed in the low nibble
     TagZero,
@@ -93,6 +95,10 @@ impl MapInstruction {
             Rot { index } => {
                 assert!(*index < STACK_SIZE as u8);
                 w.write_u8(pack_tag(TagRot, *index))?;
+            }
+            Dup { index } => {
+                assert!(*index < STACK_SIZE as u8);
+                w.write_u8(pack_tag(TagDup, *index))?;
             }
             Zero8 { len } => {
                 w.write_u8(pack_tag(TagZero, 1))?;
@@ -188,6 +194,7 @@ impl MapInstruction {
 
         let v = match tag {
             TagRot => (input, Rot { index: nibble }),
+            TagDup => (input, Dup { index: nibble }),
             TagZero => match nibble {
                 1 => {
                     let (input, len) = le_u8(input)?;
@@ -347,16 +354,19 @@ impl VMState {
         self.stack[STACK_SIZE - 1] = tmp;
     }
 
+    // FIXME: slow
+    fn dup(&mut self, index: usize) {
+        let tmp = self.stack[index];
+        for i in 0..(STACK_SIZE - 1) {
+            self.stack[i] = self.stack[i + 1];
+        }
+        self.stack[STACK_SIZE - 1] = tmp;
+    }
+
     // Finds the register with the nearest, but lower slab
     // FIXME: slow
-    fn select_slab(&mut self, slab: u32, instrs: &mut IVec) -> Result<()> {
-        use MapInstruction::*;
-
-        if self.top().slab == slab {
-            // The common case
-            return Ok(());
-        }
-
+    // FIXME: consider offset
+    fn nearest_register(&mut self, slab: u32, _offset: u32) -> usize {
         let mut min = u32::MAX;
         let mut index = 0; // default to the oldest stack entry
         for (i, r) in self.stack.iter().enumerate() {
@@ -369,9 +379,28 @@ impl VMState {
             }
         }
 
-        if index != STACK_SIZE - 1 {
-            instrs.push(Rot { index: index as u8 });
-            self.rot_stack(index);
+        index
+    }
+
+    fn select_register(&mut self, slab: u32, offset: u32, instrs: &mut IVec) -> Result<()> {
+        use MapInstruction::*;
+
+        let top = self.top();
+        if top.slab == slab && top.offset == offset {
+            // Nothing to be done
+            return Ok(());
+        }
+
+        let index = self.nearest_register(slab, offset);
+        let reg = &self.stack[index];
+        if reg.slab == slab {
+            if index != STACK_SIZE - 1 {
+                instrs.push(Rot { index: index as u8 });
+                self.rot_stack(index);
+            }
+        } else {
+            instrs.push(Dup { index: index as u8 });
+            self.dup(index);
         }
 
         Ok(())
@@ -411,8 +440,6 @@ impl VMState {
 
     fn encode_slab(&mut self, slab: u32, instrs: &mut IVec) -> Result<()> {
         use MapInstruction::*;
-
-        self.select_slab(slab, instrs)?;
 
         let top = self.top();
         if slab != top.slab {
@@ -475,12 +502,15 @@ impl VMState {
         } else if len < 0x100000 {
             instrs.push(Emit20 { len });
         }
+
         let top = self.top();
         top.offset += len;
+
         Ok(())
     }
 
     fn encode_run(&mut self, run: &Run, instrs: &mut IVec) -> Result<()> {
+        self.select_register(run.slab, run.offset, instrs)?;
         self.encode_slab(run.slab, instrs)?;
         self.encode_offset(run.offset, instrs)?;
         self.encode_emit(run.len as u32, instrs)?;
@@ -590,6 +620,9 @@ impl MappingUnpacker {
             match instr {
                 Rot { index } => {
                     self.vm_state.rot_stack(index as usize);
+                }
+                Dup { index } => {
+                    self.vm_state.dup(index as usize);
                 }
 
                 Zero8 { len } => {
