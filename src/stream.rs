@@ -723,9 +723,36 @@ fn unpack_instructions(buf: &[u8]) -> Result<Vec<MapInstruction>> {
 
 //-----------------------------------------
 
+#[derive(Debug, Default)]
+struct Stats {
+    rot: u64,
+    dup: u64,
+    zero8: u64,
+    zero16: u64,
+    zero32: u64,
+    zero64: u64,
+    unmapped8: u64,
+    unmapped16: u64,
+    unmapped32: u64,
+    unmapped64: u64,
+    slab16: u64,
+    slab32: u64,
+    slab_delta4: u64,
+    slab_delta12: u64,
+    offset4: u64,
+    offset12: u64,
+    offset20: u64,
+    offset_delta4: u64,
+    offset_delta12: u64,
+    emit4: u64,
+    emit12: u64,
+    emit20: u64,
+}
+
 pub struct Dumper {
     stream_file: SlabFile,
     vm_state: VMState,
+    stats: Stats,
 }
 
 impl Dumper {
@@ -737,6 +764,7 @@ impl Dumper {
         Ok(Self {
             stream_file,
             vm_state: VMState::default(),
+            stats: Stats::default(),
         })
     }
 
@@ -745,57 +773,163 @@ impl Dumper {
 
         match instr {
             Rot { index } => {
+                self.stats.rot += 1;
                 self.vm_state.rot_stack(*index as usize);
             }
             Dup { index } => {
+                self.stats.dup += 1;
                 self.vm_state.dup(*index as usize);
             }
 
-            Zero8 { .. } => {}
-            Zero16 { .. } => {}
-            Zero32 { .. } => {}
-            Zero64 { .. } => {}
+            Zero8 { .. } => {
+                self.stats.zero8 += 1;
+            }
+            Zero16 { .. } => {
+                self.stats.zero16 += 1;
+            }
+            Zero32 { .. } => {
+                self.stats.zero32 += 1;
+            }
+            Zero64 { .. } => {
+                self.stats.zero64 += 1;
+            }
 
-            Unmapped8 { .. } => {}
-            Unmapped16 { .. } => {}
-            Unmapped32 { .. } => {}
-            Unmapped64 { .. } => {}
+            Unmapped8 { .. } => {
+                self.stats.unmapped8 += 1;
+            }
+            Unmapped16 { .. } => {
+                self.stats.unmapped16 += 1;
+            }
+            Unmapped32 { .. } => {
+                self.stats.unmapped32 += 1;
+            }
+            Unmapped64 { .. } => {
+                self.stats.unmapped64 += 1;
+            }
 
             Slab16 { slab } => {
+                self.stats.slab16 += 1;
                 self.vm_state.top().slab = *slab as u32;
             }
             Slab32 { slab } => {
+                self.stats.slab32 += 1;
                 self.vm_state.top().slab = *slab as u32;
             }
             SlabDelta4 { delta } => {
+                self.stats.slab_delta4 += 1;
                 self.vm_state.top().slab += *delta as u32;
             }
             SlabDelta12 { delta } => {
+                self.stats.slab_delta12 += 1;
                 self.vm_state.top().slab += *delta as u32;
             }
             Offset4 { offset } => {
+                self.stats.offset4 += 1;
                 self.vm_state.top().offset = *offset as u32;
             }
             Offset12 { offset } => {
+                self.stats.offset12 += 1;
                 self.vm_state.top().offset = *offset as u32;
             }
             Offset20 { offset } => {
+                self.stats.offset20 += 1;
                 self.vm_state.top().offset = *offset as u32;
             }
             OffsetDelta4 { delta } => {
+                self.stats.offset_delta4 += 1;
                 self.vm_state.top().offset += *delta as u32;
             }
             OffsetDelta12 { delta } => {
+                self.stats.offset_delta12 += 1;
                 self.vm_state.top().offset += *delta as u32;
             }
             Emit4 { len } => {
+                self.stats.emit4 += 1;
                 self.vm_state.top().offset += *len as u32;
             }
             Emit12 { len } => {
+                self.stats.emit12 += 1;
                 self.vm_state.top().offset += *len as u32;
             }
             Emit20 { len } => {
+                self.stats.emit20 += 1;
                 self.vm_state.top().offset += *len as u32;
+            }
+        }
+    }
+
+    fn pp_instr(&self, instr: &MapInstruction) -> String {
+        use MapInstruction::*;
+
+        match instr {
+            Rot { index } => {
+                format!("rot {}", index)
+            }
+            Dup { index } => {
+                format!("dup {}", index)
+            }
+
+            Zero8 { len } => {
+                format!("zero {}", len)
+            }
+            Zero16 { len } => {
+                format!("zero {}", len)
+            }
+            Zero32 { len } => {
+                format!("zero {}", len)
+            }
+            Zero64 { len } => {
+                format!("zero {}", len)
+            }
+
+            Unmapped8 { len } => {
+                format!("unmap {}", len)
+            }
+            Unmapped16 { len } => {
+                format!("unmap {}", len)
+            }
+            Unmapped32 { len } => {
+                format!("unmap {}", len)
+            }
+            Unmapped64 { len } => {
+                format!("unmap {}", len)
+            }
+
+            Slab16 { slab } => {
+                format!("s.set {}", slab)
+            }
+            Slab32 { slab } => {
+                format!("s.set {}", slab)
+            }
+            SlabDelta4 { delta } => {
+                format!("s.inc {}", delta)
+            }
+            SlabDelta12 { delta } => {
+                format!("s.inc {}", delta)
+            }
+            Offset4 { offset } => {
+                format!("o.set {}", offset)
+            }
+            Offset12 { offset } => {
+                format!("o.set {}", offset)
+            }
+            Offset20 { offset } => {
+                format!("o.set {}", offset)
+            }
+            OffsetDelta4 { delta } => {
+                format!("o.inc {}", delta)
+            }
+            OffsetDelta12 { delta } => {
+                format!("o.inc {}", delta)
+            }
+            Emit4 { len } => {
+                format!("emit {}", len)
+            }
+            Emit12 { len } => {
+                format!("emit {}", len)
+            }
+            Emit20 { len } => {
+                format!("emit {}", len)
             }
         }
     }
@@ -806,7 +940,7 @@ impl Dumper {
         let mut buf = String::new();
 
         for i in 0..STACK_SIZE {
-            let reg = self.vm_state.stack[i];
+            let reg = self.vm_state.stack[STACK_SIZE - i - 1];
             write!(&mut buf, "{}:{} ", reg.slab, reg.offset)?;
         }
 
@@ -823,8 +957,39 @@ impl Dumper {
             for (i, e) in entries.iter().enumerate() {
                 self.exec(e);
                 let stack = self.format_stack()?;
-                println!("{}: {:?} {}", i, e, &stack);
+                println!("{}: {:20}{:20}", i, self.pp_instr(e), &stack);
             }
+        }
+
+        let mut stats = Vec::new();
+        stats.push(("rot", self.stats.rot));
+        stats.push(("dup", self.stats.dup));
+        stats.push(("zero8", self.stats.zero8));
+        stats.push(("zero16", self.stats.zero16));
+        stats.push(("zero32", self.stats.zero32));
+        stats.push(("zero64", self.stats.zero64));
+        stats.push(("unmapped8", self.stats.unmapped8));
+        stats.push(("unmapped16", self.stats.unmapped16));
+        stats.push(("unmapped32", self.stats.unmapped32));
+        stats.push(("unmapped64", self.stats.unmapped64));
+        stats.push(("slab16", self.stats.slab16));
+        stats.push(("slab32", self.stats.slab32));
+        stats.push(("slab_delta4", self.stats.slab_delta4));
+        stats.push(("slab_delta12", self.stats.slab_delta12));
+        stats.push(("offset4", self.stats.offset4));
+        stats.push(("offset12", self.stats.offset12));
+        stats.push(("offset20", self.stats.offset20));
+        stats.push(("offset_delta4", self.stats.offset_delta4));
+        stats.push(("offset_delta12", self.stats.offset_delta12));
+        stats.push(("emit4", self.stats.emit4));
+        stats.push(("emit12", self.stats.emit12));
+        stats.push(("emit20", self.stats.emit20));
+
+        stats.sort_by(|l, r| r.1.cmp(&l.1));
+
+        println!("Instruction frequencies:");
+        for (instr, count) in stats {
+            println!("    {:>15} {:<10}", instr, count);
         }
 
         Ok(())
