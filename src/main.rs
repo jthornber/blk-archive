@@ -7,6 +7,7 @@ use dm_archive::list;
 use dm_archive::pack;
 use dm_archive::unpack;
 use dm_archive::verify;
+use dm_archive::dump_stream;
 
 //-----------------------
 
@@ -53,7 +54,7 @@ fn main_() -> Result<()> {
                         .short('a')
                         .value_name("ARCHIVE")
                         .takes_value(true),
-                )
+                ),
         )
         .subcommand(
             Command::new("pack-thin")
@@ -73,7 +74,7 @@ fn main_() -> Result<()> {
                         .short('a')
                         .value_name("ARCHIVE")
                         .takes_value(true),
-                )
+                ),
         )
         .subcommand(
             Command::new("unpack")
@@ -134,6 +135,28 @@ fn main_() -> Result<()> {
                 ),
         )
         .subcommand(
+            Command::new("dump-stream")
+                .about("dumps stream instructions (development tool)")
+                .arg(
+                    Arg::new("ARCHIVE")
+                        .help("Specify archive directory")
+                        .required(true)
+                        .long("archive")
+                        .short('a')
+                        .value_name("ARCHIVE")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::new("STREAM")
+                        .help("Specify an archived stream to dump")
+                        .required(true)
+                        .long("stream")
+                        .short('s')
+                        .value_name("STREAM")
+                        .takes_value(true),
+                ),
+        )
+        .subcommand(
             Command::new("list")
                 .about("lists the streams in the archive")
                 .arg(
@@ -166,6 +189,9 @@ fn main_() -> Result<()> {
         }
         Some(("list", sub_matches)) => {
             list::run(sub_matches)?;
+        }
+        Some(("dump-stream", sub_matches)) => {
+            dump_stream::run(sub_matches)?;
         }
         _ => unreachable!("Exhausted list of subcommands and subcommand_required prevents 'None'"),
     }

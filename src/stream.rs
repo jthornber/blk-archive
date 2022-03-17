@@ -1,10 +1,12 @@
 use anyhow::{anyhow, Result};
 use byteorder::{LittleEndian, WriteBytesExt};
-use io::Write;
 use nom::{combinator::fail, multi::*, number::complete::*, IResult};
 use num_enum::TryFromPrimitive;
 use std::convert::TryFrom;
-use std::io;
+use std::io::Write;
+use std::path::PathBuf;
+
+use crate::slab::*;
 
 //-----------------------------------------
 
@@ -333,6 +335,18 @@ struct Register {
     offset: u32,
 }
 
+impl Register {
+    fn leq(&self, rhs: &Self) -> bool {
+        if self.slab < rhs.slab {
+            true
+        } else if self.slab == rhs.slab && self.offset <= rhs.offset {
+            true
+        } else {
+            false
+        }
+    }
+}
+
 const STACK_SIZE: usize = 16;
 
 #[derive(Default)]
@@ -366,16 +380,14 @@ impl VMState {
     // Finds the register with the nearest, but lower slab
     // FIXME: slow
     // FIXME: consider offset
-    fn nearest_register(&mut self, slab: u32, _offset: u32) -> usize {
-        let mut min = u32::MAX;
+    fn nearest_register(&mut self, slab: u32, offset: u32) -> usize {
+        let target = Register { slab, offset };
         let mut index = 0; // default to the oldest stack entry
-        for (i, r) in self.stack.iter().enumerate() {
-            if r.slab <= slab {
-                let delta = slab - r.slab;
-                if delta < min {
-                    min = delta;
-                    index = i;
-                }
+        let mut min = self.stack[index].clone();
+        for (i, r) in self.stack.iter().enumerate().skip(1) {
+            if r.leq(&target) && min.leq(r) {
+                min = r.clone();
+                index = i;
             }
         }
 
@@ -701,6 +713,122 @@ pub fn unpack(buf: &[u8]) -> Result<Vec<MapEntry>> {
     let mut unpacker = MappingUnpacker::default();
     let r = unpacker.unpack(buf)?;
     Ok(r)
+}
+
+fn unpack_instructions(buf: &[u8]) -> Result<Vec<MapInstruction>> {
+    let (_, instrs) = many0(MapInstruction::unpack)(buf)
+        .map_err(|_| anyhow!("unable to parse MappingInstruction"))?;
+    Ok(instrs)
+}
+
+//-----------------------------------------
+
+pub struct Dumper {
+    stream_file: SlabFile,
+    vm_state: VMState,
+}
+
+impl Dumper {
+    // Assumes current directory is the root of the archive.
+    pub fn new(stream: &str) -> Result<Self> {
+        let stream_path: PathBuf = ["streams", stream, "stream"].iter().collect();
+        let stream_file = SlabFile::open_for_read(stream_path)?;
+
+        Ok(Self {
+            stream_file,
+            vm_state: VMState::default(),
+        })
+    }
+
+    fn exec(&mut self, instr: &MapInstruction) {
+        use MapInstruction::*;
+
+        match instr {
+            Rot { index } => {
+                self.vm_state.rot_stack(*index as usize);
+            }
+            Dup { index } => {
+                self.vm_state.dup(*index as usize);
+            }
+
+            Zero8 { .. } => {}
+            Zero16 { .. } => {}
+            Zero32 { .. } => {}
+            Zero64 { .. } => {}
+
+            Unmapped8 { .. } => {}
+            Unmapped16 { .. } => {}
+            Unmapped32 { .. } => {}
+            Unmapped64 { .. } => {}
+
+            Slab16 { slab } => {
+                self.vm_state.top().slab = *slab as u32;
+            }
+            Slab32 { slab } => {
+                self.vm_state.top().slab = *slab as u32;
+            }
+            SlabDelta4 { delta } => {
+                self.vm_state.top().slab += *delta as u32;
+            }
+            SlabDelta12 { delta } => {
+                self.vm_state.top().slab += *delta as u32;
+            }
+            Offset4 { offset } => {
+                self.vm_state.top().offset = *offset as u32;
+            }
+            Offset12 { offset } => {
+                self.vm_state.top().offset = *offset as u32;
+            }
+            Offset20 { offset } => {
+                self.vm_state.top().offset = *offset as u32;
+            }
+            OffsetDelta4 { delta } => {
+                self.vm_state.top().offset += *delta as u32;
+            }
+            OffsetDelta12 { delta } => {
+                self.vm_state.top().offset += *delta as u32;
+            }
+            Emit4 { len } => {
+                self.vm_state.top().offset += *len as u32;
+            }
+            Emit12 { len } => {
+                self.vm_state.top().offset += *len as u32;
+            }
+            Emit20 { len } => {
+                self.vm_state.top().offset += *len as u32;
+            }
+        }
+    }
+
+    fn format_stack(&self) -> Result<String> {
+        use std::fmt::Write;
+
+        let mut buf = String::new();
+
+        for i in 0..STACK_SIZE {
+            let reg = self.vm_state.stack[i];
+            write!(&mut buf, "{}:{} ", reg.slab, reg.offset)?;
+        }
+
+        Ok(buf)
+    }
+
+    pub fn dump(&mut self) -> Result<()> {
+        let nr_slabs = self.stream_file.get_nr_slabs();
+
+        for s in 0..nr_slabs {
+            let stream_data = self.stream_file.read(s as u32)?;
+            let entries = unpack_instructions(&stream_data[..])?;
+
+            for (i, e) in entries.iter().enumerate() {
+                self.exec(e);
+                let stack = self.format_stack()?;
+                println!("{}: {:?} {}", i, e, &stack);
+            }
+        }
+
+        Ok(())
+    }
 }
 
 //-----------------------------------------
