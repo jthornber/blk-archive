@@ -406,11 +406,11 @@ impl VMState {
         let index = self.nearest_register(slab, offset);
         let reg = &self.stack[index];
         // if reg.slab == slab {
-            if index != STACK_SIZE - 1 {
-                instrs.push(Rot { index: index as u8 });
-                self.rot_stack(index);
-            }
-            /*
+        if index != STACK_SIZE - 1 {
+            instrs.push(Rot { index: index as u8 });
+            self.rot_stack(index);
+        }
+        /*
         } else {
             instrs.push(Dup { index: index as u8 });
             self.dup(index);
@@ -865,23 +865,23 @@ impl Dumper {
 
         match instr {
             Rot { index } => {
-                format!("rot {}", index)
+                format!("  rot {}", index)
             }
             Dup { index } => {
-                format!("dup {}", index)
+                format!("  dup {}", index)
             }
 
             Zero8 { len } => {
-                format!("zero {}", len)
+                format!(" zero {}", len)
             }
             Zero16 { len } => {
-                format!("zero {}", len)
+                format!(" zero {}", len)
             }
             Zero32 { len } => {
-                format!("zero {}", len)
+                format!(" zero {}", len)
             }
             Zero64 { len } => {
-                format!("zero {}", len)
+                format!(" zero {}", len)
             }
 
             Unmapped8 { len } => {
@@ -925,13 +925,13 @@ impl Dumper {
                 format!("o.inc {}", delta)
             }
             Emit4 { len } => {
-                format!("emit {}", len)
+                format!(" emit {}", len)
             }
             Emit12 { len } => {
-                format!("emit {}", len)
+                format!(" emit {}", len)
             }
             Emit20 { len } => {
-                format!("emit {}", len)
+                format!(" emit {:<10}", len)
             }
         }
     }
@@ -949,6 +949,22 @@ impl Dumper {
         Ok(buf)
     }
 
+    fn effects_stack(instr: &MapInstruction) -> bool {
+        use MapInstruction::*;
+
+        match instr {
+            Zero8 { .. }
+            | Zero16 { .. }
+            | Zero32 { .. }
+            | Zero64 { .. }
+            | Unmapped8 { .. }
+            | Unmapped16 { .. }
+            | Unmapped32 { .. }
+            | Unmapped64 { .. } => false,
+            _ => true,
+        }
+    }
+
     pub fn dump(&mut self) -> Result<()> {
         let nr_slabs = self.stream_file.get_nr_slabs();
 
@@ -958,8 +974,13 @@ impl Dumper {
 
             for (i, e) in entries.iter().enumerate() {
                 self.exec(e);
-                let stack = self.format_stack()?;
-                println!("{}: {:20}{:20}", i, self.pp_instr(e), &stack);
+
+                if Self::effects_stack(e) {
+                    let stack = self.format_stack()?;
+                    println!("{:0>10x}   {:20}{:20}", i, self.pp_instr(e), &stack);
+                } else {
+                    println!("{:0>10x}   {:20}", i, self.pp_instr(e));
+                }
             }
         }
 
@@ -989,7 +1010,7 @@ impl Dumper {
 
         stats.sort_by(|l, r| r.1.cmp(&l.1));
 
-        println!("Instruction frequencies:");
+        println!("\n\nInstruction frequencies:\n");
         for (instr, count) in stats {
             println!("    {:>15} {:<10}", instr, count);
         }
