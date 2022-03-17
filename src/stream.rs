@@ -405,15 +405,17 @@ impl VMState {
 
         let index = self.nearest_register(slab, offset);
         let reg = &self.stack[index];
-        if reg.slab == slab {
+        // if reg.slab == slab {
             if index != STACK_SIZE - 1 {
                 instrs.push(Rot { index: index as u8 });
                 self.rot_stack(index);
             }
+            /*
         } else {
             instrs.push(Dup { index: index as u8 });
             self.dup(index);
         }
+        */
 
         Ok(())
     }
