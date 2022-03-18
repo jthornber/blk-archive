@@ -266,7 +266,7 @@ mod splitter_tests {
             Ok(())
         }
 
-        fn handle_gap(&mut self, len: u64) -> Result<()> {
+        fn handle_gap(&mut self, _len: u64) -> Result<()> {
             Ok(())
         }
 
@@ -362,7 +362,7 @@ mod splitter_tests {
             Ok(())
         }
 
-        fn handle_gap(&mut self, len: u64) -> Result<()> {
+        fn handle_gap(&mut self, _len: u64) -> Result<()> {
             Ok(())
         }
 
