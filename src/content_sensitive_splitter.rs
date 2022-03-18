@@ -161,6 +161,14 @@ impl Splitter for ContentSensitiveSplitter {
             if self.hit_break(self.div) && self.len > DIGEST_LEN * 2 {
                 handler.handle_data(&self.consume(self.len))?;
                 self.drop_old_blocks();
+            } else if self.len >= self.rhash.window_size as usize * 2 {
+                // Any bytes older than the window size have to effect on
+                // the rolling hash.  So if we have built up a whole block
+                // of these we split at this point.  This can happen if
+                // we're getting very long runs of identical bytes (eg,
+                // zeroes in a thinly provisioned block).
+                handler.handle_data(&self.consume(self.rhash.window_size as usize))?;
+                self.drop_old_blocks();
             }
         }
 
@@ -378,10 +386,14 @@ mod splitter_tests {
             if n == 0 {
                 break;
             } else if n == BUFFER_SIZE {
-                splitter.next_data(buffer, handler).expect("split next failed");
+                splitter
+                    .next_data(buffer, handler)
+                    .expect("split next failed");
             } else {
                 buffer.truncate(n);
-                splitter.next_data(buffer, handler).expect("split next failed");
+                splitter
+                    .next_data(buffer, handler)
+                    .expect("split next failed");
             }
         }
 
