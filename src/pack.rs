@@ -115,6 +115,7 @@ impl DedupHandler {
                     MapEntry::Data {
                         slab: s as u32,
                         offset: i,
+                        nr_entries: 1,
                     },
                 );
                 i += 1;
@@ -212,7 +213,7 @@ impl DedupHandler {
     fn do_add(&mut self, h: Hash256, iov: &IoVec, len: u64) -> Result<MapEntry> {
         self.add_hash_entry(h, len as u32)?;
         let (slab, offset) = self.add_data_entry(iov)?;
-        let me = MapEntry::Data { slab, offset };
+        let me = MapEntry::Data { slab, offset, nr_entries: 1 };
         self.hashes.insert(h, me);
         self.maybe_complete_data()?;
         Ok(me)

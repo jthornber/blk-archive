@@ -319,7 +319,7 @@ impl MapInstruction {
 pub enum MapEntry {
     Zero { len: u64 },
     Unmapped { len: u64 },
-    Data { slab: u32, offset: u32 },
+    Data { slab: u32, offset: u32, nr_entries: u32 },
 }
 
 // FIXME: support runs of zeroed regions
@@ -381,16 +381,27 @@ impl VMState {
     // FIXME: slow
     // FIXME: consider offset
     fn nearest_register(&mut self, slab: u32, offset: u32) -> usize {
+        /*
         let target = Register { slab, offset };
-        let mut index = 0; // default to the oldest stack entry
+        let mut index = STACK_SIZE - 1;
         let mut min = self.stack[index].clone();
-        for (i, r) in self.stack.iter().enumerate().skip(1) {
+        for (i, r) in self.stack.iter().enumerate().rev().skip(1) {
             if r.leq(&target) && min.leq(r) {
                 min = r.clone();
                 index = i;
             }
         }
+        */
 
+        let target = Register { slab, offset };
+        let mut index = 0;
+        let mut min = self.stack[index].clone();
+        for (i, r) in self.stack.iter().enumerate().skip(1).rev() {
+            if r.leq(&target) && min.leq(r) {
+                min = r.clone();
+                index = i;
+            }
+        }
         index
     }
 
@@ -570,7 +581,7 @@ impl MappingBuilder {
                 }
                 self.vm_state.encode_unmapped(*len, &mut instrs)?;
             }
-            Data { slab, offset } => {
+            Data { slab, offset, .. } => {
                 let new_run = Run {
                     slab: *slab,
                     offset: *offset,
@@ -614,13 +625,12 @@ pub struct MappingUnpacker {
 impl MappingUnpacker {
     fn emit_run(&mut self, r: &mut Vec<MapEntry>, len: usize) {
         let top = self.vm_state.top();
-        for _ in 0..len {
-            r.push(MapEntry::Data {
-                slab: top.slab,
-                offset: top.offset,
-            });
-            top.offset += 1;
-        }
+        r.push(MapEntry::Data {
+            slab: top.slab,
+            offset: top.offset,
+            nr_entries: len as u32,
+        });
+        top.offset += len as u32;
     }
 
     pub fn unpack(&mut self, buf: &[u8]) -> Result<Vec<MapEntry>> {

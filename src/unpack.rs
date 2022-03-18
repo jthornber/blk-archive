@@ -119,11 +119,12 @@ impl Unpacker {
             Unmapped { len } => {
                 w.seek(std::io::SeekFrom::Current(*len as i64))?;
             }
-            Data { slab, offset } => {
+            Data { slab, offset, nr_entries } => {
                 let info = self.get_info(*slab)?;
-                let (_expected_hash, offset, len) = info.offsets[*offset as usize];
+                let (_expected_hash, offset, _len) = info.offsets[*offset as usize];
                 let data_begin = offset as usize;
-                let data_end = data_begin + len as usize;
+                let (_expected_hash, offset, len) = info.offsets[(offset as usize) + *nr_entries as usize];
+                let data_end = offset as usize + len as usize;
                 assert!(data_end <= info.data.len());
 
                 // Copy data

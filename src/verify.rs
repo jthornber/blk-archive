@@ -115,27 +115,29 @@ impl Verifier {
             Unmapped { .. } => {
                 todo!();
             }
-            Data { slab, offset } => {
-                let info = self.get_info(*slab)?;
-                let (expected_hash, offset, len) = info.offsets[*offset as usize];
-                let data_begin = offset as usize;
-                let data_end = data_begin + len as usize;
-                assert!(data_end <= info.data.len());
+            Data { slab, offset, nr_entries } => {
+                for entry in 0..*nr_entries {
+                    let info = self.get_info(*slab)?;
+                    let (expected_hash, offset, len) = info.offsets[*offset as usize + entry as usize];
+                    let data_begin = offset as usize;
+                    let data_end = data_begin + len as usize;
+                    assert!(data_end <= info.data.len());
 
-                // FIXME: make this paranioa check optional
-                // Verify hash
-                let actual_hash = hash_256(&info.data[data_begin..data_end]);
-                assert_eq!(actual_hash, expected_hash);
+                    // FIXME: make this paranioa check optional
+                    // Verify hash
+                    let actual_hash = hash_256(&info.data[data_begin..data_end]);
+                    assert_eq!(actual_hash, expected_hash);
 
-                // Verify data
-                let mut actual = vec![0; data_end - data_begin];
-                r.read_exact(&mut actual)?;
-                if actual != &info.data[data_begin..data_end] {
-                    eprintln!("mismatched data at offset {}", self.total_verified);
-                    assert!(false);
+                    // Verify data
+                    let mut actual = vec![0; data_end - data_begin];
+                    r.read_exact(&mut actual)?;
+                    if actual != &info.data[data_begin..data_end] {
+                        eprintln!("mismatched data at offset {}", self.total_verified);
+                        assert!(false);
+                    }
+
+                    self.total_verified += actual.len() as u64;
                 }
-
-                self.total_verified += actual.len() as u64;
             }
         }
 
