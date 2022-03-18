@@ -317,16 +317,17 @@ impl MapInstruction {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MapEntry {
-    Zero { len: u64 },
-    Unmapped { len: u64 },
-    Data { slab: u32, offset: u32, nr_entries: u32 },
-}
-
-// FIXME: support runs of zeroed regions
-struct Run {
-    slab: u32,
-    offset: u32,
-    len: u16,
+    Zero {
+        len: u64,
+    },
+    Unmapped {
+        len: u64,
+    },
+    Data {
+        slab: u32,
+        offset: u32,
+        nr_entries: u32,
+    },
 }
 
 #[derive(Default, Copy, Clone)]
@@ -534,18 +535,24 @@ impl VMState {
         Ok(())
     }
 
-    fn encode_run(&mut self, run: &Run, instrs: &mut IVec) -> Result<()> {
-        self.select_register(run.slab, run.offset, instrs)?;
-        self.encode_slab(run.slab, instrs)?;
-        self.encode_offset(run.offset, instrs)?;
-        self.encode_emit(run.len as u32, instrs)?;
+    fn encode_data(
+        &mut self,
+        slab: u32,
+        offset: u32,
+        nr_entries: u32,
+        instrs: &mut IVec,
+    ) -> Result<()> {
+        self.select_register(slab, offset, instrs)?;
+        self.encode_slab(slab, instrs)?;
+        self.encode_offset(offset, instrs)?;
+        self.encode_emit(nr_entries, instrs)?;
         Ok(())
     }
 }
 
 #[derive(Default)]
 pub struct MappingBuilder {
-    run: Option<Run>,
+    entry: Option<MapEntry>,
     vm_state: VMState,
 }
 
@@ -559,46 +566,74 @@ fn pack_instrs<W: Write>(w: &mut W, instrs: &IVec) -> Result<()> {
 }
 
 impl MappingBuilder {
+    fn encode_entry(&mut self, e: &MapEntry, instrs: &mut IVec) -> Result<()> {
+        use MapEntry::*;
+
+        match e {
+            Zero { len } => {
+                self.vm_state.encode_zero(*len, instrs)?;
+            }
+            Unmapped { len } => {
+                self.vm_state.encode_unmapped(*len, instrs)?;
+            }
+            Data {
+                slab,
+                offset,
+                nr_entries,
+            } => {
+                self.vm_state
+                    .encode_data(*slab, *offset, *nr_entries, instrs)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn next<W: Write>(&mut self, e: &MapEntry, w: &mut W) -> Result<()> {
         use MapEntry::*;
 
+        if self.entry.is_none() {
+            self.entry = Some(*e);
+            return Ok(());
+        }
+
         let mut instrs = Vec::new();
-        match e {
-            Zero { len } => {
-                let mut run = None;
-                std::mem::swap(&mut run, &mut self.run);
-                if let Some(run) = run {
-                    self.vm_state.encode_run(&run, &mut instrs)?;
-                }
-                self.vm_state.encode_zero(*len, &mut instrs)?;
+        match (self.entry.take().unwrap(), e) {
+            (Zero { len: l1 }, Zero { len: l2 }) => {
+                self.entry = Some(Zero { len: l1 + l2 });
             }
-            Unmapped { len } => {
-                // FIXME: factor out common code
-                let mut run = None;
-                std::mem::swap(&mut run, &mut self.run);
-                if let Some(run) = run {
-                    self.vm_state.encode_run(&run, &mut instrs)?;
-                }
-                self.vm_state.encode_unmapped(*len, &mut instrs)?;
+            (Unmapped { len: l1 }, Unmapped { len: l2 }) => {
+                self.entry = Some(Unmapped { len: l1 + l2 });
             }
-            Data { slab, offset, .. } => {
-                let new_run = Run {
-                    slab: *slab,
-                    offset: *offset,
-                    len: 0, // len gets incremented to 1 after insert
-                };
-                let run = self.run.get_or_insert(new_run);
-                if (*slab == run.slab) && (*offset == (run.offset + run.len as u32)) {
-                    run.len += 1;
+            (
+                Data {
+                    slab: s1,
+                    offset: o1,
+                    nr_entries: n1,
+                },
+                Data {
+                    slab: s2,
+                    offset: o2,
+                    nr_entries: n2,
+                },
+            ) => {
+                if s1 == *s2 && o1 + n1 == *o2 {
+                    self.entry = Some(Data {
+                        slab: s1,
+                        offset: o1,
+                        nr_entries: n1 + n2,
+                    });
                 } else {
-                    self.vm_state.encode_run(run, &mut instrs)?;
-                    let new_run = Run {
-                        slab: *slab,
-                        offset: *offset,
-                        len: 1,
-                    };
-                    self.run = Some(new_run);
+                    self.vm_state.encode_data(s1, o1, n1, &mut instrs)?;
+                    self.entry = Some(Data {
+                        slab: *s2,
+                        offset: *o2,
+                        nr_entries: *n2,
+                    });
                 }
+            }
+            (old_e, new_e) => {
+                self.encode_entry(&old_e, &mut instrs)?;
+                self.entry = Some(*new_e);
             }
         }
 
@@ -606,11 +641,12 @@ impl MappingBuilder {
     }
 
     pub fn complete<W: Write>(mut self, w: &mut W) -> Result<()> {
-        let mut instrs = Vec::new();
-        if let Some(run) = self.run {
-            self.vm_state.encode_run(&run, &mut instrs)?;
+        if let Some(e) = self.entry.take() {
+            let mut instrs = Vec::new();
+            self.encode_entry(&e, &mut instrs)?;
             pack_instrs(w, &instrs)?;
         }
+
         Ok(())
     }
 }
