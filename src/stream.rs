@@ -35,12 +35,14 @@ fn test_sign_extend() {
     }
 }
 
-fn delta_as_i4(lhs: u32, rhs: u32) -> Option<i8> {
-    const MIN: i64 = -8;
-    const MAX: i64 = 7;
+const I4_MIN: i64 = -8;
+const I4_MAX: i64 = 7;
+const I12_MIN: i64 = -2048;
+const I12_MAX: i64 = 2047;
 
+fn delta_as_i4(lhs: u32, rhs: u32) -> Option<i8> {
     let delta: i64 = (rhs as i64) - (lhs as i64);
-    if delta >= MIN && delta <= MAX {
+    if delta >= I4_MIN && delta <= I4_MAX {
         let n = ((delta as u64) & 0xf) as i8;
         Some(n)
     } else {
@@ -65,11 +67,8 @@ fn test_delta_as_i4() {
 }
 
 fn delta_as_i12(lhs: u32, rhs: u32) -> Option<i16> {
-    const MIN: i64 = -2046;
-    const MAX: i64 = 2045;
-
     let delta: i64 = (rhs as i64) - (lhs as i64);
-    if delta >= MIN && delta <= MAX {
+    if delta >= I12_MIN && delta <= I12_MAX {
         let n = ((delta as u64) & 0xfff) as i16;
         Some(n)
     } else {
@@ -92,6 +91,36 @@ fn test_delta_as_i12() {
         assert_eq!(expected, actual);
     }
 }
+
+/*
+fn slab_delta_cost(lhs: u32, rhs: u32) -> usize {
+    let delta: i64 = (rhs as i64) - (lhs as i64);
+    if delta >= I4_MIN && delta <= I4_MAX {
+        1
+    } else if delta >= I12_MIN && delta <= I12_MAX {
+        2
+    } else if rhs <= u16::MAX as u32 {
+        3
+    } else {
+        5
+    }
+}
+
+fn offset_delta_cost(lhs: u32, rhs: u32) -> usize {
+    let delta: i64 = (rhs as i64) - (lhs as i64);
+    if delta >= I4_MIN && delta <= I4_MAX {
+        1
+    } else if rhs <= 16 {
+        1
+    } else if delta >= I12_MIN && delta <= I12_MAX {
+        2
+    } else if rhs <= 4096 {
+        2
+    } else {
+        3
+    }
+}
+*/
 
 //-----------------------------------------
 
@@ -420,22 +449,10 @@ pub enum MapEntry {
     },
 }
 
-#[derive(Default, Copy, Clone)]
+#[derive(Default, Copy, Clone, PartialEq, Eq)]
 struct Register {
     slab: u32,
     offset: u32,
-}
-
-impl Register {
-    fn leq(&self, rhs: &Self) -> bool {
-        if self.slab < rhs.slab {
-            true
-        } else if self.slab == rhs.slab && self.offset <= rhs.offset {
-            true
-        } else {
-            false
-        }
-    }
 }
 
 const STACK_SIZE: usize = 16;
@@ -468,28 +485,38 @@ impl VMState {
         self.stack[STACK_SIZE - 1] = tmp;
     }
 
-    // Finds the register with the nearest, but lower slab
-    // FIXME: slow
+/*
+    fn bytes_cost(r1: &Register, r2: &Register) -> usize {
+        slab_delta_cost(r1.slab, r2.slab) +
+            offset_delta_cost(r1.offset, r2.offset)
+    }
+    */
+
+    fn distance_cost(r1: &Register, r2: &Register) -> usize {
+        ((r2.slab as i64 - r1.slab as i64).abs() * 1024 + (r2.offset as i64 - r1.offset as i64).abs()) as usize
+    }
+
+/*
+    fn exact_cost(r1: &Register, r2: &Register) -> usize {
+        if r1 == r2 {
+            0
+        } else {
+            1024
+        }
+    }
+    */
+
+    // Finds the register that would take the fewest bytes to encode
+    // FIXME: so slow
     // FIXME: consider offset
     fn nearest_register(&mut self, slab: u32, offset: u32) -> usize {
-        /*
         let target = Register { slab, offset };
         let mut index = STACK_SIZE - 1;
-        let mut min = self.stack[index].clone();
+        let mut min_cost = Self::distance_cost(&self.stack[index], &target);
         for (i, r) in self.stack.iter().enumerate().rev().skip(1) {
-            if r.leq(&target) && min.leq(r) {
-                min = r.clone();
-                index = i;
-            }
-        }
-        */
-
-        let target = Register { slab, offset };
-        let mut index = 0;
-        let mut min = self.stack[index].clone();
-        for (i, r) in self.stack.iter().enumerate().skip(1).rev() {
-            if r.leq(&target) && min.leq(r) {
-                min = r.clone();
+            let cost = Self::distance_cost(r, &target);
+            if cost < min_cost {
+                min_cost = cost;
                 index = i;
             }
         }
@@ -500,24 +527,22 @@ impl VMState {
         use MapInstruction::*;
 
         let top = self.top();
-        if top.slab == slab && top.offset == offset {
-            // Nothing to be done
+        if top.slab == slab && delta_as_i12(top.offset, offset).is_some() {
+            // We can encode this with a couple of bytes, so no point doing
+            // any stack shuffling which would at best take 2 bytes.
             return Ok(());
         }
 
         let index = self.nearest_register(slab, offset);
-        // let reg = &self.stack[index];
-        // if reg.slab == slab {
-        if index != STACK_SIZE - 1 {
+        if index == STACK_SIZE - 1 {
+            if self.stack[index].slab != slab {
+                instrs.push(Dup { index: index as u8 });
+                self.dup(index);
+            }
+        } else {
             instrs.push(Rot { index: index as u8 });
             self.rot_stack(index);
         }
-        /*
-        } else {
-            instrs.push(Dup { index: index as u8 });
-            self.dup(index);
-        }
-        */
 
         Ok(())
     }
@@ -1034,10 +1059,10 @@ impl Dumper {
                 format!("s.set {}", slab)
             }
             SlabDelta4 { delta } => {
-                format!("s.inc {}", delta)
+                format!("s.add {}", delta)
             }
             SlabDelta12 { delta } => {
-                format!("s.inc {}", delta)
+                format!("s.add {}", delta)
             }
             Offset4 { offset } => {
                 format!("o.set {}", offset)
@@ -1049,10 +1074,10 @@ impl Dumper {
                 format!("o.set {}", offset)
             }
             OffsetDelta4 { delta } => {
-                format!("o.inc {}", delta)
+                format!("o.add {}", delta)
             }
             OffsetDelta12 { delta } => {
-                format!("o.inc {}", delta)
+                format!("o.add {}", delta)
             }
             Emit4 { len } => {
                 format!(" emit {}", len)
