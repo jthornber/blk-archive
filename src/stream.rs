@@ -135,10 +135,12 @@ enum MapInstruction {
     Rot { index: u8 },
     Dup { index: u8 },
 
-    Zero8 { len: u8 },
-    Zero16 { len: u16 },
-    Zero32 { len: u32 },
-    Zero64 { len: u64 },
+    SetFill { byte: u8 },
+
+    Fill8 { len: u8 },
+    Fill16 { len: u16 },
+    Fill32 { len: u32 },
+    Fill64 { len: u64 },
 
     Unmapped8 { len: u8 },
     Unmapped16 { len: u16 },
@@ -171,7 +173,7 @@ enum MapTag {
     TagDup,
 
     // These have the operand length packed in the low nibble
-    TagZero,
+    TagFill, // This also doubles up as SetFill
     TagUnmapped,
 
     TagSlab16,
@@ -215,20 +217,24 @@ impl MapInstruction {
                 assert!(*index < STACK_SIZE as u8);
                 w.write_u8(pack_tag(TagDup, *index))?;
             }
-            Zero8 { len } => {
-                w.write_u8(pack_tag(TagZero, 1))?;
+            SetFill { byte } => {
+                w.write_u8(pack_tag(TagFill, 9))?;
+                w.write_u8(*byte)?;
+            }
+            Fill8 { len } => {
+                w.write_u8(pack_tag(TagFill, 1))?;
                 w.write_u8(*len)?;
             }
-            Zero16 { len } => {
-                w.write_u8(pack_tag(TagZero, 2))?;
+            Fill16 { len } => {
+                w.write_u8(pack_tag(TagFill, 2))?;
                 w.write_u16::<LittleEndian>(*len)?;
             }
-            Zero32 { len } => {
-                w.write_u8(pack_tag(TagZero, 4))?;
+            Fill32 { len } => {
+                w.write_u8(pack_tag(TagFill, 4))?;
                 w.write_u32::<LittleEndian>(*len)?;
             }
-            Zero64 { len } => {
-                w.write_u8(pack_tag(TagZero, 8))?;
+            Fill64 { len } => {
+                w.write_u8(pack_tag(TagFill, 8))?;
                 w.write_u64::<LittleEndian>(*len)?;
             }
             Unmapped8 { len } => {
@@ -314,25 +320,30 @@ impl MapInstruction {
         let v = match tag {
             TagRot => (input, Rot { index: nibble }),
             TagDup => (input, Dup { index: nibble }),
-            TagZero => match nibble {
+            TagFill => match nibble {
                 1 => {
                     let (input, len) = le_u8(input)?;
-                    (input, Zero8 { len })
+                    (input, Fill8 { len })
                 }
                 2 => {
                     let (input, len) = le_u16(input)?;
-                    (input, Zero16 { len })
+                    (input, Fill16 { len })
                 }
                 4 => {
                     let (input, len) = le_u32(input)?;
-                    (input, Zero32 { len })
+                    (input, Fill32 { len })
                 }
                 8 => {
                     let (input, len) = le_u64(input)?;
-                    (input, Zero64 { len })
+                    (input, Fill64 { len })
+                }
+                9 => {
+                    // set fill
+                    let (input, byte) = le_u8(input)?;
+                    (input, SetFill { byte })
                 }
                 _ => {
-                    // Bad length for zero tag
+                    // Bad length for fill tag
                     fail(input)?
                 }
             },
@@ -436,7 +447,8 @@ impl MapInstruction {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MapEntry {
-    Zero {
+    Fill {
+        byte: u8,
         len: u64,
     },
     Unmapped {
@@ -459,6 +471,7 @@ const STACK_SIZE: usize = 16;
 
 #[derive(Default)]
 struct VMState {
+    fill: u8,
     stack: [Register; STACK_SIZE],
 }
 
@@ -485,7 +498,7 @@ impl VMState {
         self.stack[STACK_SIZE - 1] = tmp;
     }
 
-/*
+    /*
     fn bytes_cost(r1: &Register, r2: &Register) -> usize {
         slab_delta_cost(r1.slab, r2.slab) +
             offset_delta_cost(r1.offset, r2.offset)
@@ -493,10 +506,11 @@ impl VMState {
     */
 
     fn distance_cost(r1: &Register, r2: &Register) -> usize {
-        ((r2.slab as i64 - r1.slab as i64).abs() * 1024 + (r2.offset as i64 - r1.offset as i64).abs()) as usize
+        ((r2.slab as i64 - r1.slab as i64).abs() * 1024
+            + (r2.offset as i64 - r1.offset as i64).abs()) as usize
     }
 
-/*
+    /*
     fn exact_cost(r1: &Register, r2: &Register) -> usize {
         if r1 == r2 {
             0
@@ -547,17 +561,22 @@ impl VMState {
         Ok(())
     }
 
-    fn encode_zero(&mut self, len: u64, instrs: &mut IVec) -> Result<()> {
+    fn encode_fill(&mut self, byte: u8, len: u64, instrs: &mut IVec) -> Result<()> {
         use MapInstruction::*;
 
+        if self.fill != byte {
+            instrs.push(SetFill { byte });
+            self.fill = byte;
+        }
+
         if len < 0x10 {
-            instrs.push(Zero8 { len: len as u8 });
+            instrs.push(Fill8 { len: len as u8 });
         } else if len < 0x10000 {
-            instrs.push(Zero16 { len: len as u16 });
+            instrs.push(Fill16 { len: len as u16 });
         } else if len < 0x100000000 {
-            instrs.push(Zero32 { len: len as u32 });
+            instrs.push(Fill32 { len: len as u32 });
         } else {
-            instrs.push(Zero64 { len });
+            instrs.push(Fill64 { len });
         }
 
         Ok(())
@@ -679,8 +698,8 @@ impl MappingBuilder {
         use MapEntry::*;
 
         match e {
-            Zero { len } => {
-                self.vm_state.encode_zero(*len, instrs)?;
+            Fill { byte, len } => {
+                self.vm_state.encode_fill(*byte, *len, instrs)?;
             }
             Unmapped { len } => {
                 self.vm_state.encode_unmapped(*len, instrs)?;
@@ -707,8 +726,11 @@ impl MappingBuilder {
 
         let mut instrs = Vec::new();
         match (self.entry.take().unwrap(), e) {
-            (Zero { len: l1 }, Zero { len: l2 }) => {
-                self.entry = Some(Zero { len: l1 + l2 });
+            (Fill { byte: b1, len: l1 }, Fill { byte: b2, len: l2 }) if b1 == *b2 => {
+                self.entry = Some(Fill {
+                    byte: b1,
+                    len: l1 + l2,
+                });
             }
             (Unmapped { len: l1 }, Unmapped { len: l2 }) => {
                 self.entry = Some(Unmapped { len: l1 + l2 });
@@ -794,17 +816,32 @@ impl MappingUnpacker {
                     self.vm_state.dup(index as usize);
                 }
 
-                Zero8 { len } => {
-                    r.push(MapEntry::Zero { len: len as u64 });
+                SetFill { byte } => {
+                    self.vm_state.fill = byte;
                 }
-                Zero16 { len } => {
-                    r.push(MapEntry::Zero { len: len as u64 });
+                Fill8 { len } => {
+                    r.push(MapEntry::Fill {
+                        byte: self.vm_state.fill,
+                        len: len as u64,
+                    });
                 }
-                Zero32 { len } => {
-                    r.push(MapEntry::Zero { len: len as u64 });
+                Fill16 { len } => {
+                    r.push(MapEntry::Fill {
+                        byte: self.vm_state.fill,
+                        len: len as u64,
+                    });
                 }
-                Zero64 { len } => {
-                    r.push(MapEntry::Zero { len: len as u64 });
+                Fill32 { len } => {
+                    r.push(MapEntry::Fill {
+                        byte: self.vm_state.fill,
+                        len: len as u64,
+                    });
+                }
+                Fill64 { len } => {
+                    r.push(MapEntry::Fill {
+                        byte: self.vm_state.fill,
+                        len: len as u64,
+                    });
                 }
 
                 Unmapped8 { len } => {
@@ -884,10 +921,11 @@ fn unpack_instructions(buf: &[u8]) -> Result<Vec<MapInstruction>> {
 struct Stats {
     rot: u64,
     dup: u64,
-    zero8: u64,
-    zero16: u64,
-    zero32: u64,
-    zero64: u64,
+    set_fill: u64,
+    fill8: u64,
+    fill16: u64,
+    fill32: u64,
+    fill64: u64,
     unmapped8: u64,
     unmapped16: u64,
     unmapped32: u64,
@@ -938,17 +976,21 @@ impl Dumper {
                 self.vm_state.dup(*index as usize);
             }
 
-            Zero8 { .. } => {
-                self.stats.zero8 += 1;
+            SetFill { byte } => {
+                self.stats.set_fill += 1;
+                self.vm_state.fill = *byte;
             }
-            Zero16 { .. } => {
-                self.stats.zero16 += 1;
+            Fill8 { .. } => {
+                self.stats.fill8 += 1;
             }
-            Zero32 { .. } => {
-                self.stats.zero32 += 1;
+            Fill16 { .. } => {
+                self.stats.fill16 += 1;
             }
-            Zero64 { .. } => {
-                self.stats.zero64 += 1;
+            Fill32 { .. } => {
+                self.stats.fill32 += 1;
+            }
+            Fill64 { .. } => {
+                self.stats.fill64 += 1;
             }
 
             Unmapped8 { .. } => {
@@ -1020,73 +1062,76 @@ impl Dumper {
 
         match instr {
             Rot { index } => {
-                format!("  rot {}", index)
+                format!("     rot {}", index)
             }
             Dup { index } => {
-                format!("  dup {}", index)
+                format!("     dup {}", index)
             }
 
-            Zero8 { len } => {
-                format!(" zero {}", len)
+            SetFill { byte } => {
+                format!("set-fill {}", byte)
             }
-            Zero16 { len } => {
-                format!(" zero {}", len)
+            Fill8 { len } => {
+                format!("    fill {} ({})", len, self.vm_state.fill)
             }
-            Zero32 { len } => {
-                format!(" zero {}", len)
+            Fill16 { len } => {
+                format!("    fill {} ({})", len, self.vm_state.fill)
             }
-            Zero64 { len } => {
-                format!(" zero {}", len)
+            Fill32 { len } => {
+                format!("    fill {} ({})", len, self.vm_state.fill)
+            }
+            Fill64 { len } => {
+                format!("    fill {} ({})", len, self.vm_state.fill)
             }
 
             Unmapped8 { len } => {
-                format!("unmap {}", len)
+                format!("   unmap {}", len)
             }
             Unmapped16 { len } => {
-                format!("unmap {}", len)
+                format!("   unmap {}", len)
             }
             Unmapped32 { len } => {
-                format!("unmap {}", len)
+                format!("   unmap {}", len)
             }
             Unmapped64 { len } => {
-                format!("unmap {}", len)
+                format!("   unmap {}", len)
             }
 
             Slab16 { slab } => {
-                format!("s.set {}", slab)
+                format!("   s.set {}", slab)
             }
             Slab32 { slab } => {
-                format!("s.set {}", slab)
+                format!("   s.set {}", slab)
             }
             SlabDelta4 { delta } => {
-                format!("s.add {}", delta)
+                format!("   s.add {}", delta)
             }
             SlabDelta12 { delta } => {
-                format!("s.add {}", delta)
+                format!("   s.add {}", delta)
             }
             Offset4 { offset } => {
-                format!("o.set {}", offset)
+                format!("   o.set {}", offset)
             }
             Offset12 { offset } => {
-                format!("o.set {}", offset)
+                format!("   o.set {}", offset)
             }
             Offset20 { offset } => {
-                format!("o.set {}", offset)
+                format!("   o.set {}", offset)
             }
             OffsetDelta4 { delta } => {
-                format!("o.add {}", delta)
+                format!("   o.add {}", delta)
             }
             OffsetDelta12 { delta } => {
-                format!("o.add {}", delta)
+                format!("   o.add {}", delta)
             }
             Emit4 { len } => {
-                format!(" emit {}", len)
+                format!("    emit {}", len)
             }
             Emit12 { len } => {
-                format!(" emit {}", len)
+                format!("    emit {}", len)
             }
             Emit20 { len } => {
-                format!(" emit {:<10}", len)
+                format!("    emit {:<10}", len)
             }
         }
     }
@@ -1108,10 +1153,10 @@ impl Dumper {
         use MapInstruction::*;
 
         match instr {
-            Zero8 { .. }
-            | Zero16 { .. }
-            | Zero32 { .. }
-            | Zero64 { .. }
+            Fill8 { .. }
+            | Fill16 { .. }
+            | Fill32 { .. }
+            | Fill64 { .. }
             | Unmapped8 { .. }
             | Unmapped16 { .. }
             | Unmapped32 { .. }
@@ -1132,7 +1177,7 @@ impl Dumper {
 
                 if Self::effects_stack(e) {
                     let stack = self.format_stack()?;
-                    println!("{:0>10x}   {:20}{:20}", i, self.pp_instr(e), &stack);
+                    println!("{:0>10x}   {:20}{:20}", i, self.pp_instr(e), &stack,);
                 } else {
                     println!("{:0>10x}   {:20}", i, self.pp_instr(e));
                 }
@@ -1142,10 +1187,11 @@ impl Dumper {
         let mut stats = Vec::new();
         stats.push(("rot", self.stats.rot));
         stats.push(("dup", self.stats.dup));
-        stats.push(("zero8", self.stats.zero8));
-        stats.push(("zero16", self.stats.zero16));
-        stats.push(("zero32", self.stats.zero32));
-        stats.push(("zero64", self.stats.zero64));
+        stats.push(("set-fill", self.stats.set_fill));
+        stats.push(("fill8", self.stats.fill8));
+        stats.push(("fill16", self.stats.fill16));
+        stats.push(("fill32", self.stats.fill32));
+        stats.push(("fill64", self.stats.fill64));
         stats.push(("unmapped8", self.stats.unmapped8));
         stats.push(("unmapped16", self.stats.unmapped16));
         stats.push(("unmapped32", self.stats.unmapped32));
@@ -1195,7 +1241,7 @@ mod stream_tests {
 
         let tests: Vec<Vec<MapEntry>> = vec![
             vec![],
-            vec![Zero { len: 1 }],
+            vec![Fill { byte: 0, len: 1 }],
             /*
              * Test doesn't work now we aggregate zeroes
             vec![

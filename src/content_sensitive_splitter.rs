@@ -115,7 +115,10 @@ impl ContentSensitiveSplitter {
             let b = &blocks[c.block];
             let blen = b.len() - c.offset;
 
-            if blen >= remaining {
+            if blen == 0 {
+                c.offset = 0;
+                c.block += 1;
+            } else if blen >= remaining {
                 r.push(&b[c.offset..(c.offset + remaining)]);
                 c.offset += remaining;
                 remaining = 0;

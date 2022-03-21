@@ -101,7 +101,7 @@ impl Unpacker {
         use MapEntry::*;
 
         match e {
-            Zero { len } => {
+            Fill { byte, len } => {
                 // len may be very big, so we have to be prepared to write in chunks.
                 // FIXME: if we're writing to a file would this be zeroes anyway?  fallocate?
                 const MAX_BUFFER: u64 = 16 * 1024 * 1024;
@@ -111,8 +111,8 @@ impl Unpacker {
 
                     // FIXME: don't keep initialising this buffer,
                     // keep a suitable one around instead
-                    let zeroes: Vec<u8> = vec![0; write_len as usize];
-                    w.write_all(&zeroes)?;
+                    let bytes: Vec<u8> = vec![*byte; write_len as usize];
+                    w.write_all(&bytes)?;
                     written += write_len;
                 }
             }

@@ -103,13 +103,14 @@ impl Verifier {
         use MapEntry::*;
 
         match e {
-            Zero { len } => {
+            Fill { byte, len } => {
                 // FIXME: don't keep initialising this buffer,
                 // keep a suitable one around instead
-                let zeroes: Vec<u8> = vec![0; *len as usize];
-                let mut actual = vec![0; *len as usize];
+                // FIXME: put in a loop if len is too long
+                let expected: Vec<u8> = vec![*byte; *len as usize];
+                let mut actual = vec![*byte; *len as usize];
                 r.read_exact(&mut actual)?;
-                assert_eq!(&actual, &zeroes);
+                assert_eq!(&actual, &expected);
                 self.total_verified += *len as u64;
             }
             Unmapped { .. } => {

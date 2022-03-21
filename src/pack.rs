@@ -32,14 +32,24 @@ use crate::thin_metadata::*;
 
 //-----------------------------------------
 
-fn all_zeroes(iov: &IoVec) -> (u64, bool) {
+fn all_same(iov: &IoVec) -> (u8, u64, bool) {
     let mut len = 0;
-    let mut zeroes = true;
-    for v in iov {
-        if zeroes {
+    let mut same = true;
+    let first_b = iov[0][0];
+
+    for b in iov[0] {
+        if *b != first_b {
+            same = false;
+            break;
+        }
+    }
+    len += iov[0].len();
+
+    for v in iov.iter().skip(1) {
+        if same {
             for b in *v {
-                if *b != 0 {
-                    zeroes = false;
+                if *b != first_b {
+                    same = false;
                     break;
                 }
             }
@@ -47,7 +57,7 @@ fn all_zeroes(iov: &IoVec) -> (u64, bool) {
         len += v.len();
     }
 
-    (len as u64, zeroes)
+    (first_b, len as u64, same)
 }
 
 //-----------------------------------------
@@ -77,7 +87,7 @@ struct DedupHandler {
 
     data_written: u64,
     mapped_size: u64,
-    zeroes_size: u64,
+    fill_size: u64,
 }
 
 impl DedupHandler {
@@ -152,7 +162,7 @@ impl DedupHandler {
             // Stats
             data_written: 0,
             mapped_size: 0,
-            zeroes_size: 0,
+            fill_size: 0,
         })
     }
 
@@ -223,12 +233,12 @@ impl DedupHandler {
 impl IoVecHandler for DedupHandler {
     fn handle_data(&mut self, iov: &IoVec) -> Result<()> {
         self.nr_chunks += 1;
-        let (len, zeroes) = all_zeroes(iov);
+        let (first_byte, len, same) = all_same(iov);
         self.mapped_size += len;
 
-        if zeroes {
-            self.zeroes_size += len;
-            self.add_stream_entry(&MapEntry::Zero { len })?;
+        if same {
+            self.fill_size += len;
+            self.add_stream_entry(&MapEntry::Fill { byte: first_byte, len })?;
             self.maybe_complete_stream()?;
         } else {
             let h = hash_256_iov(iov);
@@ -501,12 +511,12 @@ where
     report.info(&format!("file size        : {:.2}", Size(input_size)));
     report.info(&format!("mapped size      : {:.2}", Size(mapped_size)));
     report.info(&format!(
-        "zeroes size      : {:.2}",
-        Size(handler.zeroes_size)
+        "fills size      : {:.2}",
+        Size(handler.fill_size)
     ));
     report.info(&format!(
         "duplicate data   : {:.2}",
-        Size(total_read - handler.data_written - handler.zeroes_size)
+        Size(total_read - handler.data_written - handler.fill_size)
     ));
 
     let data_written = handler.data_file.get_file_size() - data_size;
