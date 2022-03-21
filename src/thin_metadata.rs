@@ -58,6 +58,7 @@ impl NodeVisitor<BlockTime> for MappingCollector {
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct ThinInfo {
+    pub thin_id: u32,
     pub data_block_size: u32,
     pub details: DeviceDetail,
     pub provisioned_blocks: RoaringBitmap,
@@ -99,6 +100,7 @@ fn read_info(metadata: &PathBuf, thin_id: u32) -> Result<ThinInfo> {
     let provisioned_blocks = collector.provisioned();
 
     Ok(ThinInfo {
+        thin_id,
         data_block_size: sb.data_block_size,
         details,
         provisioned_blocks,

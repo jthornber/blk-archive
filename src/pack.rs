@@ -458,6 +458,7 @@ pub fn pack_<'a, I>(
     input_size: u64,
     mapped_size: u64,
     block_size: usize,
+    thin_id: Option<u32>,
 ) -> Result<()>
 where
     I: Iterator<Item = Result<Chunk>>,
@@ -541,6 +542,7 @@ where
         pack_time: config::now(),
         size: input_size,
         packed_size: data_written + hashes_written + stream_written,
+        thin_id,
     };
     config::write_stream_config(&stream_id, &cfg)?;
 
@@ -564,6 +566,7 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, input_name: &str, block_siz
         input_size,
         input_size,
         block_size,
+        None,
     )
 }
 
@@ -623,6 +626,7 @@ pub fn run_thin(matches: &ArgMatches) -> Result<()> {
         input_size,
         mapped_size,
         config.block_size,
+        Some(mappings.thin_id),
     )
 }
 

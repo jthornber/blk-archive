@@ -31,6 +31,7 @@ pub struct StreamConfig {
     pub pack_time: toml::value::Datetime,
     pub size: u64,
     pub packed_size: u64,
+    pub thin_id: Option<u32>,
 }
 
 fn stream_cfg_path(stream_id: &str) -> PathBuf {
