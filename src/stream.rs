@@ -163,6 +163,9 @@ enum MapInstruction {
     Emit4 { len: u8 },
     Emit12 { len: u16 },
     Emit20 { len: u32 },
+
+    Pos32 { len: u32 },
+    Pos64 { len: u64 },
 }
 
 // 4 bit tags
@@ -173,8 +176,8 @@ enum MapTag {
     TagDup,
 
     // These have the operand length packed in the low nibble
-    TagFill, // This also doubles up as SetFill
-    TagUnmapped,
+    TagFill,     // This also doubles up as SetFill
+    TagUnmapped, // Doubles up as Pos
 
     TagSlab16,
     TagSlab32,
@@ -218,7 +221,7 @@ impl MapInstruction {
                 w.write_u8(pack_tag(TagDup, *index))?;
             }
             SetFill { byte } => {
-                w.write_u8(pack_tag(TagFill, 9))?;
+                w.write_u8(pack_tag(TagFill, 5))?;
                 w.write_u8(*byte)?;
             }
             Fill8 { len } => {
@@ -230,11 +233,11 @@ impl MapInstruction {
                 w.write_u16::<LittleEndian>(*len)?;
             }
             Fill32 { len } => {
-                w.write_u8(pack_tag(TagFill, 4))?;
+                w.write_u8(pack_tag(TagFill, 3))?;
                 w.write_u32::<LittleEndian>(*len)?;
             }
             Fill64 { len } => {
-                w.write_u8(pack_tag(TagFill, 8))?;
+                w.write_u8(pack_tag(TagFill, 4))?;
                 w.write_u64::<LittleEndian>(*len)?;
             }
             Unmapped8 { len } => {
@@ -246,11 +249,11 @@ impl MapInstruction {
                 w.write_u16::<LittleEndian>(*len)?;
             }
             Unmapped32 { len } => {
-                w.write_u8(pack_tag(TagUnmapped, 4))?;
+                w.write_u8(pack_tag(TagUnmapped, 3))?;
                 w.write_u32::<LittleEndian>(*len)?;
             }
             Unmapped64 { len } => {
-                w.write_u8(pack_tag(TagUnmapped, 8))?;
+                w.write_u8(pack_tag(TagUnmapped, 4))?;
                 w.write_u64::<LittleEndian>(*len)?;
             }
             Slab16 { slab } => {
@@ -305,6 +308,14 @@ impl MapInstruction {
                 w.write_u8(pack_tag(TagEmit20, (len & 0xf) as u8))?;
                 w.write_u16::<LittleEndian>((len >> 4) as u16)?;
             }
+            Pos32 { len } => {
+                w.write_u8(pack_tag(TagUnmapped, 5))?;
+                w.write_u32::<LittleEndian>(*len)?;
+            }
+            Pos64 { len } => {
+                w.write_u8(pack_tag(TagUnmapped, 6))?;
+                w.write_u64::<LittleEndian>(*len)?;
+            }
         }
         Ok(())
     }
@@ -329,15 +340,15 @@ impl MapInstruction {
                     let (input, len) = le_u16(input)?;
                     (input, Fill16 { len })
                 }
-                4 => {
+                3 => {
                     let (input, len) = le_u32(input)?;
                     (input, Fill32 { len })
                 }
-                8 => {
+                4 => {
                     let (input, len) = le_u64(input)?;
                     (input, Fill64 { len })
                 }
-                9 => {
+                5 => {
                     // set fill
                     let (input, byte) = le_u8(input)?;
                     (input, SetFill { byte })
@@ -356,13 +367,21 @@ impl MapInstruction {
                     let (input, len) = le_u16(input)?;
                     (input, Unmapped16 { len })
                 }
-                4 => {
+                3 => {
                     let (input, len) = le_u32(input)?;
                     (input, Unmapped32 { len })
                 }
-                8 => {
+                4 => {
                     let (input, len) = le_u64(input)?;
                     (input, Unmapped64 { len })
+                }
+                5 => {
+                    let (input, len) = le_u32(input)?;
+                    (input, Pos32 { len })
+                }
+                6 => {
+                    let (input, len) = le_u64(input)?;
+                    (input, Pos64 { len })
                 }
                 _ => {
                     // Bad length for unmapped tag
@@ -598,6 +617,17 @@ impl VMState {
         Ok(())
     }
 
+    fn encode_pos(&mut self, len: u64, instrs: &mut IVec) -> Result<()> {
+        use MapInstruction::*;
+        if len < u32::MAX as u64 {
+            instrs.push(Pos32 { len: len as u32 } );
+        } else {
+            instrs.push(Pos64 { len });
+        }
+
+        Ok(())
+    }
+
     fn encode_slab(&mut self, slab: u32, instrs: &mut IVec) -> Result<()> {
         use MapInstruction::*;
 
@@ -678,8 +708,11 @@ impl VMState {
     }
 }
 
-#[derive(Default)]
 pub struct MappingBuilder {
+    // We insert a Pos instruction for every 'index_period' entries.
+    index_period: u64,
+    entries_emitted: u64,
+    position: u64,  // byte len of stream so far
     entry: Option<MapEntry>,
     vm_state: VMState,
 }
@@ -691,6 +724,20 @@ fn pack_instrs<W: Write>(w: &mut W, instrs: &IVec) -> Result<()> {
         i.pack(w)?;
     }
     Ok(())
+}
+
+const INDEX_PERIOD: u64 = 128;
+
+impl Default for MappingBuilder {
+    fn default() -> Self {
+        Self {
+            index_period: INDEX_PERIOD,
+            entries_emitted: 0,
+            position: 0,
+            entry: None,
+            vm_state: VMState::default(),
+        }
+    }
 }
 
 impl MappingBuilder {
@@ -713,10 +760,16 @@ impl MappingBuilder {
                     .encode_data(*slab, *offset, *nr_entries, instrs)?;
             }
         }
+
+        self.entries_emitted += 1;
+        if self.entries_emitted % self.index_period == 0 {
+            self.vm_state.encode_pos(self.position, instrs)?;
+        }
+
         Ok(())
     }
 
-    pub fn next<W: Write>(&mut self, e: &MapEntry, w: &mut W) -> Result<()> {
+    pub fn next<W: Write>(&mut self, e: &MapEntry, len: u64, w: &mut W) -> Result<()> {
         use MapEntry::*;
 
         if self.entry.is_none() {
@@ -768,6 +821,7 @@ impl MappingBuilder {
             }
         }
 
+        self.position += len;
         pack_instrs(w, &instrs)
     }
 
@@ -893,6 +947,12 @@ impl MappingUnpacker {
                 Emit20 { len } => {
                     self.emit_run(&mut r, len as usize);
                 }
+                Pos32 { .. } => {
+                    // Nothing
+                }
+                Pos64 { .. } => {
+                    // Nothing
+                }
             }
         }
         Ok(r)
@@ -914,6 +974,82 @@ fn unpack_instructions(buf: &[u8]) -> Result<Vec<MapInstruction>> {
         .map_err(|_| anyhow!("unable to parse MappingInstruction"))?;
     Ok(instrs)
 }
+
+//-----------------------------------------
+
+/*
+enum PartialEntry {
+    Complete(MapEntry),
+
+    // (e, skip_front, skip_back)
+    Partial(MapEntry, u64, u64),
+}
+
+// FIXME: this reads and unpacks the complete stream and holds in
+// memory.  For huge streams we may need to page entries in on demand.
+// Revisit.
+struct Stream {
+    entries: Vec<MapEntry>,
+
+    // The index stores the offset into the data of each map entry.
+    // FIXME: Don't index every entry.
+    index: Vec<u64>,
+}
+
+impl Stream {
+    pub fn new(file: SlabFile) -> Self {
+        use MapEntry::*;
+
+        let mut entries = Vec::new();
+
+        let mut unpacker = MappingUnpacker::default();
+
+        let nr_slabs = file.get_nr_slabs()?;
+        for s in 0..nr_slabs {
+            let data = file.read(s as u32)?;
+            let mut slab_entries = unpacker.unpack(&data[..])?;
+            entries.extend(&mut slab_entries);
+        }
+
+        let mut index = Vec::with_capacity(entries.len());
+
+        for e in &entries {
+            index.push(total);
+            match e {
+                Fill { len, .. } => {
+                    total += len;
+                }
+                Unmapped { len } => {
+                    total += len;
+                }
+                Data { .. } => {
+                    // don't know the length
+                }
+            }
+        }
+
+        Self { file, index }
+    }
+
+    // The first and last entries may be truncated
+    pub fn get_entries<'a>(&mut self, begin: u64, end: u64) -> StreamIter<'a> {
+        todo!();
+    }
+}
+
+struct StreamIter<'a> {
+
+}
+
+impl<'a> Iterator for StreamIter<'a> {
+    type Item = PartialEntry;
+
+
+    fn next(&mut self) -> Option<Self::Item> {
+
+    }
+}
+*/
 
 //-----------------------------------------
 
@@ -942,6 +1078,8 @@ struct Stats {
     emit4: u64,
     emit12: u64,
     emit20: u64,
+    pos32: u64,
+    pos64: u64,
 }
 
 pub struct Dumper {
@@ -1054,6 +1192,12 @@ impl Dumper {
                 self.stats.emit20 += 1;
                 self.vm_state.top().offset += *len as u32;
             }
+            Pos32 { .. } => {
+                self.stats.pos32 += 1;
+            }
+            Pos64 { .. } => {
+                self.stats.pos64 += 1;
+            }
         }
     }
 
@@ -1133,6 +1277,12 @@ impl Dumper {
             Emit20 { len } => {
                 format!("    emit {:<10}", len)
             }
+            Pos32 { len } => {
+                format!("     pos {:<10}", len)
+            }
+            Pos64 { len } => {
+                format!("     pos {:<10}", len)
+            }
         }
     }
 
@@ -1208,6 +1358,8 @@ impl Dumper {
         stats.push(("emit4", self.stats.emit4));
         stats.push(("emit12", self.stats.emit12));
         stats.push(("emit20", self.stats.emit20));
+        stats.push(("pos32", self.stats.pos32));
+        stats.push(("pos64", self.stats.pos64));
 
         stats.sort_by(|l, r| r.1.cmp(&l.1));
 

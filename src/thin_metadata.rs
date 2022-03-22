@@ -259,3 +259,29 @@ pub fn read_thin_mappings<P: AsRef<Path>>(thin: P) -> Result<ThinInfo> {
 }
 
 //---------------------------------
+
+/*
+struct DeltaExtractor {
+    deltas: Vec<Delta>,
+}
+
+impl DeltaVisitor for DeltaExtractor {
+    fn superblock_b(&mut self, sb: &ir::Superblock) -> Result<Visit> {
+    }
+
+    fn superblock_e(&mut self) -> Result<Visit> {
+    }
+
+    fn diff_b(&mut self, snap1: Snap, snap2: Snap) -> Result<Visit> {
+    }
+
+    fn diff_e(&mut self) -> Result<Visit> {
+    }
+
+    fn delta(&mut self, d: &Delta) -> Result<Visit> {
+        self.deltas.push(d);
+    }
+}
+*/
+
+//---------------------------------

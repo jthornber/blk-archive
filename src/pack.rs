@@ -216,8 +216,8 @@ impl DedupHandler {
         Ok(())
     }
 
-    fn add_stream_entry(&mut self, e: &MapEntry) -> Result<()> {
-        self.mapping_builder.next(e, &mut self.stream_buf)
+    fn add_stream_entry(&mut self, e: &MapEntry, len: u64) -> Result<()> {
+        self.mapping_builder.next(e, len, &mut self.stream_buf)
     }
 
     fn do_add(&mut self, h: Hash256, iov: &IoVec, len: u64) -> Result<MapEntry> {
@@ -238,7 +238,7 @@ impl IoVecHandler for DedupHandler {
 
         if same {
             self.fill_size += len;
-            self.add_stream_entry(&MapEntry::Fill { byte: first_byte, len })?;
+            self.add_stream_entry(&MapEntry::Fill { byte: first_byte, len }, len)?;
             self.maybe_complete_stream()?;
         } else {
             let h = hash_256_iov(iov);
@@ -257,7 +257,7 @@ impl IoVecHandler for DedupHandler {
                 }
             }
 
-            self.add_stream_entry(&me)?;
+            self.add_stream_entry(&me, len)?;
             self.maybe_complete_stream()?;
         }
 
@@ -265,7 +265,7 @@ impl IoVecHandler for DedupHandler {
     }
 
     fn handle_gap(&mut self, len: u64) -> Result<()> {
-        self.add_stream_entry(&MapEntry::Unmapped { len })?;
+        self.add_stream_entry(&MapEntry::Unmapped { len }, len)?;
         self.maybe_complete_stream()?;
 
         Ok(())
@@ -593,6 +593,44 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
 }
 
 pub fn run_thin(matches: &ArgMatches) -> Result<()> {
+    let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
+    let input_file = Path::new(matches.value_of("INPUT").unwrap());
+    let input_name = input_file.file_name().unwrap();
+    let input_file = input_file.canonicalize()?;
+    let report = mk_report();
+
+    env::set_current_dir(&archive_dir)?;
+    let config = config::read_config(".")?;
+
+    let mappings = read_thin_mappings(input_file.clone())?;
+
+    let input = OpenOptions::new()
+        .read(true)
+        .write(false)
+        .open(input_file.clone())
+        .context("couldn't open input file/dev")?;
+    let input_size = thinp::file_utils::file_size(&input_file)?;
+    let mapped_size =
+        mappings.provisioned_blocks.len() as u64 * mappings.data_block_size as u64 * 512;
+    let run_iter = RunIter::new(
+        &mappings.provisioned_blocks,
+        (input_size / (mappings.data_block_size as u64 * 512)) as u32,
+    );
+    let input_iter = ThinChunker::new(input, run_iter, mappings.data_block_size as u64 * 512);
+    report.set_title(&format!("Packing {} ...", input_file.display()));
+    pack_(
+        &report,
+        &input_file.display().to_string(),
+        &input_name.to_str().unwrap(),
+        input_iter,
+        input_size,
+        mapped_size,
+        config.block_size,
+        Some(mappings.thin_id),
+    )
+}
+
+pub fn run_thin_delta(matches: &ArgMatches) -> Result<()> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
     let input_file = Path::new(matches.value_of("INPUT").unwrap());
     let input_name = input_file.file_name().unwrap();
