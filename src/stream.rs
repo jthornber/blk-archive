@@ -164,8 +164,8 @@ enum MapInstruction {
     Emit12 { len: u16 },
     Emit20 { len: u32 },
 
-    Pos32 { len: u32 },
-    Pos64 { len: u64 },
+    Pos32 { pos: u32 },
+    Pos64 { pos: u64 },
 }
 
 // 4 bit tags
@@ -308,13 +308,13 @@ impl MapInstruction {
                 w.write_u8(pack_tag(TagEmit20, (len & 0xf) as u8))?;
                 w.write_u16::<LittleEndian>((len >> 4) as u16)?;
             }
-            Pos32 { len } => {
+            Pos32 { pos } => {
                 w.write_u8(pack_tag(TagUnmapped, 5))?;
-                w.write_u32::<LittleEndian>(*len)?;
+                w.write_u32::<LittleEndian>(*pos)?;
             }
-            Pos64 { len } => {
+            Pos64 { pos } => {
                 w.write_u8(pack_tag(TagUnmapped, 6))?;
-                w.write_u64::<LittleEndian>(*len)?;
+                w.write_u64::<LittleEndian>(*pos)?;
             }
         }
         Ok(())
@@ -376,12 +376,12 @@ impl MapInstruction {
                     (input, Unmapped64 { len })
                 }
                 5 => {
-                    let (input, len) = le_u32(input)?;
-                    (input, Pos32 { len })
+                    let (input, pos) = le_u32(input)?;
+                    (input, Pos32 { pos })
                 }
                 6 => {
-                    let (input, len) = le_u64(input)?;
-                    (input, Pos64 { len })
+                    let (input, pos) = le_u64(input)?;
+                    (input, Pos64 { pos })
                 }
                 _ => {
                     // Bad length for unmapped tag
@@ -617,12 +617,12 @@ impl VMState {
         Ok(())
     }
 
-    fn encode_pos(&mut self, len: u64, instrs: &mut IVec) -> Result<()> {
+    fn encode_pos(&mut self, pos: u64, instrs: &mut IVec) -> Result<()> {
         use MapInstruction::*;
-        if len < u32::MAX as u64 {
-            instrs.push(Pos32 { len: len as u32 } );
+        if pos < u32::MAX as u64 {
+            instrs.push(Pos32 { pos: pos as u32 });
         } else {
-            instrs.push(Pos64 { len });
+            instrs.push(Pos64 { pos });
         }
 
         Ok(())
@@ -712,7 +712,7 @@ pub struct MappingBuilder {
     // We insert a Pos instruction for every 'index_period' entries.
     index_period: u64,
     entries_emitted: u64,
-    position: u64,  // byte len of stream so far
+    position: u64, // byte len of stream so far
     entry: Option<MapEntry>,
     vm_state: VMState,
 }
@@ -1277,11 +1277,11 @@ impl Dumper {
             Emit20 { len } => {
                 format!("    emit {:<10}", len)
             }
-            Pos32 { len } => {
-                format!("     pos {:<10}", len)
+            Pos32 { pos } => {
+                format!("     pos {:<10}", pos)
             }
-            Pos64 { len } => {
-                format!("     pos {:<10}", len)
+            Pos64 { pos } => {
+                format!("     pos {:<10}", pos)
             }
         }
     }
@@ -1307,6 +1307,8 @@ impl Dumper {
             | Fill16 { .. }
             | Fill32 { .. }
             | Fill64 { .. }
+            | Pos32 { .. }
+            | Pos64 { .. }
             | Unmapped8 { .. }
             | Unmapped16 { .. }
             | Unmapped32 { .. }
