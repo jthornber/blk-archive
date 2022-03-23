@@ -143,7 +143,7 @@ impl Unpacker {
 
         for s in 0..nr_slabs {
             let stream_data = self.stream_file.read(s as u32)?;
-            let entries = unpacker.unpack(&stream_data[..])?;
+            let (entries, _positions) = unpacker.unpack(&stream_data[..])?;
             let nr_entries = entries.len();
 
             for (i, e) in entries.iter().enumerate() {

@@ -99,10 +99,10 @@ impl Verifier {
         }
     }
 
-    fn verify_entry<R: Read>(&mut self, e: &MapEntry, r: &mut R) -> Result<()> {
+    fn verify_entry<R: Read>(&mut self, e: &MapEntry, r: &mut R) -> Result<u64> {
         use MapEntry::*;
 
-        match e {
+        let len = match e {
             Fill { byte, len } => {
                 // FIXME: don't keep initialising this buffer,
                 // keep a suitable one around instead
@@ -112,14 +112,22 @@ impl Verifier {
                 r.read_exact(&mut actual)?;
                 assert_eq!(&actual, &expected);
                 self.total_verified += *len as u64;
+                *len as u64
             }
-            Unmapped { .. } => {
+            Unmapped { len } => {
                 todo!();
+                *len as u64
             }
-            Data { slab, offset, nr_entries } => {
+            Data {
+                slab,
+                offset,
+                nr_entries,
+            } => {
+                let mut total_len = 0;
                 for entry in 0..*nr_entries {
                     let info = self.get_info(*slab)?;
-                    let (expected_hash, offset, len) = info.offsets[*offset as usize + entry as usize];
+                    let (expected_hash, offset, len) =
+                        info.offsets[*offset as usize + entry as usize];
                     let data_begin = offset as usize;
                     let data_end = data_begin + len as usize;
                     assert!(data_end <= info.data.len());
@@ -138,25 +146,43 @@ impl Verifier {
                     }
 
                     self.total_verified += actual.len() as u64;
+                    total_len += len as u64;
                 }
+                total_len
             }
-        }
+        };
 
-        Ok(())
+        Ok(len)
     }
 
     pub fn verify<R: Read>(&mut self, report: &Arc<Report>, r: &mut R) -> Result<()> {
         report.progress(0);
 
         let nr_slabs = self.stream_file.get_nr_slabs();
+        let mut current_pos = 0;
 
         for s in 0..nr_slabs {
             let stream_data = self.stream_file.read(s as u32)?;
-            let entries = stream::unpack(&stream_data[..])?;
+            let (entries, positions) = stream::unpack(&stream_data[..])?;
             let nr_entries = entries.len();
+            let mut pos_iter = positions.iter();
+            let mut next_pos = pos_iter.next();
 
             for (i, e) in entries.iter().enumerate() {
-                self.verify_entry(&e, r)?;
+                if let Some(pos) = next_pos {
+                    if pos.1 == i {
+                        if pos.0 != current_pos {
+                            eprintln!("pos didn't match: expected {} != actual {}", pos.0, current_pos);
+                            assert!(false);
+                        }
+                        next_pos = pos_iter.next();
+                    }
+                }
+
+                let entry_len = self.verify_entry(&e, r)?;
+
+		// FIXME: shouldn't inc before checking pos
+                current_pos += entry_len;
 
                 if i % 10240 == 0 {
                     // update progress bar

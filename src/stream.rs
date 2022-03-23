@@ -726,7 +726,8 @@ fn pack_instrs<W: Write>(w: &mut W, instrs: &IVec) -> Result<()> {
     Ok(())
 }
 
-const INDEX_PERIOD: u64 = 128;
+// FIXME: bump up to 128
+const INDEX_PERIOD: u64 = 1;
 
 impl Default for MappingBuilder {
     fn default() -> Self {
@@ -774,6 +775,7 @@ impl MappingBuilder {
 
         if self.entry.is_none() {
             self.entry = Some(*e);
+            self.position += len;
             return Ok(());
         }
 
@@ -843,7 +845,13 @@ pub struct MappingUnpacker {
     vm_state: VMState,
 }
 
+type EntryVec = Vec<MapEntry>;
+
+// (byte_pos, entry index)
+type PosVec = Vec<(u64, usize)>;
+
 impl MappingUnpacker {
+
     fn emit_run(&mut self, r: &mut Vec<MapEntry>, len: usize) {
         let top = self.vm_state.top();
         r.push(MapEntry::Data {
@@ -854,10 +862,11 @@ impl MappingUnpacker {
         top.offset += len as u32;
     }
 
-    pub fn unpack(&mut self, buf: &[u8]) -> Result<Vec<MapEntry>> {
+    pub fn unpack(&mut self, buf: &[u8]) -> Result<(EntryVec, PosVec)> {
         use MapInstruction::*;
 
-        let mut r = Vec::new();
+        let mut entries = Vec::new();
+        let mut positions = Vec::new();
         let (_, instrs) = many0(MapInstruction::unpack)(buf)
             .map_err(|_| anyhow!("unable to parse MappingInstruction"))?;
 
@@ -874,41 +883,41 @@ impl MappingUnpacker {
                     self.vm_state.fill = byte;
                 }
                 Fill8 { len } => {
-                    r.push(MapEntry::Fill {
+                    entries.push(MapEntry::Fill {
                         byte: self.vm_state.fill,
                         len: len as u64,
                     });
                 }
                 Fill16 { len } => {
-                    r.push(MapEntry::Fill {
+                    entries.push(MapEntry::Fill {
                         byte: self.vm_state.fill,
                         len: len as u64,
                     });
                 }
                 Fill32 { len } => {
-                    r.push(MapEntry::Fill {
+                    entries.push(MapEntry::Fill {
                         byte: self.vm_state.fill,
                         len: len as u64,
                     });
                 }
                 Fill64 { len } => {
-                    r.push(MapEntry::Fill {
+                    entries.push(MapEntry::Fill {
                         byte: self.vm_state.fill,
                         len: len as u64,
                     });
                 }
 
                 Unmapped8 { len } => {
-                    r.push(MapEntry::Unmapped { len: len as u64 });
+                    entries.push(MapEntry::Unmapped { len: len as u64 });
                 }
                 Unmapped16 { len } => {
-                    r.push(MapEntry::Unmapped { len: len as u64 });
+                    entries.push(MapEntry::Unmapped { len: len as u64 });
                 }
                 Unmapped32 { len } => {
-                    r.push(MapEntry::Unmapped { len: len as u64 });
+                    entries.push(MapEntry::Unmapped { len: len as u64 });
                 }
                 Unmapped64 { len } => {
-                    r.push(MapEntry::Unmapped { len: len as u64 });
+                    entries.push(MapEntry::Unmapped { len: len as u64 });
                 }
 
                 Slab16 { slab } => {
@@ -939,23 +948,23 @@ impl MappingUnpacker {
                     self.vm_state.top().offset += delta as u32;
                 }
                 Emit4 { len } => {
-                    self.emit_run(&mut r, len as usize);
+                    self.emit_run(&mut entries, len as usize);
                 }
                 Emit12 { len } => {
-                    self.emit_run(&mut r, len as usize);
+                    self.emit_run(&mut entries, len as usize);
                 }
                 Emit20 { len } => {
-                    self.emit_run(&mut r, len as usize);
+                    self.emit_run(&mut entries, len as usize);
                 }
-                Pos32 { .. } => {
-                    // Nothing
+                Pos32 { pos } => {
+                    positions.push((pos as u64, entries.len()));
                 }
-                Pos64 { .. } => {
-                    // Nothing
+                Pos64 { pos } => {
+                    positions.push((pos, entries.len()));
                 }
             }
         }
-        Ok(r)
+        Ok((entries, positions))
     }
 }
 
@@ -963,7 +972,7 @@ impl MappingUnpacker {
 
 // This starts from a fresh vm state each time, so don't use
 // for cases where you get the stream in chunks (ie. slabs).
-pub fn unpack(buf: &[u8]) -> Result<Vec<MapEntry>> {
+pub fn unpack(buf: &[u8]) -> Result<(EntryVec, PosVec)> {
     let mut unpacker = MappingUnpacker::default();
     let r = unpacker.unpack(buf)?;
     Ok(r)
