@@ -277,13 +277,17 @@ impl IoVecHandler for DedupHandler {
             let mini_hash = c.read_u64::<LittleEndian>()?;
 
             let me: MapEntry;
-            if self.seen.test_and_set(mini_hash, self.current_slab)? {
-                me = self.do_add(h, iov, len)?;
-            } else {
-                if let Some(e) = self.hashes.get(&h) {
-                    me = *e;
-                } else {
+            match self.seen.test_and_set(mini_hash, self.current_slab)? {
+                InsertResult::Inserted => {
                     me = self.do_add(h, iov, len)?;
+                }
+                InsertResult::AlreadyPresent(_s) => {
+                    // FIXME: ensure hashes from s are loaded into self.hashes
+                    if let Some(e) = self.hashes.get(&h) {
+                        me = *e;
+                    } else {
+                        me = self.do_add(h, iov, len)?;
+                    }
                 }
             }
 

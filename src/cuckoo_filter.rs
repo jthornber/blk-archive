@@ -27,6 +27,12 @@ impl Default for Bucket {
     }
 }
 
+#[derive(PartialEq, Eq)]
+pub enum InsertResult {
+    AlreadyPresent(u32),
+    Inserted,
+}
+
 pub struct CuckooFilter {
     rng: ChaCha20Rng,
     len: usize,
@@ -196,25 +202,27 @@ impl CuckooFilter {
 
     // h must be randomly distributed across u64. Does not overwrite
     // slab if there's already an entry.
-    fn test_and_set_(&mut self, h: u64, mut slab: u32) -> Result<bool> {
+    fn test_and_set_(&mut self, h: u64, mut slab: u32) -> Result<InsertResult> {
+        use InsertResult::*;
+
         let mut fingerprint: u8 = (h & 0b1111111) as u8;
         let index1: usize = ((h >> 8) as usize) & self.mask;
 
-        if self.present(fingerprint, index1).is_some() {
-            return Ok(false);
+        if let Some(s) = self.present(fingerprint, index1) {
+            return Ok(AlreadyPresent(s));
         }
 
         let index2: usize = ((index1 ^ self.scatter[fingerprint as usize]) as usize) & self.mask;
-        if self.present(fingerprint, index2).is_some() {
-            return Ok(false);
+        if let Some(s) = self.present(fingerprint, index2) {
+            return Ok(AlreadyPresent(s));
         }
 
         if self.insert(fingerprint, slab, index1) {
-            return Ok(true);
+            return Ok(Inserted);
         }
 
         if self.insert(fingerprint, slab, index2) {
-            return Ok(true);
+            return Ok(Inserted);
         }
 
         let mut i = if self.rng.gen() { index1 } else { index2 };
@@ -238,20 +246,19 @@ impl CuckooFilter {
 
             if self.bucket_counts[i] < (ENTRIES_PER_BUCKET as u8) {
                 self.insert(fingerprint, slab, i);
-                return Ok(true);
+                return Ok(Inserted);
             }
         }
 
         Err(anyhow!("cuckoo table full"))
     }
 
-    pub fn test_and_set(&mut self, h: u64, slab: u32) -> Result<bool> {
-        if self.test_and_set_(h, slab)? {
+    pub fn test_and_set(&mut self, h: u64, slab: u32) -> Result<InsertResult> {
+        let r = self.test_and_set_(h, slab)?;
+        if r == InsertResult::Inserted {
             self.len += 1;
-            Ok(true)
-        } else {
-            Ok(false)
         }
+        Ok(r)
     }
 
     pub fn len(&self) -> usize {
