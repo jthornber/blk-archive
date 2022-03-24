@@ -169,6 +169,18 @@ impl DedupHandler {
         })
     }
 
+    fn rebuild_index(&mut self, _capacity: usize) -> Result<()> {
+        todo!();
+    }
+
+    fn ensure_extra_capacity(&mut self, blocks: usize) -> Result<()> {
+        if self.seen.capacity() < self.seen.len() + blocks {
+            self.rebuild_index(self.seen.len() + blocks)?;
+        }
+
+        Ok(())
+    }
+
     fn complete_slab_(slab: &mut SlabFile, buf: &mut Vec<u8>) -> Result<()> {
         slab.write_slab(&buf)?;
         buf.clear();
@@ -250,7 +262,7 @@ impl IoVecHandler for DedupHandler {
             let mini_hash = c.read_u64::<LittleEndian>()?;
 
             let me: MapEntry;
-            if self.seen.test_and_set(mini_hash)? {
+            if self.seen.test_and_set(mini_hash, self.current_slab)? {
                 me = self.do_add(h, iov, len)?;
             } else {
                 if let Some(e) = self.hashes.get(&h) {
@@ -488,6 +500,7 @@ where
         SlabFile::create(stream_path, 16, true).context("couldn't open stream slab file")?;
 
     let mut handler = DedupHandler::new(data_file, hashes_file, stream_file)?;
+    handler.ensure_extra_capacity(mapped_size as usize / block_size);
 
     report.progress(0);
     let start_time: DateTime<Utc> = Utc::now();
@@ -517,7 +530,7 @@ where
     report.info(&format!("file size        : {:.2}", Size(input_size)));
     report.info(&format!("mapped size      : {:.2}", Size(mapped_size)));
     report.info(&format!(
-        "fills size      : {:.2}",
+        "fills size       : {:.2}",
         Size(handler.fill_size)
     ));
     report.info(&format!(

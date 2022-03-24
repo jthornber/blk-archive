@@ -15,12 +15,14 @@ const MAX_KICKS: usize = 500;
 #[derive(Clone)]
 struct Bucket {
     entries: [u8; ENTRIES_PER_BUCKET],
+    slabs: [u32; ENTRIES_PER_BUCKET],
 }
 
 impl Default for Bucket {
     fn default() -> Self {
         Self {
             entries: [0; ENTRIES_PER_BUCKET],
+            slabs: [0; ENTRIES_PER_BUCKET],
         }
     }
 }
@@ -39,9 +41,11 @@ fn parse_bucket(input: &[u8], nr: usize) -> IResult<&[u8], Bucket> {
     use nom::number::complete::*;
 
     let (input, entries) = count(le_u8, nr)(input)?;
+    let (input, slabs) = count(le_u32, nr)(input)?;
     let mut b = Bucket::default();
-    for (i, e) in entries.iter().enumerate() {
-        b.entries[i] = *e;
+    for (i, (e, s)) in zip(entries, slabs).enumerate() {
+        b.entries[i] = e;
+        b.slabs[i] = s;
     }
     Ok((input, b))
 }
@@ -71,6 +75,7 @@ fn parse_nr(input: &[u8]) -> IResult<&[u8], u32> {
 
 impl CuckooFilter {
     pub fn with_capacity(mut n: usize) -> Self {
+        n = (n * 5) / 4;
         n /= ENTRIES_PER_BUCKET;
         let mut rng = ChaCha20Rng::seed_from_u64(1);
         let nr_buckets = cmp::max(n, 4096).next_power_of_two();
@@ -131,71 +136,84 @@ impl CuckooFilter {
             for e in 0..*count {
                 out.write_u8(self.buckets[b].entries[e as usize])?;
             }
+
+            for s in 0..*count {
+                out.write_u32::<LittleEndian>(self.buckets[b].slabs[s as usize])?;
+            }
         }
 
-        let mut file = SlabFile::create(path, 1, true)?;
+        let mut file = SlabFile::create(path, 1, false)?;
         file.write_slab(&out)?;
         file.close()?;
 
         Ok(())
     }
 
-    fn present(&self, fp: u8, index: usize) -> bool {
+    pub fn capacity(&self) -> usize {
+        self.buckets.len() * ENTRIES_PER_BUCKET * 4 / 5
+    }
+
+    fn present(&self, fp: u8, index: usize) -> Option<u32> {
         for entry in 0..self.bucket_counts[index] as usize {
             if self.buckets[index].entries[entry] == fp {
-                return true;
+                return Some(self.buckets[index].slabs[entry]);
             }
         }
 
-        false
+        None
     }
 
-    fn insert(&mut self, fp: u8, index: usize) -> bool {
+    fn insert(&mut self, fp: u8, slab: u32, index: usize) -> bool {
         let entry = self.bucket_counts[index] as usize;
         if entry >= ENTRIES_PER_BUCKET {
             false
         } else {
             self.buckets[index].entries[entry] = fp;
+            self.buckets[index].slabs[entry] = slab;
             self.bucket_counts[index] += 1;
             true
         }
     }
 
-    pub fn contains(&self, h: u64) -> bool {
+    /// Returns the data slab that might contain this
+    pub fn contains(&self, h: u64) -> Option<u32> {
         let fingerprint: u8 = (h & 0xff) as u8;
         let index1: usize = ((h >> 8) as usize) & self.mask;
 
-        if self.present(fingerprint, index1) {
-            return true;
+        let found = self.present(fingerprint, index1);
+        if found.is_some() {
+            return found;
         }
 
         let index2: usize = ((index1 ^ self.scatter[fingerprint as usize]) as usize) & self.mask;
-        if self.present(fingerprint, index2) {
-            return true;
+        let found = self.present(fingerprint, index2);
+        if found.is_some() {
+            return found;
         }
 
-        false
+        None
     }
 
-    // h must be randomly distributed across u64
-    fn test_and_set_(&mut self, h: u64) -> Result<bool> {
+    // h must be randomly distributed across u64. Does not overwrite
+    // slab if there's already an entry.
+    fn test_and_set_(&mut self, h: u64, mut slab: u32) -> Result<bool> {
         let mut fingerprint: u8 = (h & 0b1111111) as u8;
         let index1: usize = ((h >> 8) as usize) & self.mask;
 
-        if self.present(fingerprint, index1) {
+        if self.present(fingerprint, index1).is_some() {
             return Ok(false);
         }
 
         let index2: usize = ((index1 ^ self.scatter[fingerprint as usize]) as usize) & self.mask;
-        if self.present(fingerprint, index2) {
+        if self.present(fingerprint, index2).is_some() {
             return Ok(false);
         }
 
-        if self.insert(fingerprint, index1) {
+        if self.insert(fingerprint, slab, index1) {
             return Ok(true);
         }
 
-        if self.insert(fingerprint, index2) {
+        if self.insert(fingerprint, slab, index2) {
             return Ok(true);
         }
 
@@ -210,12 +228,16 @@ impl CuckooFilter {
                 &mut fingerprint,
                 &mut self.buckets[i].entries[entry as usize],
             );
+            std::mem::swap(
+                &mut slab,
+                &mut self.buckets[i].slabs[entry as usize],
+            );
 
             // i = i ^ hash(new fp)
             i = (i ^ self.scatter[fingerprint as usize]) & self.mask;
 
             if self.bucket_counts[i] < (ENTRIES_PER_BUCKET as u8) {
-                self.insert(fingerprint, i);
+                self.insert(fingerprint, slab, i);
                 return Ok(true);
             }
         }
@@ -223,8 +245,8 @@ impl CuckooFilter {
         Err(anyhow!("cuckoo table full"))
     }
 
-    pub fn test_and_set(&mut self, h: u64) -> Result<bool> {
-        if self.test_and_set_(h)? {
+    pub fn test_and_set(&mut self, h: u64, slab: u32) -> Result<bool> {
+        if self.test_and_set_(h, slab)? {
             self.len += 1;
             Ok(true)
         } else {
