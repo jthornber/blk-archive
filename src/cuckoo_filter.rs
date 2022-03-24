@@ -1,8 +1,13 @@
 use anyhow::{anyhow, Result};
+use byteorder::{LittleEndian, WriteBytesExt};
+use nom::IResult;
 use rand::prelude::*;
 use rand_chacha::ChaCha20Rng;
 use std::cmp;
 use std::iter::*;
+use std::path::Path;
+
+use crate::slab::*;
 
 const ENTRIES_PER_BUCKET: usize = 4;
 const MAX_KICKS: usize = 500;
@@ -29,8 +34,44 @@ pub struct CuckooFilter {
     mask: usize,
 }
 
+fn parse_bucket(input: &[u8], nr: usize) -> IResult<&[u8], Bucket> {
+    use nom::multi::*;
+    use nom::number::complete::*;
+
+    let (input, entries) = count(le_u8, nr)(input)?;
+    let mut b = Bucket::default();
+    for (i, e) in entries.iter().enumerate() {
+        b.entries[i] = *e;
+    }
+    Ok((input, b))
+}
+
+fn parse_counts(input: &[u8], nr: usize) -> IResult<&[u8], Vec<u8>> {
+    use nom::multi::*;
+    use nom::number::complete::*;
+
+    count(le_u8, nr)(input)
+}
+
+fn parse_buckets<'a>(mut input: &'a [u8], counts: &[u8]) -> IResult<&'a [u8], Vec<Bucket>> {
+    let mut buckets: Vec<Bucket> = Vec::with_capacity(counts.len());
+
+    for i in 0..counts.len() {
+        let (inp, bucket) = parse_bucket(input, counts[i] as usize)?;
+        buckets.push(bucket);
+        input = inp;
+    }
+
+    Ok((input, buckets))
+}
+
+fn parse_nr(input: &[u8]) -> IResult<&[u8], u32> {
+    nom::number::complete::le_u32(input)
+}
+
 impl CuckooFilter {
-    pub fn with_capacity(n: usize) -> Self {
+    pub fn with_capacity(mut n: usize) -> Self {
+        n /= ENTRIES_PER_BUCKET;
         let mut rng = ChaCha20Rng::seed_from_u64(1);
         let nr_buckets = cmp::max(n, 4096).next_power_of_two();
         let scatter: Vec<usize> = repeat_with(|| rng.gen()).take(256).collect();
@@ -44,6 +85,61 @@ impl CuckooFilter {
         }
     }
 
+    pub fn read<P: AsRef<Path>>(path: P) -> Result<Self> {
+        // all the data goes in a single slab
+        let mut file = SlabFile::open_for_read(path)?;
+        let input = file.read(0)?;
+
+        let mut rng = ChaCha20Rng::seed_from_u64(1);
+
+        let (input, nr_buckets) = parse_nr(&input[..]).map_err(|_| anyhow!("couldn't parse nr"))?;
+        let nr_buckets = nr_buckets as usize;
+        let (input, bucket_counts) =
+            parse_counts(input, nr_buckets).map_err(|_| anyhow!("couldn't parse counts"))?;
+        let (input, buckets) =
+            parse_buckets(input, &bucket_counts).map_err(|_| anyhow!("couldn't parse buckets"))?;
+
+        if input.len() != 0 {
+            // FIXME: throwing here causes a hang, presumably waiting for threads.
+            return Err(anyhow!("extra bytes at end of index file"));
+        }
+
+        let scatter: Vec<usize> = repeat_with(|| rng.gen()).take(256).collect();
+        // FIXME: double check nr_buckets is a power of 2
+        let mask = nr_buckets - 1;
+        let len = bucket_counts.iter().map(|n| *n as usize).sum();
+
+        Ok(Self {
+            rng,
+            len,
+            scatter,
+            bucket_counts,
+            buckets,
+            mask,
+        })
+    }
+
+    pub fn write<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        let mut out: Vec<u8> = Vec::new();
+
+        out.write_u32::<LittleEndian>(self.bucket_counts.len() as u32)?;
+        for i in &self.bucket_counts {
+            out.write_u8(*i)?;
+        }
+
+        for (b, count) in self.bucket_counts.iter().enumerate() {
+            for e in 0..*count {
+                out.write_u8(self.buckets[b].entries[e as usize])?;
+            }
+        }
+
+        let mut file = SlabFile::create(path, 1, true)?;
+        file.write_slab(&out)?;
+        file.close()?;
+
+        Ok(())
+    }
+
     fn present(&self, fp: u8, index: usize) -> bool {
         for entry in 0..self.bucket_counts[index] as usize {
             if self.buckets[index].entries[entry] == fp {
@@ -54,7 +150,7 @@ impl CuckooFilter {
         false
     }
 
-    fn insert(&mut self, fp: u8,  index: usize) -> bool {
+    fn insert(&mut self, fp: u8, index: usize) -> bool {
         let entry = self.bucket_counts[index] as usize;
         if entry >= ENTRIES_PER_BUCKET {
             false
@@ -110,7 +206,10 @@ impl CuckooFilter {
             let entry = self.rng.gen_range(0..self.bucket_counts[i]);
 
             // swap with fp
-            std::mem::swap(&mut fingerprint, &mut self.buckets[i].entries[entry as usize]);
+            std::mem::swap(
+                &mut fingerprint,
+                &mut self.buckets[i].entries[entry as usize],
+            );
 
             // i = i ^ hash(new fp)
             i = (i ^ self.scatter[fingerprint as usize]) & self.mask;
@@ -163,7 +262,7 @@ mod cuckoo_tests {
             }
         }
 
-	assert_eq!(cf.len(), inserted.len());
+        assert_eq!(cf.len(), inserted.len());
         for n in inserted {
             assert!(cf.contains(n));
         }

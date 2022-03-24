@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use thinp::report::*;
 
 use crate::config::*;
+use crate::cuckoo_filter::*;
+use crate::paths;
 use crate::slab::*;
 
 //-----------------------------------------
@@ -61,7 +63,8 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
         .value_of("BLOCK_SIZE")
         .map(|s| s.parse::<usize>())
         .or(Some(Ok(4096)))
-        .unwrap().context("couldn't parse --block-size argument")?;
+        .unwrap()
+        .context("couldn't parse --block-size argument")?;
 
     let report = std::sync::Arc::new(mk_simple_report());
 
@@ -87,6 +90,10 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     let hashes_path: PathBuf = ["data", "hashes"].iter().collect();
     let mut hashes_file = SlabFile::create(&hashes_path, 1, false)?;
     hashes_file.close()?;
+
+    // Write empty index
+    let index = CuckooFilter::with_capacity(1 << 28);
+    index.write(paths::index_path())?;
 
     Ok(())
 }

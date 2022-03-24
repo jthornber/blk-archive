@@ -29,6 +29,7 @@ use crate::slab::*;
 use crate::splitter::*;
 use crate::stream::*;
 use crate::thin_metadata::*;
+use crate::paths;
 
 //-----------------------------------------
 
@@ -106,8 +107,9 @@ impl DedupHandler {
     fn read_hashes(
         hashes_file: &mut SlabFile,
     ) -> Result<(CuckooFilter, BTreeMap<Hash256, MapEntry>)> {
+        let seen = CuckooFilter::read(paths::index_path())?; // FIXME: handle resizing
+
         let mut r = BTreeMap::new();
-        let mut seen = CuckooFilter::with_capacity(2 << 24); // FIXME: handle resizing
         let nr_slabs = hashes_file.get_nr_slabs();
         for s in 0..nr_slabs {
             let buf = hashes_file.read(s as u32)?;
@@ -116,10 +118,11 @@ impl DedupHandler {
 
             let mut i = 0;
             for h in hashes {
+                /*
                 let mini_hash = hash_64(&h[..]);
                 let mut c = Cursor::new(&mini_hash);
                 let mini_hash = c.read_u64::<LittleEndian>()?;
-                seen.test_and_set(mini_hash)?;
+                */
                 r.insert(
                     h,
                     MapEntry::Data {
@@ -283,6 +286,8 @@ impl IoVecHandler for DedupHandler {
         self.hashes_file.close()?;
         self.data_file.close()?;
         self.stream_file.close()?;
+
+        self.seen.write(paths::index_path())?;
 
         Ok(())
     }
