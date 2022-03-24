@@ -144,9 +144,7 @@ fn write_slab(shared: &Arc<Mutex<SlabShared>>, data: &[u8]) -> Result<()> {
 
     shared.data.seek(SeekFrom::End(0))?;
     shared.data.write_u64::<LittleEndian>(SLAB_MAGIC)?;
-    shared
-        .data
-        .write_u64::<LittleEndian>(data.len() as u64)?;
+    shared.data.write_u64::<LittleEndian>(data.len() as u64)?;
     let csum = hash_64(&data);
     shared.data.write_all(&csum)?;
     shared.data.write_all(&data)?;
@@ -364,12 +362,8 @@ impl SlabFile {
     pub fn read(&mut self, slab: u32) -> Result<Vec<u8>> {
         let mut shared = self.shared.lock().unwrap();
 
-        {
-            let offset = shared.offsets.offsets[slab as usize];
-
-            // FIXME: use read_exact_at
-            shared.data.seek(SeekFrom::Start(offset))?;
-        }
+        let offset = shared.offsets.offsets[slab as usize];
+        shared.data.seek(SeekFrom::Start(offset))?;
 
         let magic = shared.data.read_u64::<LittleEndian>()?;
         let len = shared.data.read_u64::<LittleEndian>()?;

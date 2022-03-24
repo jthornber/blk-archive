@@ -150,7 +150,7 @@ impl CuckooFilter {
     }
 
     pub fn capacity(&self) -> usize {
-        self.buckets.len() * ENTRIES_PER_BUCKET * 4 / 5
+        (self.buckets.len() * ENTRIES_PER_BUCKET * 4) / 5
     }
 
     fn present(&self, fp: u8, index: usize) -> Option<u32> {

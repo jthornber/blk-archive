@@ -118,11 +118,6 @@ impl DedupHandler {
 
             let mut i = 0;
             for h in hashes {
-                /*
-                let mini_hash = hash_64(&h[..]);
-                let mut c = Cursor::new(&mini_hash);
-                let mini_hash = c.read_u64::<LittleEndian>()?;
-                */
                 r.insert(
                     h,
                     MapEntry::Data {
@@ -169,13 +164,33 @@ impl DedupHandler {
         })
     }
 
-    fn rebuild_index(&mut self, _capacity: usize) -> Result<()> {
-        todo!();
+    fn rebuild_index(&mut self, new_capacity: usize) -> Result<()> {
+        let mut seen = CuckooFilter::with_capacity(new_capacity);
+
+        // Scan the hashes file.
+        let nr_slabs = self.hashes_file.get_nr_slabs();
+        for s in 0..nr_slabs {
+            let buf = self.hashes_file.read(s as u32)?;
+            let (_, hashes) =
+                Self::parse_hashes(&buf).map_err(|_| anyhow!("couldn't parse hashes"))?;
+
+            for h in hashes {
+                let mini_hash = hash_64(&h[..]);
+                let mut c = Cursor::new(&mini_hash);
+                let mini_hash = c.read_u64::<LittleEndian>()?;
+                seen.test_and_set(mini_hash, s as u32)?;
+            }
+        }
+
+        std::mem::swap(&mut seen, &mut self.seen);
+
+        Ok(())
     }
 
     fn ensure_extra_capacity(&mut self, blocks: usize) -> Result<()> {
         if self.seen.capacity() < self.seen.len() + blocks {
             self.rebuild_index(self.seen.len() + blocks)?;
+            eprintln!("resized index to {}", self.seen.capacity());
         }
 
         Ok(())
@@ -500,7 +515,7 @@ where
         SlabFile::create(stream_path, 16, true).context("couldn't open stream slab file")?;
 
     let mut handler = DedupHandler::new(data_file, hashes_file, stream_file)?;
-    handler.ensure_extra_capacity(mapped_size as usize / block_size);
+    handler.ensure_extra_capacity(mapped_size as usize / block_size)?;
 
     report.progress(0);
     let start_time: DateTime<Utc> = Utc::now();
