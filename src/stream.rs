@@ -1436,12 +1436,13 @@ mod stream_tests {
 
             let mut builder = MappingBuilder::default();
             for e in &t {
-                builder.next(&e, &mut c).expect("builder.next() failed");
+                let len = 16;  // FIXME: assume all entries are 16 bytes in length
+                builder.next(&e, len, &mut c).expect("builder.next() failed");
             }
             builder.complete(&mut c).expect("builder.complete() failed");
 
             // unpack
-            let actual = unpack(&buf[..]).expect("unpack failed");
+            let (actual, _) = unpack(&buf[..]).expect("unpack failed");
 
             assert_eq!(*t, actual);
         }

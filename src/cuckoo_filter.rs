@@ -283,17 +283,20 @@ mod cuckoo_tests {
         let mut inserted = BTreeSet::new();
         for _ in 0..10_000 {
             let n = rng.gen_range(0..100_000);
-            if cf.test_and_set(n).expect("test_and_set failed") {
-                assert!(!inserted.contains(&n));
-                inserted.insert(n);
-            } else {
-                // False positive means we can't check inserted
+            match cf.test_and_set(n, n as u32).expect("test_and_set failed") {
+                InsertResult::Inserted => {
+                    assert!(!inserted.contains(&n));
+                    inserted.insert(n);
+                }
+                InsertResult::AlreadyPresent(_slab) => {
+                    // False positive means we can't check inserted
+                }
             }
         }
 
         assert_eq!(cf.len(), inserted.len());
         for n in inserted {
-            assert!(cf.contains(n));
+            assert!(cf.contains(n).unwrap() == n as u32);
         }
     }
 }
