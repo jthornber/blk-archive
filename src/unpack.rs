@@ -20,7 +20,6 @@ use crate::stream::*;
 #[allow(dead_code)]
 struct SlabInfo {
     offsets: Vec<(Hash256, u32, u32)>,
-    data: Vec<u8>,
 }
 
 #[allow(dead_code)]
@@ -81,10 +80,7 @@ impl Unpacker {
         let (_, offsets) =
             Self::parse_slab_info(&hashes).map_err(|_| anyhow!("unable to parse slab hashes"))?;
 
-        // Read data slab
-        let data = self.data_file.read(slab)?;
-
-        Ok(Arc::new(SlabInfo { offsets, data }))
+        Ok(Arc::new(SlabInfo { offsets }))
     }
 
     fn get_info(&mut self, slab: u32) -> Result<Arc<SlabInfo>> {
@@ -121,14 +117,15 @@ impl Unpacker {
             }
             Data { slab, offset, nr_entries } => {
                 let info = self.get_info(*slab)?;
+                let data = self.data_file.read(*slab)?;
                 let (_expected_hash, offset, _len) = info.offsets[*offset as usize];
                 let data_begin = offset as usize;
                 let (_expected_hash, offset, len) = info.offsets[(offset as usize) + *nr_entries as usize];
                 let data_end = offset as usize + len as usize;
-                assert!(data_end <= info.data.len());
+                assert!(data_end <= data.len());
 
                 // Copy data
-                w.write_all(&info.data[data_begin..data_end])?;
+                w.write_all(&data[data_begin..data_end])?;
             }
         }
 

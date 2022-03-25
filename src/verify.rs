@@ -20,7 +20,6 @@ use crate::stream::*;
 #[allow(dead_code)]
 struct SlabInfo {
     offsets: Vec<(Hash256, u32, u32)>,
-    data: Vec<u8>,
 }
 
 #[allow(dead_code)]
@@ -83,10 +82,7 @@ impl Verifier {
         let (_, offsets) =
             Self::parse_slab_info(&hashes).map_err(|_| anyhow!("unable to parse slab hashes"))?;
 
-        // Read data slab
-        let data = self.data_file.read(slab)?;
-
-        Ok(Arc::new(SlabInfo { offsets, data }))
+        Ok(Arc::new(SlabInfo { offsets }))
     }
 
     fn get_info(&mut self, slab: u32) -> Result<Arc<SlabInfo>> {
@@ -126,21 +122,22 @@ impl Verifier {
                 let mut total_len = 0;
                 for entry in 0..*nr_entries {
                     let info = self.get_info(*slab)?;
+                    let data = self.data_file.read(*slab)?;
                     let (expected_hash, offset, len) =
                         info.offsets[*offset as usize + entry as usize];
                     let data_begin = offset as usize;
                     let data_end = data_begin + len as usize;
-                    assert!(data_end <= info.data.len());
+                    assert!(data_end <= data.len());
 
                     // FIXME: make this paranioa check optional
                     // Verify hash
-                    let actual_hash = hash_256(&info.data[data_begin..data_end]);
+                    let actual_hash = hash_256(&data[data_begin..data_end]);
                     assert_eq!(actual_hash, expected_hash);
 
                     // Verify data
                     let mut actual = vec![0; data_end - data_begin];
                     r.read_exact(&mut actual)?;
-                    if actual != &info.data[data_begin..data_end] {
+                    if actual != &data[data_begin..data_end] {
                         eprintln!("mismatched data at offset {}", self.total_verified);
                         assert!(false);
                     }

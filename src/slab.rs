@@ -11,6 +11,44 @@ use std::thread;
 use threadpool::ThreadPool;
 
 use crate::hash::*;
+use crate::lru::*;
+
+//------------------------------------------------
+
+struct DataCache {
+    lru: LRU,
+    tree: BTreeMap<u32, Arc<Vec<u8>>>,
+}
+
+impl DataCache {
+    fn new(nr_entries: usize) -> Self {
+        let lru = LRU::with_capacity(nr_entries);
+        let tree = BTreeMap::new();
+
+        Self { lru, tree }
+    }
+
+    fn find<'a>(&self, slab: u32) -> Option<Arc<Vec<u8>>> {
+        self.tree.get(&slab).cloned()
+    }
+
+    fn insert(&mut self, slab: u32, data: Arc<Vec<u8>>) {
+        use PushResult::*;
+
+        match self.lru.push(slab) {
+            AlreadyPresent => {
+                // Nothing to do
+            }
+            Added => {
+                self.tree.insert(slab, data);
+            }
+            AddAndEvict(old_slab) => {
+                self.tree.remove(&old_slab);
+                self.tree.insert(slab, data);
+            }
+        }
+    }
+}
 
 //------------------------------------------------
 
@@ -121,6 +159,8 @@ pub struct SlabFile {
 
     tx: Option<SyncSender<SlabData>>,
     tid: Option<thread::JoinHandle<()>>,
+
+    data_cache: DataCache,
 }
 
 impl Drop for SlabFile {
@@ -243,6 +283,7 @@ impl SlabFile {
             shared,
             tx: Some(tx),
             tid: Some(tid),
+            data_cache: DataCache::new(1), // FIXME: pass in nr_data_entries
         })
     }
 
@@ -301,6 +342,7 @@ impl SlabFile {
             shared,
             tx: Some(tx),
             tid: Some(tid),
+            data_cache: DataCache::new(32), // FIXME: pass in nr_data_entries
         })
     }
 
@@ -343,6 +385,7 @@ impl SlabFile {
             shared,
             tx: None,
             tid: None,
+            data_cache: DataCache::new(32), // FIXME: pass in nr_data_entries
         })
     }
 
@@ -359,7 +402,7 @@ impl SlabFile {
         Ok(())
     }
 
-    pub fn read(&mut self, slab: u32) -> Result<Vec<u8>> {
+    pub fn read_(&mut self, slab: u32) -> Result<Vec<u8>> {
         let mut shared = self.shared.lock().unwrap();
 
         let offset = shared.offsets.offsets[slab as usize];
@@ -385,6 +428,16 @@ impl SlabFile {
             Ok(buffer)
         } else {
             Ok(buf)
+        }
+    }
+
+    pub fn read(&mut self, slab: u32) -> Result<Arc<Vec<u8>>> {
+        if let Some(data) = self.data_cache.find(slab) {
+            Ok(data.clone())
+        } else {
+            let data = Arc::new(self.read_(slab)?);
+            self.data_cache.insert(slab, data.clone());
+            Ok(data)
         }
     }
 
