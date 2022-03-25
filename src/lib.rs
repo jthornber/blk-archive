@@ -7,6 +7,7 @@ pub mod dump_stream;
 pub mod hash;
 pub mod iovec;
 pub mod list;
+pub mod lru;
 pub mod pack;
 pub mod paths;
 pub mod rolling_hash;

@@ -15,6 +15,12 @@ pub struct LRU {
     tree: BTreeMap<u32, usize>,
 }
 
+pub enum PushResult {
+    AlreadyPresent,
+    Added,
+    AddAndEvict(u32),
+}
+
 impl LRU {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
@@ -69,18 +75,20 @@ impl LRU {
 
     // Makes sure n is in the LRU, optionally returns an entry
     // that was evicted
-    pub fn push(&mut self, n: u32) -> Option<u32> {
+    pub fn push(&mut self, n: u32) -> PushResult {
+        use PushResult::*;
+
         let r = if let Some(index) = self.tree.get(&n).cloned() {
             // relink
             self.lru_del_(index);
             self.lru_add_(n, index);
-            None
+            AlreadyPresent
         } else {
             if self.entries.len() < self.capacity {
                 // insert
                 self.lru_push_(n);
                 self.tree.insert(n, self.entries.len() - 1);
-                None
+                Added
             } else {
                 // evict and insert
                 let index = self.tail;
@@ -90,7 +98,7 @@ impl LRU {
                 self.lru_del_(index);
                 self.lru_add_(n, index);
                 self.tree.insert(n, index);
-                Some(evicted)
+                AddAndEvict(evicted)
             }
         };
 

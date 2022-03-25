@@ -36,6 +36,7 @@ fn write_config(root: &Path, block_size: usize) -> Result<()> {
     let config = Config {
         block_size,
         splitter_alg: "RollingHashV0".to_string(),
+        hash_cache_size_meg: 1024,
     };
 
     write!(output, "{}", &toml::to_string(&config).unwrap())?;
@@ -92,7 +93,7 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     hashes_file.close()?;
 
     // Write empty index
-    let index = CuckooFilter::with_capacity(1 << 28);
+    let index = CuckooFilter::with_capacity(1 << 10);
     index.write(paths::index_path())?;
 
     Ok(())

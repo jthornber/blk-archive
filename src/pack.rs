@@ -24,12 +24,13 @@ use crate::content_sensitive_splitter::*;
 use crate::cuckoo_filter::*;
 use crate::hash::*;
 use crate::iovec::*;
+use crate::lru::*;
+use crate::paths;
 use crate::run_iter::*;
 use crate::slab::*;
 use crate::splitter::*;
 use crate::stream::*;
 use crate::thin_metadata::*;
-use crate::paths;
 
 //-----------------------------------------
 
@@ -71,6 +72,7 @@ struct DedupHandler {
     // Maps hashes to the slab they're in
     // seen: BTreeSet<Hash64>,
     seen: CuckooFilter,
+    slabs_loaded: LRU,
     hashes: BTreeMap<Hash256, MapEntry>,
 
     data_file: SlabFile,
@@ -104,44 +106,83 @@ impl DedupHandler {
         many0(Self::parse_hash_entry)(input)
     }
 
-    fn read_hashes(
-        hashes_file: &mut SlabFile,
-    ) -> Result<(CuckooFilter, BTreeMap<Hash256, MapEntry>)> {
-        let seen = CuckooFilter::read(paths::index_path())?; // FIXME: handle resizing
+    fn read_hash_slab_(&mut self, slab: u32) -> Result<()> {
+        let buf = self.hashes_file.read(slab)?;
+        let (_, hashes) = Self::parse_hashes(&buf).map_err(|_| anyhow!("couldn't parse hashes"))?;
 
-        let mut r = BTreeMap::new();
-        let nr_slabs = hashes_file.get_nr_slabs();
-        for s in 0..nr_slabs {
-            let buf = hashes_file.read(s as u32)?;
-            let (_, hashes) =
-                Self::parse_hashes(&buf).map_err(|_| anyhow!("couldn't parse hashes"))?;
+        for (i, h) in hashes.iter().enumerate() {
+            self.hashes.insert(
+                h.clone(),
+                MapEntry::Data {
+                    slab,
+                    offset: i as u32,
+                    nr_entries: 1,
+                },
+            );
+        }
+        Ok(())
+    }
 
-            let mut i = 0;
-            for h in hashes {
-                r.insert(
-                    h,
-                    MapEntry::Data {
-                        slab: s as u32,
-                        offset: i,
-                        nr_entries: 1,
-                    },
-                );
-                i += 1;
+    fn evict_hash_slab_(&mut self, slab: u32) -> Result<()> {
+        let buf = self.hashes_file.read(slab)?;
+        let (_, hashes) = Self::parse_hashes(&buf).map_err(|_| anyhow!("couldn't parse hashes"))?;
+
+        for h in hashes {
+            self.hashes.remove(&h);
+        }
+        Ok(())
+    }
+
+    fn ensure_hash_slab_loaded(&mut self, slab: u32) -> Result<()> {
+        use PushResult::*;
+
+        // Current slab is always loaded
+        if slab == self.current_slab {
+            return Ok(())
+        }
+
+        match self.slabs_loaded.push(slab) {
+            AlreadyPresent => {
+                // no need to do anything
+            }
+            Added => {
+                self.read_hash_slab_(slab)?;
+            }
+            AddAndEvict(old_slab) => {
+                assert!(old_slab != self.current_slab);
+                self.evict_hash_slab_(old_slab)?;
+                self.read_hash_slab_(slab)?;
             }
         }
 
-        Ok((seen, r))
+        Ok(())
     }
 
-    fn new(data_file: SlabFile, mut hashes_file: SlabFile, stream_file: SlabFile) -> Result<Self> {
-        let (seen, hashes) = Self::read_hashes(&mut hashes_file)?;
+    fn read_hashes(&mut self) -> Result<()> {
+        let nr_slabs = self.hashes_file.get_nr_slabs();
+        for s in 0..nr_slabs {
+            self.read_hash_slab_(s as u32)?;
+        }
+
+        Ok(())
+    }
+
+    fn new(
+        data_file: SlabFile,
+        hashes_file: SlabFile,
+        stream_file: SlabFile,
+        slab_capacity: usize,
+    ) -> Result<Self> {
+        let seen = CuckooFilter::read(paths::index_path())?;
+        let hashes = BTreeMap::new();
         let nr_slabs = data_file.get_nr_slabs() as u32;
         assert_eq!(data_file.get_nr_slabs(), hashes_file.get_nr_slabs());
 
-        Ok(Self {
+        let mut r = Self {
             nr_chunks: 0,
 
             seen,
+            slabs_loaded: LRU::with_capacity(slab_capacity),
             hashes,
 
             data_file,
@@ -161,7 +202,9 @@ impl DedupHandler {
             data_written: 0,
             mapped_size: 0,
             fill_size: 0,
-        })
+        };
+        r.read_hashes()?;
+        Ok(r)
     }
 
     fn rebuild_index(&mut self, new_capacity: usize) -> Result<()> {
@@ -212,6 +255,10 @@ impl DedupHandler {
     }
 
     fn maybe_complete_data(&mut self) -> Result<()> {
+        if let PushResult::AddAndEvict(old_slab) = self.slabs_loaded.push(self.current_slab) {
+            self.evict_hash_slab_(old_slab)?;
+        }
+
         if Self::complete_slab(&mut self.data_file, &mut self.data_buf, SLAB_SIZE_TARGET)? {
             Self::complete_slab_(&mut self.hashes_file, &mut self.hashes_buf)?;
             self.current_slab += 1;
@@ -253,7 +300,11 @@ impl DedupHandler {
     fn do_add(&mut self, h: Hash256, iov: &IoVec, len: u64) -> Result<MapEntry> {
         self.add_hash_entry(h, len as u32)?;
         let (slab, offset) = self.add_data_entry(iov)?;
-        let me = MapEntry::Data { slab, offset, nr_entries: 1 };
+        let me = MapEntry::Data {
+            slab,
+            offset,
+            nr_entries: 1,
+        };
         self.hashes.insert(h, me);
         self.maybe_complete_data()?;
         Ok(me)
@@ -268,7 +319,13 @@ impl IoVecHandler for DedupHandler {
 
         if same {
             self.fill_size += len;
-            self.add_stream_entry(&MapEntry::Fill { byte: first_byte, len }, len)?;
+            self.add_stream_entry(
+                &MapEntry::Fill {
+                    byte: first_byte,
+                    len,
+                },
+                len,
+            )?;
             self.maybe_complete_stream()?;
         } else {
             let h = hash_256_iov(iov);
@@ -281,8 +338,8 @@ impl IoVecHandler for DedupHandler {
                 InsertResult::Inserted => {
                     me = self.do_add(h, iov, len)?;
                 }
-                InsertResult::AlreadyPresent(_s) => {
-                    // FIXME: ensure hashes from s are loaded into self.hashes
+                InsertResult::AlreadyPresent(s) => {
+                    self.ensure_hash_slab_loaded(s)?;
                     if let Some(e) = self.hashes.get(&h) {
                         me = *e;
                     } else {
@@ -495,6 +552,7 @@ pub fn pack_<'a, I>(
     mapped_size: u64,
     block_size: usize,
     thin_id: Option<u32>,
+    hash_cache_size_meg: usize,
 ) -> Result<()>
 where
     I: Iterator<Item = Result<Chunk>>,
@@ -518,7 +576,10 @@ where
     let stream_file =
         SlabFile::create(stream_path, 16, true).context("couldn't open stream slab file")?;
 
-    let mut handler = DedupHandler::new(data_file, hashes_file, stream_file)?;
+    let hashes_per_slab = std::cmp::max(SLAB_SIZE_TARGET / block_size, 1);
+    let slab_capacity = ((hash_cache_size_meg * 1024 * 1024) / std::mem::size_of::<Hash256>()) / hashes_per_slab;
+
+    let mut handler = DedupHandler::new(data_file, hashes_file, stream_file, slab_capacity)?;
     handler.ensure_extra_capacity(mapped_size as usize / block_size)?;
 
     report.progress(0);
@@ -565,7 +626,8 @@ where
     report.info(&format!("hashes written   : {:.2}", Size(hashes_written)));
     report.info(&format!("stream written   : {:.2}", Size(stream_written)));
 
-    let compression = ((data_written + hashes_written + stream_written) * 100) as f64 / total_read as f64;
+    let compression =
+        ((data_written + hashes_written + stream_written) * 100) as f64 / total_read as f64;
     report.info(&format!("compression      : {:.2}%", compression));
     report.info(&format!(
         "speed            : {:.2}/s",
@@ -586,7 +648,13 @@ where
     Ok(())
 }
 
-pub fn pack(report: &Arc<Report>, input_file: &Path, input_name: &str, block_size: usize) -> Result<()> {
+pub fn pack(
+    report: &Arc<Report>,
+    input_file: &Path,
+    input_name: &str,
+    block_size: usize,
+    hash_cache_size_meg: usize,
+) -> Result<()> {
     let input = OpenOptions::new()
         .read(true)
         .write(false)
@@ -604,6 +672,7 @@ pub fn pack(report: &Arc<Report>, input_file: &Path, input_name: &str, block_siz
         input_size,
         block_size,
         None,
+        hash_cache_size_meg,
     )
 }
 
@@ -626,7 +695,13 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
 
     env::set_current_dir(&archive_dir)?;
     let config = config::read_config(".")?;
-    pack(&report, &input_file, &input_name.to_str().unwrap(), config.block_size)
+    pack(
+        &report,
+        &input_file,
+        &input_name.to_str().unwrap(),
+        config.block_size,
+        config.hash_cache_size_meg,
+    )
 }
 
 pub fn run_thin(matches: &ArgMatches) -> Result<()> {
@@ -664,6 +739,7 @@ pub fn run_thin(matches: &ArgMatches) -> Result<()> {
         mapped_size,
         config.block_size,
         Some(mappings.thin_id),
+        config.hash_cache_size_meg,
     )
 }
 
@@ -702,6 +778,7 @@ pub fn run_thin_delta(matches: &ArgMatches) -> Result<()> {
         mapped_size,
         config.block_size,
         Some(mappings.thin_id),
+        config.hash_cache_size_meg,
     )
 }
 
