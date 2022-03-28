@@ -550,15 +550,7 @@ impl Packer {
 
 //-----------------------------------------
 
-fn mk_report() -> Arc<Report> {
-    if atty::is(atty::Stream::Stdout) {
-        Arc::new(mk_progress_bar_report())
-    } else {
-        Arc::new(mk_simple_report())
-    }
-}
-
-fn file_packer(
+fn thick_packer(
     report: Arc<Report>,
     input_file: &PathBuf,
     input_name: String,
@@ -629,13 +621,12 @@ fn thin_packer(
     ))
 }
 
-pub fn run(matches: &ArgMatches) -> Result<()> {
+pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
     let input_file = Path::new(matches.value_of("INPUT").unwrap());
     let input_name = input_file.file_name().unwrap();
     let input_name = input_name.to_str().unwrap().to_string();
     let input_file = Path::new(matches.value_of("INPUT").unwrap()).canonicalize()?;
-    let report = mk_report();
 
     env::set_current_dir(&archive_dir)?;
     let config = config::read_config(".")?;
@@ -645,56 +636,9 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     let mut packer = if is_thin_device(&input_file)? {
         thin_packer(report, &input_file, input_name, &config)?
     } else {
-        file_packer(report, &input_file, input_name, &config)?
+        thick_packer(report, &input_file, input_name, &config)?
     };
     packer.pack()
-}
-
-pub fn run_thin(matches: &ArgMatches) -> Result<()> {
-    let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
-    let input_file = Path::new(matches.value_of("INPUT").unwrap());
-    let input_name = input_file.file_name().unwrap();
-    let input_file = input_file.canonicalize()?;
-    let report = mk_report();
-
-    env::set_current_dir(&archive_dir)?;
-    let config = config::read_config(".")?;
-    let input = OpenOptions::new()
-        .read(true)
-        .write(false)
-        .open(input_file.clone())
-        .context("couldn't open input file/dev")?;
-    let input_size = thinp::file_utils::file_size(&input_file)?;
-
-    // chunker setup vvv
-    let mappings = read_thin_mappings(input_file.clone())?;
-    let mapped_size =
-        mappings.provisioned_blocks.len() as u64 * mappings.data_block_size as u64 * 512;
-    let run_iter = RunIter::new(
-        mappings.provisioned_blocks,
-        (input_size / (mappings.data_block_size as u64 * 512)) as u32,
-    );
-    let input_iter = Box::new(ThinChunker::new(
-        input,
-        run_iter,
-        mappings.data_block_size as u64 * 512,
-    ));
-    let thin_id = Some(mappings.thin_id);
-    // ^^^
-
-    report.set_title(&format!("Packing {} ...", input_file.display()));
-    let mut p = Packer::new(
-        report.clone(),
-        input_file,
-        input_name.to_str().unwrap().to_string(),
-        input_iter,
-        input_size,
-        mapped_size,
-        config.block_size,
-        thin_id,
-        config.hash_cache_size_meg,
-    );
-    p.pack()
 }
 
 /*

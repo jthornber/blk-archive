@@ -4,6 +4,7 @@ use clap::ArgMatches;
 use std::env;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 use thinp::report::*;
 
 use crate::config;
@@ -14,9 +15,8 @@ fn fmt_time(t: &chrono::DateTime<FixedOffset>) -> String {
     t.format("%b %d %y %H:%M").to_string()
 }
 
-pub fn run(matches: &ArgMatches) -> Result<()> {
+pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
-    let report = std::sync::Arc::new(mk_progress_bar_report());
 
     env::set_current_dir(&archive_dir)?;
 
@@ -37,9 +37,7 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
         streams.push((id, config::to_date_time(&cfg.pack_time), cfg));
     }
 
-    streams.sort_by(|l, r| {
-        l.1.partial_cmp(&r.1).unwrap()
-    });
+    streams.sort_by(|l, r| l.1.partial_cmp(&r.1).unwrap());
 
     // calc size width
     let mut width = 0;
@@ -52,8 +50,14 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
 
     for (id, time, cfg) in streams {
         let source = cfg.name.unwrap();
-        let size  = cfg.size;
-        report.info(&format!("{} {:width$} {} {}", id, size, &fmt_time(&time), &source));
+        let size = cfg.size;
+        report.info(&format!(
+            "{} {:width$} {} {}",
+            id,
+            size,
+            &fmt_time(&time),
+            &source
+        ));
     }
 
     Ok(())

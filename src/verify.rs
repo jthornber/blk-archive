@@ -169,7 +169,10 @@ impl Verifier {
                 if let Some(pos) = next_pos {
                     if pos.1 == i {
                         if pos.0 != current_pos {
-                            eprintln!("pos didn't match: expected {} != actual {}", pos.0, current_pos);
+                            eprintln!(
+                                "pos didn't match: expected {} != actual {}",
+                                pos.0, current_pos
+                            );
                             assert!(false);
                         }
                         next_pos = pos_iter.next();
@@ -178,7 +181,7 @@ impl Verifier {
 
                 let entry_len = self.verify_entry(&e, r)?;
 
-		// FIXME: shouldn't inc before checking pos
+                // FIXME: shouldn't inc before checking pos
                 current_pos += entry_len;
 
                 if i % 10240 == 0 {
@@ -191,6 +194,15 @@ impl Verifier {
                 }
             }
         }
+        report.progress(100);
+        report.info("Verify successful");
+        /*
+        report.info(&format!(
+            "data slab hits/misses {}/{}",
+            self.data_file.hits(),
+            self.data_file.misses()
+        ));
+        */
 
         Ok(())
     }
@@ -198,11 +210,10 @@ impl Verifier {
 
 //-----------------------------------------
 
-pub fn run(matches: &ArgMatches) -> Result<()> {
+pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
     let input_file = Path::new(matches.value_of("INPUT").unwrap());
     let stream = matches.value_of("STREAM").unwrap();
-    let report = std::sync::Arc::new(mk_progress_bar_report());
 
     let mut input = OpenOptions::new()
         .read(true)

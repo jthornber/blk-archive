@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::{command, Arg, Command};
 use std::process::exit;
+use std::sync::Arc;
+use thinp::report::*;
 
 use dm_archive::create;
 use dm_archive::dump_stream;
@@ -10,6 +12,14 @@ use dm_archive::unpack;
 use dm_archive::verify;
 
 //-----------------------
+
+fn mk_report() -> Arc<Report> {
+    if atty::is(atty::Stream::Stdout) {
+        Arc::new(mk_progress_bar_report())
+    } else {
+        Arc::new(mk_simple_report())
+    }
+}
 
 fn main_() -> Result<()> {
     let matches = command!()
@@ -161,27 +171,25 @@ fn main_() -> Result<()> {
         )
         .get_matches();
 
+    let report = mk_report();
     match matches.subcommand() {
         Some(("create", sub_matches)) => {
-            create::run(sub_matches)?;
+            create::run(sub_matches, report)?;
         }
         Some(("pack", sub_matches)) => {
-            pack::run(sub_matches)?;
-        }
-        Some(("pack-thin", sub_matches)) => {
-            pack::run_thin(sub_matches)?;
+            pack::run(sub_matches, report)?;
         }
         Some(("unpack", sub_matches)) => {
-            unpack::run(sub_matches)?;
+            unpack::run(sub_matches, report)?;
         }
         Some(("verify", sub_matches)) => {
-            verify::run(sub_matches)?;
+            verify::run(sub_matches, report)?;
         }
         Some(("list", sub_matches)) => {
-            list::run(sub_matches)?;
+            list::run(sub_matches, report)?;
         }
         Some(("dump-stream", sub_matches)) => {
-            dump_stream::run(sub_matches)?;
+            dump_stream::run(sub_matches, report)?;
         }
         _ => unreachable!("Exhausted list of subcommands and subcommand_required prevents 'None'"),
     }

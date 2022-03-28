@@ -4,6 +4,7 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use thinp::report::*;
 
 use crate::config::*;
@@ -58,7 +59,7 @@ fn adjust_block_size(n: usize) -> usize {
     p
 }
 
-pub fn run(matches: &ArgMatches) -> Result<()> {
+pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     let dir = Path::new(matches.value_of("DIR").unwrap());
     let mut block_size = matches
         .value_of("BLOCK_SIZE")
@@ -66,8 +67,6 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
         .or(Some(Ok(4096)))
         .unwrap()
         .context("couldn't parse --block-size argument")?;
-
-    let report = std::sync::Arc::new(mk_simple_report());
 
     let new_block_size = adjust_block_size(block_size);
     if new_block_size != block_size {

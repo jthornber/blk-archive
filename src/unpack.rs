@@ -164,11 +164,10 @@ impl Unpacker {
 
 //-----------------------------------------
 
-pub fn run(matches: &ArgMatches) -> Result<()> {
+pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
     let output_file = Path::new(matches.value_of("OUTPUT").unwrap());
     let stream = matches.value_of("STREAM").unwrap();
-    let report = std::sync::Arc::new(mk_progress_bar_report());
 
     let mut output = fs::OpenOptions::new()
         .read(false)

@@ -18,6 +18,8 @@ use crate::lru::*;
 struct DataCache {
     lru: LRU,
     tree: BTreeMap<u32, Arc<Vec<u8>>>,
+    hits: u64,
+    misses: u64,
 }
 
 impl DataCache {
@@ -25,11 +27,17 @@ impl DataCache {
         let lru = LRU::with_capacity(nr_entries);
         let tree = BTreeMap::new();
 
-        Self { lru, tree }
+        Self { lru, tree, hits: 0, misses: 0 }
     }
 
-    fn find<'a>(&self, slab: u32) -> Option<Arc<Vec<u8>>> {
-        self.tree.get(&slab).cloned()
+    fn find<'a>(&mut self, slab: u32) -> Option<Arc<Vec<u8>>> {
+        let r = self.tree.get(&slab).cloned();
+        if r.is_some() {
+            self.hits += 1;
+        } else {
+            self.misses += 1;
+        }
+        r
     }
 
     fn insert(&mut self, slab: u32, data: Arc<Vec<u8>>) {
@@ -469,6 +477,14 @@ impl SlabFile {
     pub fn get_file_size(&self) -> u64 {
         let shared = self.shared.lock().unwrap();
         shared.file_size
+    }
+
+    pub fn hits(&self) -> u64 {
+        self.data_cache.hits
+    }
+
+    pub fn misses(&self) -> u64 {
+        self.data_cache.misses
     }
 }
 
