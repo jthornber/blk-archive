@@ -727,7 +727,7 @@ fn pack_instrs<W: Write>(w: &mut W, instrs: &IVec) -> Result<()> {
 }
 
 // FIXME: bump up to 128
-const INDEX_PERIOD: u64 = 1;
+const INDEX_PERIOD: u64 = 128;
 
 impl Default for MappingBuilder {
     fn default() -> Self {
