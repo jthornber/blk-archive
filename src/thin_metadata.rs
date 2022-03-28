@@ -18,6 +18,49 @@ use thinp::thin::superblock::*;
 
 //---------------------------------
 
+fn collect_dm_devs() -> Result<BTreeMap<(u32, u32), DmNameBuf>> {
+    let dm = DM::new()?;
+
+    let mut devs_by_nr = BTreeMap::new();
+    for (name, dev, _) in dm.list_devices()? {
+        devs_by_nr.insert((dev.major, dev.minor), name);
+    }
+
+    Ok(devs_by_nr)
+}
+
+// FIXME: this duplicates a lot of the work done when reading the mappings
+pub fn is_thin_device<P: AsRef<Path>>(path: P) -> Result<bool> {
+    let thin = OpenOptions::new()
+        .read(true)
+        .write(false)
+        .create(false)
+        .open(path)?;
+
+    let metadata = thin.metadata()?;
+
+    if !metadata.file_type().is_block_device() {
+        // Not a block device
+        return Ok(false);
+    }
+
+    // Get the major:minor of the device at the given path
+    let rdev = metadata.rdev();
+    let thin_major = (rdev >> 8) as u32;
+    let thin_minor = (rdev & 0xff) as u32;
+    let dm_devs = collect_dm_devs()?;
+    let thin_name = dm_devs.get(&(thin_major, thin_minor)).unwrap().clone();
+    let thin_id = DevId::Name(&thin_name);
+
+    // Confirm this is a thin device
+    let mut dm = DM::new()?;
+
+    let thin_args = get_table(&mut dm, &thin_id, "thin")?;
+    Ok(parse_thin_table(&thin_args).is_ok())
+}
+
+//---------------------------------
+
 #[derive(Default)]
 struct MappingCollector {
     provisioned: Mutex<RoaringBitmap>,
@@ -108,17 +151,6 @@ fn read_info(metadata: &PathBuf, thin_id: u32) -> Result<ThinInfo> {
 }
 
 //---------------------------------
-
-fn collect_dm_devs() -> Result<BTreeMap<(u32, u32), DmNameBuf>> {
-    let dm = DM::new()?;
-
-    let mut devs_by_nr = BTreeMap::new();
-    for (name, dev, _) in dm.list_devices()? {
-        devs_by_nr.insert((dev.major, dev.minor), name);
-    }
-
-    Ok(devs_by_nr)
-}
 
 #[derive(Debug)]
 struct ThinDetails {

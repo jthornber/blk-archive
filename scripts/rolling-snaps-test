@@ -1,0 +1,69 @@
+#!/usr/bin/bash
+
+set -e
+archive=test-archive
+cmd=./target/release/dm-archive
+
+pack() {
+	echo Checking out $1 ...
+
+	pushd > /dev/null 2>&1
+	git checkout $1 > /dev/null 2>&1
+	sync -f ./README > /dev/null 2>&1
+	pushd > /dev/null 2>&1
+
+        echo Taking snapshot ...
+        lvcreate -s --name $1 test-vg/kernel-builds
+        lvchange -ay -Ky test-vg/$1
+
+	echo Packing $1
+	$cmd pack -a $archive /dev/test-vg/$1
+
+	lvremove -y /dev/test-vg/$1
+}
+
+# get_id() {
+	# $cmd list -a $archive 2>&1 | grep $1 | cut -f1 -d' '
+# }
+# 
+# verify() {
+	# echo Verifying $1
+	# $cmd verify -a $archive --stream `get_id $1` ../dm-archive-tests/linux-$1.tar
+# }
+
+cycle() {
+	pack $1
+	# verify $1
+}
+
+#-----------------------
+
+echo Cleaning up from earlier run ...
+rm -rf $archive
+umount ./test-mnt | true
+lvremove -fy test-vg/pool | true
+
+echo Creating archive ...
+$cmd create --dir $archive --block-size 4096
+
+echo Creating thin pool ...
+lvcreate -L 100G --thinpool pool test-vg
+
+echo Creating thin dev ...
+lvcreate -V100G test-vg/pool -n kernel-builds
+
+echo Running mkfs.ext4 ...
+mkfs.ext4 /dev/test-vg/kernel-builds > /dev/null
+
+echo Cloning kernel repo
+mount /dev/test-vg/kernel-builds ./test-mnt
+pushd test-mnt
+git clone ~ejt/work/RedHat/riscv-kernel/ linux
+cd linux
+pushd
+
+for f in v5.0 v5.1 v5.2 # v5.3 v5.4 v5.5 v5.6 v5.7 v5.8 v5.9 v5.10 v5.11 v5.12 v5.13
+do
+	cycle $f
+done
+

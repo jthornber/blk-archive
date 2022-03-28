@@ -70,17 +70,17 @@ impl Iterator for FileChunker {
 
 //-----------------------------------------
 
-pub struct ThinChunker<'a> {
+pub struct ThinChunker {
     input: File,
-    run_iter: RunIter<'a>,
+    run_iter: RunIter,
     data_block_size: u64,
 
     max_read_size: usize,
     current_run: Option<(bool, Range<u64>)>,
 }
 
-impl<'a> ThinChunker<'a> {
-    pub fn new(input: File, run_iter: RunIter<'a>, data_block_size: u64) -> Self {
+impl ThinChunker {
+    pub fn new(input: File, run_iter: RunIter, data_block_size: u64) -> Self {
         Self {
             input,
             run_iter,
@@ -127,7 +127,7 @@ impl<'a> ThinChunker<'a> {
     }
 }
 
-impl<'a> Iterator for ThinChunker<'a> {
+impl Iterator for ThinChunker {
     type Item = Result<Chunk>;
 
     fn next(&mut self) -> Option<Self::Item> {

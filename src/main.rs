@@ -3,11 +3,11 @@ use clap::{command, Arg, Command};
 use std::process::exit;
 
 use dm_archive::create;
+use dm_archive::dump_stream;
 use dm_archive::list;
 use dm_archive::pack;
 use dm_archive::unpack;
 use dm_archive::verify;
-use dm_archive::dump_stream;
 
 //-----------------------
 
@@ -54,25 +54,15 @@ fn main_() -> Result<()> {
                         .short('a')
                         .value_name("ARCHIVE")
                         .takes_value(true),
-                ),
-        )
-        .subcommand(
-            Command::new("pack-thin")
-                .about("packs a thin device into the archive")
-                .arg(
-                    Arg::new("INPUT")
-                        .help("Specify a thin device to archive")
-                        .required(true)
-                        .value_name("INPUT")
-                        .takes_value(true),
                 )
                 .arg(
-                    Arg::new("ARCHIVE")
-                        .help("Specify archive directory")
-                        .required(true)
-                        .long("archive")
-                        .short('a')
-                        .value_name("ARCHIVE")
+                    Arg::new("DELTA_STREAM")
+                        .help(
+                            "Specify the stream that contains an older version of this thin device",
+                        )
+                        .required(false)
+                        .long("delta-stream")
+                        .value_name("DELTA_STREAM")
                         .takes_value(true),
                 ),
         )

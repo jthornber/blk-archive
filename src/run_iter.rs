@@ -3,14 +3,14 @@ use std::ops::Range;
 
 //-----------------------------------------
 
-pub struct RunIter<'a> {
+pub struct RunIter {
     len: u32,
     current: u32,
-    bits: &'a RoaringBitmap,
+    bits: RoaringBitmap,
 }
 
-impl<'a> RunIter<'a> {
-    pub fn new(bits: &'a RoaringBitmap, len: u32) -> Self {
+impl RunIter {
+    pub fn new(bits: RoaringBitmap, len: u32) -> Self {
         Self {
             len,
             current: 0,
@@ -19,7 +19,7 @@ impl<'a> RunIter<'a> {
     }
 }
 
-impl<'a> Iterator for RunIter<'a> {
+impl Iterator for RunIter {
     type Item = (bool, Range<u32>);
 
     fn next(&mut self) -> Option<Self::Item> {
