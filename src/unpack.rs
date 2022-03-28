@@ -6,11 +6,12 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use thinp::report::*;
 
 use crate::hash::*;
+use crate::paths::*;
 use crate::slab::*;
 use crate::stream;
 use crate::stream::*;
@@ -34,14 +35,9 @@ struct Unpacker {
 impl Unpacker {
     // Assumes current directory is the root of the archive.
     fn new(stream: &str) -> Result<Self> {
-        let data_path: PathBuf = ["data", "data"].iter().collect();
-        let data_file = SlabFile::open_for_read(&data_path)?;
-
-        let hashes_path: PathBuf = ["data", "hashes"].iter().collect();
-        let hashes_file = SlabFile::open_for_read(&hashes_path)?;
-
-        let stream_path: PathBuf = ["streams", stream, "stream"].iter().collect();
-        let stream_file = SlabFile::open_for_read(stream_path)?;
+        let data_file = SlabFile::open_for_read(data_path())?;
+        let hashes_file = SlabFile::open_for_read(hashes_path())?;
+        let stream_file = SlabFile::open_for_read(stream_path(stream))?;
 
         Ok(Self {
             data_file,
@@ -115,12 +111,17 @@ impl Unpacker {
             Unmapped { len } => {
                 w.seek(std::io::SeekFrom::Current(*len as i64))?;
             }
-            Data { slab, offset, nr_entries } => {
+            Data {
+                slab,
+                offset,
+                nr_entries,
+            } => {
                 let info = self.get_info(*slab)?;
                 let data = self.data_file.read(*slab)?;
                 let (_expected_hash, offset, _len) = info.offsets[*offset as usize];
                 let data_begin = offset as usize;
-                let (_expected_hash, offset, len) = info.offsets[(offset as usize) + *nr_entries as usize];
+                let (_expected_hash, offset, len) =
+                    info.offsets[(offset as usize) + *nr_entries as usize];
                 let data_end = offset as usize + len as usize;
                 assert!(data_end <= data.len());
 

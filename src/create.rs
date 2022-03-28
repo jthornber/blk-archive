@@ -10,6 +10,7 @@ use thinp::report::*;
 use crate::config::*;
 use crate::cuckoo_filter::*;
 use crate::paths;
+use crate::paths::*;
 use crate::slab::*;
 
 //-----------------------------------------
@@ -83,12 +84,10 @@ pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     std::env::set_current_dir(&dir)?;
 
     // Create empty data and hash slab files
-    let data_path: PathBuf = ["data", "data"].iter().collect();
-    let mut data_file = SlabFile::create(&data_path, 1, true)?;
+    let mut data_file = SlabFile::create(data_path(), 1, true)?;
     data_file.close()?;
 
-    let hashes_path: PathBuf = ["data", "hashes"].iter().collect();
-    let mut hashes_file = SlabFile::create(&hashes_path, 1, false)?;
+    let mut hashes_file = SlabFile::create(hashes_path(), 1, false)?;
     hashes_file.close()?;
 
     // Write empty index

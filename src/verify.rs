@@ -6,11 +6,12 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs::OpenOptions;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use thinp::report::*;
 
 use crate::hash::*;
+use crate::paths::*;
 use crate::slab::*;
 use crate::stream;
 use crate::stream::*;
@@ -35,14 +36,9 @@ struct Verifier {
 impl Verifier {
     // Assumes current directory is the root of the archive.
     fn new(stream: &str) -> Result<Self> {
-        let data_path: PathBuf = ["data", "data"].iter().collect();
-        let data_file = SlabFile::open_for_read(data_path)?;
-
-        let hashes_path: PathBuf = ["data", "hashes"].iter().collect();
-        let hashes_file = SlabFile::open_for_read(hashes_path)?;
-
-        let stream_path: PathBuf = ["streams", stream, "stream"].iter().collect();
-        let stream_file = SlabFile::open_for_read(stream_path)?;
+        let data_file = SlabFile::open_for_read(data_path())?;
+        let hashes_file = SlabFile::open_for_read(hashes_path())?;
+        let stream_file = SlabFile::open_for_read(stream_path(stream))?;
 
         Ok(Self {
             data_file,
@@ -196,19 +192,44 @@ impl Verifier {
         }
         report.progress(100);
         report.info("Verify successful");
-        /*
-        report.info(&format!(
-            "data slab hits/misses {}/{}",
-            self.data_file.hits(),
-            self.data_file.misses()
-        ));
-        */
 
         Ok(())
     }
 }
 
 //-----------------------------------------
+
+/*
+fn thick_verifier(
+    report: Arc<Report>,
+    input_file: &PathBuf,
+    input_name: String,
+    config: &config::Config,
+) -> Result<Packer> {
+    let input = OpenOptions::new()
+        .read(true)
+        .write(false)
+        .open(input_file.clone())
+        .context("couldn't open input file/dev")?;
+    let input_size = thinp::file_utils::file_size(&input_file)?;
+
+    let mapped_size = input_size;
+    let input_iter = Box::new(FileChunker::new(input, 16 * 1024 * 1024)?);
+    let thin_id = None;
+
+    Ok(Packer::new(
+        report,
+        input_file.clone(),
+        input_name,
+        input_iter,
+        input_size,
+        mapped_size,
+        config.block_size,
+        thin_id,
+        config.hash_cache_size_meg,
+    ))
+}
+*/
 
 pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;

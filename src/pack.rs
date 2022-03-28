@@ -24,6 +24,7 @@ use crate::hash::*;
 use crate::iovec::*;
 use crate::lru::*;
 use crate::paths;
+use crate::paths::*;
 use crate::run_iter::*;
 use crate::slab::*;
 use crate::splitter::*;
@@ -448,14 +449,12 @@ impl Packer {
     fn pack<'a>(&mut self) -> Result<()> {
         let mut splitter = ContentSensitiveSplitter::new(self.block_size as u32);
 
-        let data_path: PathBuf = ["data", "data"].iter().collect();
         let data_file =
-            SlabFile::open_for_write(&data_path, 128).context("couldn't open data slab file")?;
+            SlabFile::open_for_write(data_path(), 128).context("couldn't open data slab file")?;
         let data_size = data_file.get_file_size();
 
-        let hashes_path: PathBuf = ["data", "hashes"].iter().collect();
-        let hashes_file =
-            SlabFile::open_for_write(&hashes_path, 16).context("couldn't open hashes slab file")?;
+        let hashes_file = SlabFile::open_for_write(hashes_path(), 16)
+            .context("couldn't open hashes slab file")?;
         let hashes_size = hashes_file.get_file_size();
         let (stream_id, mut stream_path) = new_stream_path()?;
 
