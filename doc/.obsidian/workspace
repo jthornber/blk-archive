@@ -53,7 +53,8 @@
       }
     ],
     "direction": "horizontal",
-    "width": 300
+    "width": 300,
+    "collapsed": true
   },
   "right": {
     "id": "e68ef3acae6234df",
@@ -89,6 +90,8 @@
   },
   "active": "d0f44331f974d416",
   "lastOpenFiles": [
-    "TODO.md"
+    "TODO.md",
+    "Use Cases.md",
+    "Top.md"
   ]
 }
