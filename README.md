@@ -12,8 +12,8 @@ sync the archive directory to cloud storage, or write it to tape.
 It works particularly well with the thin provisioning device-mapper
 target:
 
-- Thin snapshots can be used to archive live data
-- it avoids reading unprovisioned areas of thin devices
+- Thin snapshots can be used to archive live data.
+- it avoids reading unprovisioned areas of thin devices.
 - it can calculate deltas between thin devices to minimise how much data is read and deduped.
 - restoring to a thin device tries to maximise data sharing within the thin pool
   (a big win if you're restoring snapshots).
