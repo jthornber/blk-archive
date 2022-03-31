@@ -25,18 +25,21 @@ The *pack* sub command adds a file to an archive.  The file will be deduplicated
 dm-archive is really designed for archiving data on devices.  It will do files
 
 Various statistics will be printed out at the end of the operation:
+
 > dm-archive pack -a test-achive linux-v5.0.tar
 
->stream id        : 30973e06100eb1d7
->file size        : 823.31M
->mapped size      : 823.31M
->fills size       : 20.79K
->duplicate data   : 21.16M
->data written     : 154.46M
->hashes written   : 8.43M
->stream written   : 5.16K
->compression      : 19.79%
->speed            : 125.43M/s
+```
+stream id        : 30973e06100eb1d7
+file size        : 823.31M
+mapped size      : 823.31M
+fills size       : 20.79K
+duplicate data   : 21.16M
+data written     : 154.46M
+hashes written   : 8.43M
+stream written   : 5.16K
+compression      : 19.79%
+speed            : 125.43M/s
+```
 
 - stream id; This is a unique identifier for the packed stream.  You will need this in order to restore this stream later.
 - file size; the size of the original, uncompressed file.
@@ -53,18 +56,19 @@ If we pack a similar file into this archive we should see the deduplication in a
 
 > dm-archive pack -a test-archive linux-v5.1.tar
 
->stream id        : 0acabdfa1dfb98a7
->file size        : 831.28M
->mapped size      : 831.28M
->fills size       : 20.99K
->duplicate data   : 408.43M
->data written     : 87.50M
->hashes written   : 4.06M
->stream written   : 44.32K
->compression      : 11.02%
->speed            : 122.39M/s
-
-Note we found 408M of data that was already in the system.  Causing us to write only 87M of data for this file.
+```
+stream id        : 0acabdfa1dfb98a7
+file size        : 831.28M
+mapped size      : 831.28M
+fills size       : 20.99K
+duplicate data   : 408.43M
+data written     : 87.50M
+hashes written   : 4.06M
+stream written   : 44.32K
+compression      : 11.02%
+speed            : 122.39M/s
+```
+Note we found 408M of data that was already in the system.  Causing us to write only 87M of data for this file (after compression).
 
 
 To demonstrate the effect of block size on data deduplication let's repeat the above with a block size of just 256 bytes (only recommended for small archives).
@@ -73,16 +77,18 @@ To demonstrate the effect of block size on data deduplication let's repeat the a
 
 > dm-archive pack -a test-archive linux-v5.0.tar
 
->stream id        : 25eaa5f7631a1fd5
->file size        : 823.31M
->mapped size      : 823.31M
->fills size       : 2.65M
->duplicate data   : 55.47M
->data written     : 151.39M
->hashes written   : 108.54M
->stream written   : 287.63K
->compression      : 31.61%
->speed            : 76.65M/s
+```
+stream id        : 25eaa5f7631a1fd5
+file size        : 823.31M
+mapped size      : 823.31M
+fills size       : 2.65M
+duplicate data   : 55.47M
+data written     : 151.39M
+hashes written   : 108.54M
+stream written   : 287.63K
+compression      : 31.61%
+speed            : 76.65M/s
+```
 
 We wrote many more hashes, slowed down archiving speed, and achieved worse compression.
 
@@ -90,16 +96,18 @@ But we get a pay off when we try and pack similar data:
 
 >dm-archive pack -a test-archive linux-v5.1.tar
 
->stream id        : ac72aceac23c8930
- file size        : 831.28M
- mapped size      : 831.28M
- fills size       : 2.71M
- duplicate data   : 745.80M
- data written     : 14.09M
- hashes written   : 10.52M
- stream written   : 506.52K
- compression      : 3.02%
- speed            : 64.76M/s
+```
+stream id        : ac72aceac23c8930
+file size        : 831.28M
+mapped size      : 831.28M
+fills size       : 2.71M
+duplicate data   : 745.80M
+data written     : 14.09M
+hashes written   : 10.52M
+stream written   : 506.52K
+compression      : 3.02%
+speed            : 64.76M/s
+ ```
 
 Now we find 745M of duplicate data out of 831M, and compress the input file down to 3% of it's original size.  Notice how the hashes written is taking up almost as much space as the data written.
 
@@ -120,7 +128,8 @@ Invoking packing of a thin device is identical to packing any other device:
 
 However under the hood dm-archive is aware that this device is a thin device.  It will therefore take a metadata snapshot of the pool, and scan the pool's metadata to ascertain which parts of the thin device have been provisioned.  Only these provisioned regions are read, potentially saving much time.
 
->stream id        : 637daeec766b537d
+```
+stream id        : 637daeec766b537d
 file size        : 100G
 mapped size      : 5.47G
 fills size       : 611.72M
@@ -130,7 +139,7 @@ hashes written   : 51.05M
 stream written   : 66.73K
 compression      : 68.94%
 speed            : 133.31M/s
-
+```
 Here I'm packing a 100G block device that contains an ext4 filesystem.  The filesystem just has the linux kernel git repo on it.
 
 You can see that we only packed 5.47G of data rather than the full 100G.  Compression was poor (69%) because most of the data in a git repo is already compressed.
@@ -147,16 +156,18 @@ Now we're going to use the archive from the previous recipe.  Our thin snapshot 
 
 >dm-archive pack -a test-archive /dev/test-vg/v5.1
 
->stream id        : 1cb9b909497af41d
->file size        : 100G
->mapped size      : 5.47G
->fills size       : 588.12M
->duplicate data   : 4.85G
->data written     : 4.02M
->hashes written   : 447.05K
->stream written   : 69.93K
->compression      : 0.08%
->speed            : 134.90M/s
+```
+stream id        : 1cb9b909497af41d
+file size        : 100G
+mapped size      : 5.47G
+fills size       : 588.12M
+duplicate data   : 4.85G
+data written     : 4.02M
+hashes written   : 447.05K
+stream written   : 69.93K
+compression      : 0.08%
+speed            : 134.90M/s
+```
 
 Lot's of duplicate data is found so we only wrote ~4.5M of new data to the archive.
 
@@ -171,20 +182,22 @@ You can get a list of the streams that are in an archive using the *list* sub co
 
 >dm-archive list
 
->cb917ad6b2bd1d7a  863303680 Mar 30 22 12:43 linux-v5.0.tar
->53bfa67a08ba4342  871659520 Mar 30 22 12:43 linux-v5.1.tar
->67d4b14604f7015c  871229440 Mar 30 22 12:43 linux-v5.2.tar
->c11471f971310751  913336320 Mar 30 22 12:44 linux-v5.3.tar
->4869608e5c757fb5  938137600 Mar 30 22 12:44 linux-v5.4.tar
->d506b039bc99cd48  947691520 Mar 30 22 12:44 linux-v5.5.tar
->5c5577a3e22665cb  957614080 Mar 30 22 12:45 linux-v5.6.tar
->5f254e7b9132f3f5  965775360 Mar 30 22 12:45 linux-v5.7.tar
->b5dca148918a6489  983869440 Mar 30 22 12:45 linux-v5.8.tar
->0317a7046c72933b 1011015680 Mar 30 22 12:46 linux-v5.9.tar
->5166cc67bffd870e 1019238400 Mar 30 22 12:46 linux-v5.10.tar
->0d381b658b8d780a 1064212480 Mar 30 22 12:47 linux-v5.11.tar
->6ffe73350b4f042a 1070315520 Mar 30 22 12:47 linux-v5.12.tar
->a138c1aef20fd1bd 1091778560 Mar 30 22 12:47 linux-v5.13.tar
+```
+cb917ad6b2bd1d7a  863303680 Mar 30 22 12:43 linux-v5.0.tar
+53bfa67a08ba4342  871659520 Mar 30 22 12:43 linux-v5.1.tar
+67d4b14604f7015c  871229440 Mar 30 22 12:43 linux-v5.2.tar
+c11471f971310751  913336320 Mar 30 22 12:44 linux-v5.3.tar
+4869608e5c757fb5  938137600 Mar 30 22 12:44 linux-v5.4.tar
+d506b039bc99cd48  947691520 Mar 30 22 12:44 linux-v5.5.tar
+5c5577a3e22665cb  957614080 Mar 30 22 12:45 linux-v5.6.tar
+5f254e7b9132f3f5  965775360 Mar 30 22 12:45 linux-v5.7.tar
+b5dca148918a6489  983869440 Mar 30 22 12:45 linux-v5.8.tar
+0317a7046c72933b 1011015680 Mar 30 22 12:46 linux-v5.9.tar
+5166cc67bffd870e 1019238400 Mar 30 22 12:46 linux-v5.10.tar
+0d381b658b8d780a 1064212480 Mar 30 22 12:47 linux-v5.11.tar
+6ffe73350b4f042a 1070315520 Mar 30 22 12:47 linux-v5.12.tar
+a138c1aef20fd1bd 1091778560 Mar 30 22 12:47 linux-v5.13.tar
+```
 
 Each line describes a stream (a packed file or device).  There are four fields on each line:
 - The stream unique identifier.  You will need this to unpack the stream at a later date.

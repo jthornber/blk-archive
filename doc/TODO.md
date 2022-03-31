@@ -6,7 +6,7 @@ These are the work items that need to be done before the alpha/internal release.
 - [ ] Use cases document [[Use Cases]]
 - [ ] Design document
 - [x] TODO list (this file)
-- [ ] README
+- [x] README
 
 ## Code
 - [ ] --delta switch to pack for packing thin deltas.
