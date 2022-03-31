@@ -35,9 +35,9 @@ struct Unpacker {
 impl Unpacker {
     // Assumes current directory is the root of the archive.
     fn new(stream: &str) -> Result<Self> {
-        let data_file = SlabFile::open_for_read(data_path())?;
-        let hashes_file = SlabFile::open_for_read(hashes_path())?;
-        let stream_file = SlabFile::open_for_read(stream_path(stream))?;
+        let data_file = SlabFileBuilder::open(data_path()).build()?;
+        let hashes_file = SlabFileBuilder::open(hashes_path()).build()?;
+        let stream_file = SlabFileBuilder::open(stream_path(stream)).build()?;
 
         Ok(Self {
             data_file,

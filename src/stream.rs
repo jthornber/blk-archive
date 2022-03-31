@@ -851,7 +851,6 @@ type EntryVec = Vec<MapEntry>;
 type PosVec = Vec<(u64, usize)>;
 
 impl MappingUnpacker {
-
     fn emit_run(&mut self, r: &mut Vec<MapEntry>, len: usize) {
         let top = self.vm_state.top();
         r.push(MapEntry::Data {
@@ -1101,7 +1100,7 @@ impl Dumper {
     // Assumes current directory is the root of the archive.
     pub fn new(stream: &str) -> Result<Self> {
         let stream_path: PathBuf = ["streams", stream, "stream"].iter().collect();
-        let stream_file = SlabFile::open_for_read(stream_path)?;
+        let stream_file = SlabFileBuilder::open(stream_path).build()?;
 
         Ok(Self {
             stream_file,
@@ -1316,6 +1315,7 @@ impl Dumper {
             | Fill16 { .. }
             | Fill32 { .. }
             | Fill64 { .. }
+            | SetFill { .. }
             | Pos32 { .. }
             | Pos64 { .. }
             | Unmapped8 { .. }
@@ -1436,8 +1436,10 @@ mod stream_tests {
 
             let mut builder = MappingBuilder::default();
             for e in &t {
-                let len = 16;  // FIXME: assume all entries are 16 bytes in length
-                builder.next(&e, len, &mut c).expect("builder.next() failed");
+                let len = 16; // FIXME: assume all entries are 16 bytes in length
+                builder
+                    .next(&e, len, &mut c)
+                    .expect("builder.next() failed");
             }
             builder.complete(&mut c).expect("builder.complete() failed");
 

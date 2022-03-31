@@ -449,11 +449,17 @@ impl Packer {
     fn pack<'a>(&mut self) -> Result<()> {
         let mut splitter = ContentSensitiveSplitter::new(self.block_size as u32);
 
-        let data_file =
-            SlabFile::open_for_write(data_path(), 128).context("couldn't open data slab file")?;
+        let data_file = SlabFileBuilder::open(data_path())
+            .write(true)
+            .queue_depth(128)
+            .build()
+            .context("couldn't open data slab file")?;
         let data_size = data_file.get_file_size();
 
-        let hashes_file = SlabFile::open_for_write(hashes_path(), 16)
+        let hashes_file = SlabFileBuilder::open(hashes_path())
+            .write(true)
+            .queue_depth(16)
+            .build()
             .context("couldn't open hashes slab file")?;
         let hashes_size = hashes_file.get_file_size();
         let (stream_id, mut stream_path) = new_stream_path()?;
@@ -461,8 +467,11 @@ impl Packer {
         std::fs::create_dir(stream_path.clone())?;
         stream_path.push("stream");
 
-        let stream_file =
-            SlabFile::create(stream_path, 16, true).context("couldn't open stream slab file")?;
+        let stream_file = SlabFileBuilder::create(stream_path)
+            .queue_depth(16)
+            .compressed(true)
+            .build()
+            .context("couldn't open stream slab file")?;
 
         let hashes_per_slab = std::cmp::max(SLAB_SIZE_TARGET / self.block_size, 1);
         let slab_capacity = ((self.hash_cache_size_meg * 1024 * 1024)

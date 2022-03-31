@@ -98,7 +98,7 @@ impl CuckooFilter {
 
     pub fn read<P: AsRef<Path>>(path: P) -> Result<Self> {
         // all the data goes in a single slab
-        let mut file = SlabFile::open_for_read(path)?;
+        let mut file = SlabFileBuilder::open(path).build()?;
         let input = file.read(0)?;
 
         let mut rng = ChaCha20Rng::seed_from_u64(1);
@@ -148,7 +148,10 @@ impl CuckooFilter {
             }
         }
 
-        let mut file = SlabFile::create(path, 1, false)?;
+        let mut file = SlabFileBuilder::create(path)
+            .queue_depth(1)
+            .compressed(false)
+            .build()?;
         file.write_slab(&out)?;
         file.close()?;
 
@@ -236,10 +239,7 @@ impl CuckooFilter {
                 &mut fingerprint,
                 &mut self.buckets[i].entries[entry as usize],
             );
-            std::mem::swap(
-                &mut slab,
-                &mut self.buckets[i].slabs[entry as usize],
-            );
+            std::mem::swap(&mut slab, &mut self.buckets[i].slabs[entry as usize]);
 
             // i = i ^ hash(new fp)
             i = (i ^ self.scatter[fingerprint as usize]) & self.mask;

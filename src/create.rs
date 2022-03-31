@@ -84,10 +84,16 @@ pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     std::env::set_current_dir(&dir)?;
 
     // Create empty data and hash slab files
-    let mut data_file = SlabFile::create(data_path(), 1, true)?;
+    let mut data_file = SlabFileBuilder::create(data_path())
+        .queue_depth(1)
+        .compressed(true)
+        .build()?;
     data_file.close()?;
 
-    let mut hashes_file = SlabFile::create(hashes_path(), 1, false)?;
+    let mut hashes_file = SlabFileBuilder::create(hashes_path())
+        .queue_depth(1)
+        .compressed(false)
+        .build()?;
     hashes_file.close()?;
 
     // Write empty index

@@ -66,28 +66,6 @@ struct SlabOffsets {
 }
 
 impl SlabOffsets {
-    /*
-    #[allow(dead_code)]
-    fn scan_slab_file(r: &mut File, mut offset: u64) -> Result<Self> {
-        let file_len = r.metadata()?.len();
-        let mut offsets = Vec::new();
-        while offset < file_len {
-            let magic = r.read_u64::<LittleEndian>()?;
-            let len = r.read_u64::<LittleEndian>()?;
-            assert_eq!(magic, SLAB_MAGIC);
-            let mut csum: Hash64 = Hash64::default();
-            r.read_exact(&mut csum[..])?;
-
-            r.seek(SeekFrom::Current(len as i64))?;
-
-            offsets.push(offset);
-            offset += 8 + 8 + 8 + 4 + len;
-        }
-
-        Ok(Self { offsets })
-    }
-    */
-
     fn read_offset_file<P: AsRef<Path>>(p: P) -> Result<Self> {
         let mut r = OpenOptions::new()
             .read(true)
@@ -243,7 +221,7 @@ fn offsets_path<P: AsRef<Path>>(p: P) -> PathBuf {
 }
 
 impl SlabFile {
-    pub fn create<P: AsRef<Path>>(
+    fn create<P: AsRef<Path>>(
         data_path: P,
         queue_depth: usize,
         compressed: bool,
@@ -295,7 +273,7 @@ impl SlabFile {
         })
     }
 
-    pub fn open_for_write<P: AsRef<Path>>(data_path: P, queue_depth: usize) -> Result<Self> {
+    fn open_for_write<P: AsRef<Path>>(data_path: P, queue_depth: usize) -> Result<Self> {
         let offsets_path = offsets_path(&data_path);
 
         let mut data = OpenOptions::new()
@@ -354,7 +332,7 @@ impl SlabFile {
         })
     }
 
-    pub fn open_for_read<P: AsRef<Path>>(data_path: P) -> Result<Self> {
+    fn open_for_read<P: AsRef<Path>>(data_path: P) -> Result<Self> {
         let offsets_path = offsets_path(&data_path);
 
         let mut data = OpenOptions::new()
@@ -485,6 +463,76 @@ impl SlabFile {
 
     pub fn misses(&self) -> u64 {
         self.data_cache.misses
+    }
+}
+
+//-----------------------------------------
+
+pub struct SlabFileBuilder<P: AsRef<Path>> {
+    path: P,
+    create: bool,
+    queue_depth: usize,
+    read: bool,
+    write: bool,
+    compressed: bool,
+
+}
+
+impl<P: AsRef<Path>> SlabFileBuilder<P> {
+    pub fn create(path: P) -> Self {
+        Self {
+            path,
+            create: true,
+            queue_depth: 1,
+            read: true,
+            write: true,
+            compressed: false
+        }
+    }
+
+    pub fn open(path: P) -> Self {
+        Self {
+            path,
+            create: false,
+            queue_depth: 1,
+            read: true,
+            write: false,
+            compressed: false
+        }
+    }
+
+    pub fn queue_depth(mut self, qd: usize) -> Self {
+        self.queue_depth = qd;
+        self
+    }
+
+    pub fn write(mut self, flag: bool) -> Self {
+        self.write = flag;
+        if self.create {
+            assert!(self.write);
+        }
+        self
+    }
+
+    pub fn read(mut self, flag: bool) -> Self {
+        self.read = flag;
+        self
+    }
+
+    pub fn compressed(mut self, flag: bool) -> Self {
+        assert!(self.create);  // compressed can only be determined at create time
+        self.compressed = flag;
+        self
+    }
+
+    pub fn build(self) -> Result<SlabFile> {
+        if self.create {
+            SlabFile::create(self.path, self.queue_depth, self.compressed)
+        } else if self.write {
+            SlabFile::open_for_write(self.path, self.queue_depth)
+        } else {
+            SlabFile::open_for_read(self.path)
+        }
     }
 }
 
