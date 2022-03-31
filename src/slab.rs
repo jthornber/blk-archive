@@ -225,6 +225,7 @@ impl SlabFile {
         data_path: P,
         queue_depth: usize,
         compressed: bool,
+        cache_nr_entries: usize,
     ) -> Result<Self> {
         let offsets_path = offsets_path(&data_path);
 
@@ -269,11 +270,11 @@ impl SlabFile {
             shared,
             tx: Some(tx),
             tid: Some(tid),
-            data_cache: DataCache::new(1), // FIXME: pass in nr_data_entries
+            data_cache: DataCache::new(cache_nr_entries),
         })
     }
 
-    fn open_for_write<P: AsRef<Path>>(data_path: P, queue_depth: usize) -> Result<Self> {
+    fn open_for_write<P: AsRef<Path>>(data_path: P, queue_depth: usize, cache_nr_entries: usize) -> Result<Self> {
         let offsets_path = offsets_path(&data_path);
 
         let mut data = OpenOptions::new()
@@ -328,11 +329,11 @@ impl SlabFile {
             shared,
             tx: Some(tx),
             tid: Some(tid),
-            data_cache: DataCache::new(32), // FIXME: pass in nr_data_entries
+            data_cache: DataCache::new(cache_nr_entries),
         })
     }
 
-    fn open_for_read<P: AsRef<Path>>(data_path: P) -> Result<Self> {
+    fn open_for_read<P: AsRef<Path>>(data_path: P, cache_nr_entries: usize) -> Result<Self> {
         let offsets_path = offsets_path(&data_path);
 
         let mut data = OpenOptions::new()
@@ -371,7 +372,7 @@ impl SlabFile {
             shared,
             tx: None,
             tid: None,
-            data_cache: DataCache::new(32), // FIXME: pass in nr_data_entries
+            data_cache: DataCache::new(cache_nr_entries),
         })
     }
 
@@ -475,7 +476,7 @@ pub struct SlabFileBuilder<P: AsRef<Path>> {
     read: bool,
     write: bool,
     compressed: bool,
-
+    cache_nr_entries: usize,
 }
 
 impl<P: AsRef<Path>> SlabFileBuilder<P> {
@@ -486,7 +487,8 @@ impl<P: AsRef<Path>> SlabFileBuilder<P> {
             queue_depth: 1,
             read: true,
             write: true,
-            compressed: false
+            compressed: false,
+            cache_nr_entries: 1,
         }
     }
 
@@ -497,7 +499,8 @@ impl<P: AsRef<Path>> SlabFileBuilder<P> {
             queue_depth: 1,
             read: true,
             write: false,
-            compressed: false
+            compressed: false,
+            cache_nr_entries: 1,
         }
     }
 
@@ -525,13 +528,18 @@ impl<P: AsRef<Path>> SlabFileBuilder<P> {
         self
     }
 
+    pub fn cache_nr_entries(mut self, count: usize) -> Self {
+        self.cache_nr_entries = count;
+        self
+    }
+
     pub fn build(self) -> Result<SlabFile> {
         if self.create {
-            SlabFile::create(self.path, self.queue_depth, self.compressed)
+            SlabFile::create(self.path, self.queue_depth, self.compressed, self.cache_nr_entries)
         } else if self.write {
-            SlabFile::open_for_write(self.path, self.queue_depth)
+            SlabFile::open_for_write(self.path, self.queue_depth, self.cache_nr_entries)
         } else {
-            SlabFile::open_for_read(self.path)
+            SlabFile::open_for_read(self.path, self.cache_nr_entries)
         }
     }
 }

@@ -12,6 +12,7 @@ pub struct Config {
     pub block_size: usize,
     pub splitter_alg: String,
     pub hash_cache_size_meg: usize,
+    pub data_cache_size_meg: usize,
 }
 
 pub fn read_config<P: AsRef<Path>>(root: P) -> Result<Config> {

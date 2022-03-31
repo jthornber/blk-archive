@@ -10,7 +10,9 @@ use std::path::Path;
 use std::sync::Arc;
 use thinp::report::*;
 
+use crate::config;
 use crate::hash::*;
+use crate::pack::SLAB_SIZE_TARGET;
 use crate::paths::*;
 use crate::slab::*;
 use crate::stream;
@@ -34,8 +36,10 @@ struct Unpacker {
 
 impl Unpacker {
     // Assumes current directory is the root of the archive.
-    fn new(stream: &str) -> Result<Self> {
-        let data_file = SlabFileBuilder::open(data_path()).build()?;
+    fn new(stream: &str, cache_nr_entries: usize) -> Result<Self> {
+        let data_file = SlabFileBuilder::open(data_path())
+            .cache_nr_entries(cache_nr_entries)
+            .build()?;
         let hashes_file = SlabFileBuilder::open(hashes_path()).build()?;
         let stream_file = SlabFileBuilder::open(stream_path(stream)).build()?;
 
@@ -178,8 +182,11 @@ pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
 
     env::set_current_dir(&archive_dir)?;
 
+    let config = config::read_config(".")?;
+    let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
+
     report.set_title(&format!("Unpacking {} ...", output_file.display()));
-    let mut u = Unpacker::new(&stream)?;
+    let mut u = Unpacker::new(&stream, cache_nr_entries)?;
     u.unpack(&report, &mut output)
 }
 

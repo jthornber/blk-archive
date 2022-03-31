@@ -63,7 +63,7 @@ fn all_same(iov: &IoVec) -> (u8, u64, bool) {
 
 //-----------------------------------------
 
-const SLAB_SIZE_TARGET: usize = 4 * 1024 * 1024;
+pub const SLAB_SIZE_TARGET: usize = 4 * 1024 * 1024;
 
 struct DedupHandler {
     nr_chunks: usize,

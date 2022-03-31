@@ -44,8 +44,23 @@ fn main_() -> Result<()> {
                         .long("block-size")
                         .value_name("BLOCK_SIZE")
                         .takes_value(true),
-                ),
-        )
+                )
+                .arg(
+                    Arg::new("HASH_CACHE_SIZE_MEG")
+                        .help("Specify how much memory is used for caching hash entries")
+                        .required(false)
+                        .long("hash-cache-size-meg")
+                        .value_name("HASH_CACHE_SIZE_MEG")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::new("DATA_CACHE_SIZE_MEG")
+                        .help("Specify how much memory is used for caching data")
+                        .required(false)
+                        .long("data-cache-size-meg")
+                        .value_name("DATA_CACHE_SIZE_MEG")
+                        .takes_value(true),
+                ),        )
         .subcommand(
             Command::new("pack")
                 .about("packs a stream into the archive")

@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Result};
 use clap::ArgMatches;
 use std::fs;
 use std::fs::OpenOptions;
@@ -23,7 +23,12 @@ fn create_sub_dir(root: &Path, sub: &str) -> Result<()> {
     Ok(())
 }
 
-fn write_config(root: &Path, block_size: usize) -> Result<()> {
+fn write_config(
+    root: &Path,
+    block_size: usize,
+    hash_cache_size_meg: usize,
+    data_cache_size_meg: usize,
+) -> Result<()> {
     let mut p = PathBuf::new();
     p.push(root);
     p.push("dm-archive.toml");
@@ -38,7 +43,8 @@ fn write_config(root: &Path, block_size: usize) -> Result<()> {
     let config = Config {
         block_size,
         splitter_alg: "RollingHashV0".to_string(),
-        hash_cache_size_meg: 1024,
+        hash_cache_size_meg,
+        data_cache_size_meg,
     };
 
     write!(output, "{}", &toml::to_string(&config).unwrap())?;
@@ -60,23 +66,26 @@ fn adjust_block_size(n: usize) -> usize {
     p
 }
 
+fn numeric_option<T: std::str::FromStr>(matches: &ArgMatches, name: &str, dflt: T) -> Result<T> {
+    matches.value_of(name).
+    map(|s| s.parse::<T>()).or(Some(Ok(dflt))).unwrap()
+        .map_err(|_| anyhow!(format!("could not parse {} argument", name)))
+}
+
 pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     let dir = Path::new(matches.value_of("DIR").unwrap());
-    let mut block_size = matches
-        .value_of("BLOCK_SIZE")
-        .map(|s| s.parse::<usize>())
-        .or(Some(Ok(4096)))
-        .unwrap()
-        .context("couldn't parse --block-size argument")?;
 
+    let mut block_size = numeric_option::<usize>(matches, "BLOCK_SIZE", 4096)?;
     let new_block_size = adjust_block_size(block_size);
     if new_block_size != block_size {
         report.info(&format!("adjusting block size to {}", new_block_size));
         block_size = new_block_size;
     }
+    let hash_cache_size_meg = numeric_option::<usize>(matches, "HASH_CACHE_SIZE_MEG", 1024)?;
+    let data_cache_size_meg = numeric_option::<usize>(matches, "DATA_CACHE_SIZE_MEG", 1024)?;
 
     fs::create_dir(dir)?;
-    write_config(dir, block_size)?;
+    write_config(dir, block_size, hash_cache_size_meg, data_cache_size_meg)?;
     create_sub_dir(dir, "data")?;
     create_sub_dir(dir, "streams")?;
     create_sub_dir(dir, "indexes")?;

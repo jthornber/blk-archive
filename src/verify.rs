@@ -10,11 +10,13 @@ use std::path::Path;
 use std::sync::Arc;
 use thinp::report::*;
 
+use crate::config;
 use crate::hash::*;
 use crate::paths::*;
 use crate::slab::*;
 use crate::stream;
 use crate::stream::*;
+use crate::pack::SLAB_SIZE_TARGET;
 
 //-----------------------------------------
 
@@ -35,8 +37,10 @@ struct Verifier {
 
 impl Verifier {
     // Assumes current directory is the root of the archive.
-    fn new(stream: &str) -> Result<Self> {
-        let data_file = SlabFileBuilder::open(data_path()).build()?;
+    fn new(stream: &str, cache_nr_entries: usize) -> Result<Self> {
+        let data_file = SlabFileBuilder::open(data_path())
+            .cache_nr_entries(cache_nr_entries)
+            .build()?;
         let hashes_file = SlabFileBuilder::open(hashes_path()).build()?;
         let stream_file = SlabFileBuilder::open(stream_path(stream)).build()?;
 
@@ -244,12 +248,15 @@ pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
 
     env::set_current_dir(&archive_dir)?;
 
+    let config = config::read_config(".")?;
+    let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
+
     report.set_title(&format!(
         "Verifying {} and {} match ...",
         input_file.display(),
         &stream
     ));
-    let mut v = Verifier::new(&stream)?;
+    let mut v = Verifier::new(&stream, cache_nr_entries)?;
     v.verify(&report, &mut input)
 }
 
