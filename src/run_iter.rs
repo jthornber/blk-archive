@@ -83,7 +83,7 @@ mod run_iter_tests {
                 }
             }
 
-            let it = RunIter::new(&bits, t.bits.len() as u32);
+            let it = RunIter::new(bits, t.bits.len() as u32);
             let actual: Vec<(bool, Range<u32>)> = it.collect();
             assert_eq!(actual, t.expected);
         }
