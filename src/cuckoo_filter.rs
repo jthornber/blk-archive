@@ -14,7 +14,7 @@ const MAX_KICKS: usize = 500;
 
 #[derive(Clone)]
 struct Bucket {
-    entries: [u8; ENTRIES_PER_BUCKET],
+    entries: [u16; ENTRIES_PER_BUCKET],
     slabs: [u32; ENTRIES_PER_BUCKET],
 }
 
@@ -46,7 +46,7 @@ fn parse_bucket(input: &[u8], nr: usize) -> IResult<&[u8], Bucket> {
     use nom::multi::*;
     use nom::number::complete::*;
 
-    let (input, entries) = count(le_u8, nr)(input)?;
+    let (input, entries) = count(le_u16, nr)(input)?;
     let (input, slabs) = count(le_u32, nr)(input)?;
     let mut b = Bucket::default();
     for (i, (e, s)) in zip(entries, slabs).enumerate() {
@@ -80,12 +80,16 @@ fn parse_nr(input: &[u8]) -> IResult<&[u8], u32> {
 }
 
 impl CuckooFilter {
+    fn make_scatter(rng: &mut ChaCha20Rng) -> Vec<usize> {
+        repeat_with(|| rng.gen()).take(u16::MAX as usize + 1).collect()
+    }
+
     pub fn with_capacity(mut n: usize) -> Self {
         n = (n * 5) / 4;
         n /= ENTRIES_PER_BUCKET;
         let mut rng = ChaCha20Rng::seed_from_u64(1);
         let nr_buckets = cmp::max(n, 4096).next_power_of_two();
-        let scatter: Vec<usize> = repeat_with(|| rng.gen()).take(256).collect();
+        let scatter = Self::make_scatter(&mut rng);
         Self {
             rng,
             len: 0,
@@ -115,7 +119,7 @@ impl CuckooFilter {
             return Err(anyhow!("extra bytes at end of index file"));
         }
 
-        let scatter: Vec<usize> = repeat_with(|| rng.gen()).take(256).collect();
+        let scatter = Self::make_scatter(&mut rng);
         // FIXME: double check nr_buckets is a power of 2
         let mask = nr_buckets - 1;
         let len = bucket_counts.iter().map(|n| *n as usize).sum();
@@ -140,7 +144,7 @@ impl CuckooFilter {
 
         for (b, count) in self.bucket_counts.iter().enumerate() {
             for e in 0..*count {
-                out.write_u8(self.buckets[b].entries[e as usize])?;
+                out.write_u16::<LittleEndian>(self.buckets[b].entries[e as usize])?;
             }
 
             for s in 0..*count {
@@ -162,7 +166,7 @@ impl CuckooFilter {
         (self.buckets.len() * ENTRIES_PER_BUCKET * 4) / 5
     }
 
-    fn present(&self, fp: u8, index: usize) -> Option<u32> {
+    fn present(&self, fp: u16, index: usize) -> Option<u32> {
         for entry in 0..self.bucket_counts[index] as usize {
             if self.buckets[index].entries[entry] == fp {
                 return Some(self.buckets[index].slabs[entry]);
@@ -172,7 +176,7 @@ impl CuckooFilter {
         None
     }
 
-    fn insert(&mut self, fp: u8, slab: u32, index: usize) -> bool {
+    fn insert(&mut self, fp: u16, slab: u32, index: usize) -> bool {
         let entry = self.bucket_counts[index] as usize;
         if entry >= ENTRIES_PER_BUCKET {
             false
@@ -184,32 +188,13 @@ impl CuckooFilter {
         }
     }
 
-    /// Returns the data slab that might contain this
-    pub fn contains(&self, h: u64) -> Option<u32> {
-        let fingerprint: u8 = (h & 0xff) as u8;
-        let index1: usize = ((h >> 8) as usize) & self.mask;
-
-        let found = self.present(fingerprint, index1);
-        if found.is_some() {
-            return found;
-        }
-
-        let index2: usize = ((index1 ^ self.scatter[fingerprint as usize]) as usize) & self.mask;
-        let found = self.present(fingerprint, index2);
-        if found.is_some() {
-            return found;
-        }
-
-        None
-    }
-
     // h must be randomly distributed across u64. Does not overwrite
     // slab if there's already an entry.
     fn test_and_set_(&mut self, h: u64, mut slab: u32) -> Result<InsertResult> {
         use InsertResult::*;
 
-        let mut fingerprint: u8 = (h & 0b1111111) as u8;
-        let index1: usize = ((h >> 8) as usize) & self.mask;
+        let mut fingerprint: u16 = (h & 0xffff) as u16;
+        let index1: usize = ((h >> 16) as usize) & self.mask;
 
         if let Some(s) = self.present(fingerprint, index1) {
             return Ok(AlreadyPresent(s));
@@ -278,25 +263,49 @@ mod cuckoo_tests {
 
     #[test]
     fn test_insert() {
-        let mut cf = CuckooFilter::with_capacity(2000);
+        let mut cf = CuckooFilter::with_capacity(12_000);
         let mut rng = rand::thread_rng();
-        let mut inserted = BTreeSet::new();
+        let mut values = BTreeSet::new();
+
+        // Generate a set of values to insert
         for _ in 0..10_000 {
-            let n = rng.gen_range(0..100_000);
-            match cf.test_and_set(n, n as u32).expect("test_and_set failed") {
+            let n = rng.gen_range(0..u64::MAX);
+            values.insert(n);
+        }
+
+        // Inserts
+	for v in &values {
+            match cf.test_and_set(*v, *v as u32).expect("test_and_set failed") {
                 InsertResult::Inserted => {
-                    assert!(!inserted.contains(&n));
-                    inserted.insert(n);
+                    // Expected
                 }
-                InsertResult::AlreadyPresent(_slab) => {
-                    // False positive means we can't check inserted
+                InsertResult::AlreadyPresent(n) => {
+                    // Can happen due to false positives
+                    eprintln!("already present {}", n);
                 }
             }
         }
 
-        assert_eq!(cf.len(), inserted.len());
-        for n in inserted {
-            assert!(cf.contains(n).unwrap() == n as u32);
+        // Lookups
+        let mut hits = 0;
+        let mut misses = 0;
+        for v in &values {
+            match cf.test_and_set(*v, *v as u32).expect("test_and_set failed") {
+                InsertResult::Inserted => {
+                    assert!(false);
+                }
+                InsertResult::AlreadyPresent(slab) => {
+                    if slab == *v as u32 {
+                        hits += 1;
+                    } else {
+                        misses += 1;
+                    }
+                }
+            }
         }
+
+        let false_positives = misses as f64 / hits as f64;
+        eprintln!("false positives: {}", false_positives);
+        assert!(false_positives < 0.001);
     }
 }
