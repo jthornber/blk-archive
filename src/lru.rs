@@ -15,6 +15,7 @@ pub struct LRU {
     tree: BTreeMap<u32, usize>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum PushResult {
     AlreadyPresent,
     Added,
@@ -34,7 +35,11 @@ impl LRU {
 
     fn lru_push_(&mut self, n: u32) {
         let index = self.entries.len();
-        self.entries.push(Entry {n, prev: self.head, next: self.tail });
+        self.entries.push(Entry {
+            n,
+            prev: self.head,
+            next: self.tail,
+        });
 
         self.entries[self.head].next = index;
         self.entries[self.tail].prev = index;
@@ -110,6 +115,7 @@ impl LRU {
 #[cfg(test)]
 mod lru_tests {
     use super::*;
+    use PushResult::*;
 
     #[allow(dead_code)]
     fn print_entries(lru: &LRU) {
@@ -124,9 +130,9 @@ mod lru_tests {
     fn same_item_repeatedly_added() {
         let mut lru = LRU::with_capacity(1);
 
-        assert!(lru.push(54).is_none());
+        assert!(lru.push(54) == Added);
         for _ in 0..100 {
-            assert!(lru.push(54).is_none());
+            assert!(lru.push(54) == AlreadyPresent);
         }
     }
 
@@ -134,11 +140,11 @@ mod lru_tests {
     fn alternate_two_values() {
         let mut lru = LRU::with_capacity(2);
 
-        assert!(lru.push(1).is_none());
-        assert!(lru.push(2).is_none());
+        assert_eq!(lru.push(1), Added);
+        assert_eq!(lru.push(2), Added);
         for _ in 0..100 {
-            assert!(lru.push(1).is_none());
-            assert!(lru.push(2).is_none());
+            assert_eq!(lru.push(1), AlreadyPresent);
+            assert_eq!(lru.push(2), AlreadyPresent);
         }
     }
 
@@ -146,12 +152,12 @@ mod lru_tests {
     fn alternate_three_values() {
         let mut lru = LRU::with_capacity(2);
 
-        assert!(lru.push(0).is_none());
-        assert!(lru.push(1).is_none());
-        assert_eq!(lru.push(2), Some(0));
+        assert_eq!(lru.push(0), Added);
+        assert_eq!(lru.push(1), Added);
+        assert_eq!(lru.push(2), AddAndEvict(0));
         for _ in 0..100 {
             for i in 0..3 {
-                assert_eq!(lru.push(i), Some((i + 1) % 3));
+                assert_eq!(lru.push(i), AddAndEvict((i + 1) % 3));
             }
         }
     }
@@ -160,14 +166,14 @@ mod lru_tests {
     fn relink() {
         let mut lru = LRU::with_capacity(3);
 
-        assert!(lru.push(0).is_none());
-        assert!(lru.push(1).is_none());
-        assert!(lru.push(100).is_none());
-        assert_eq!(lru.push(2), Some(0));
+        assert_eq!(lru.push(0), Added);
+        assert_eq!(lru.push(1), Added);
+        assert_eq!(lru.push(100), Added);
+        assert_eq!(lru.push(2), AddAndEvict(0));
         for _ in 0..100 {
             for i in 0..3 {
-                assert_eq!(lru.push(i), Some((i + 1) % 3));
-                assert_eq!(lru.push(100), None);
+                assert_eq!(lru.push(i), AddAndEvict((i + 1) % 3));
+                assert_eq!(lru.push(100), AlreadyPresent);
             }
         }
     }
