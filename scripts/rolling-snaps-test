@@ -44,7 +44,7 @@ umount ./test-mnt | true
 lvremove -fy test-vg/pool | true
 
 echo Creating archive ...
-$cmd create --dir $archive --block-size 4096
+$cmd create -a $archive --block-size 4096
 
 echo Creating thin pool ...
 lvcreate -L 100G --thinpool pool test-vg

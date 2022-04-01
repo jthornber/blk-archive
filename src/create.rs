@@ -73,7 +73,7 @@ fn numeric_option<T: std::str::FromStr>(matches: &ArgMatches, name: &str, dflt: 
 }
 
 pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
-    let dir = Path::new(matches.value_of("DIR").unwrap());
+    let dir = Path::new(matches.value_of("ARCHIVE").unwrap());
 
     let mut block_size = numeric_option::<usize>(matches, "BLOCK_SIZE", 4096)?;
     let new_block_size = adjust_block_size(block_size);

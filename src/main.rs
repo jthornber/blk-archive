@@ -30,11 +30,12 @@ fn main_() -> Result<()> {
             Command::new("create")
                 .about("creates a new archive")
                 .arg(
-                    Arg::new("DIR")
-                        .help("Specify the top level directory for the archive")
+                    Arg::new("ARCHIVE")
+                        .help("Specify archive directory")
                         .required(true)
-                        .long("dir")
-                        .value_name("DIR")
+                        .long("archive")
+                        .short('a')
+                        .value_name("ARCHIVE")
                         .takes_value(true),
                 )
                 .arg(

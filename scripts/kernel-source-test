@@ -26,7 +26,7 @@ cycle() {
 cargo build --release
 rm -rf $archive
 echo Creating archive ...
-$cmd create --dir $archive --block-size 4096 --data-cache-size-meg 4096 --hash-cache-size-meg 2048
+$cmd create -a $archive --block-size 4096 --data-cache-size-meg 4096 --hash-cache-size-meg 2048
 
 for f in v5.0 v5.1 v5.2 v5.3 v5.4 v5.5 v5.6 v5.7 v5.8 v5.9 v5.10 v5.11 v5.12 v5.13
 do
