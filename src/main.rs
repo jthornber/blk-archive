@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::{command, Arg, Command};
+use std::env;
 use std::process::exit;
 use std::sync::Arc;
 use thinp::report::*;
@@ -22,6 +23,37 @@ fn mk_report() -> Arc<Report> {
 }
 
 fn main_() -> Result<()> {
+    let default_archive = match env::var("DM_ARCHIVE_DIR") {
+        Err(_) => String::new(),
+        Ok(s) => s.clone()
+    };
+
+    let archive_arg = if default_archive.is_empty() {
+        Arg::new("ARCHIVE")
+        .help("Specify archive directory")
+        .required(true)
+        .long("archive")
+        .short('a')
+        .value_name("ARCHIVE")
+        .takes_value(true)
+    } else {
+        Arg::new("ARCHIVE")
+        .help("Specify archive directory")
+        .default_value(&default_archive)
+        .long("archive")
+        .short('a')
+        .value_name("ARCHIVE")
+        .takes_value(true)
+    };
+
+    let stream_arg = Arg::new("STREAM")
+        .help("Specify an archived stream to unpack")
+        .required(true)
+        .long("stream")
+        .short('s')
+        .value_name("STREAM")
+        .takes_value(true);
+
     let matches = command!()
         .propagate_version(true)
         .subcommand_required(true)
@@ -29,15 +61,7 @@ fn main_() -> Result<()> {
         .subcommand(
             Command::new("create")
                 .about("creates a new archive")
-                .arg(
-                    Arg::new("ARCHIVE")
-                        .help("Specify archive directory")
-                        .required(true)
-                        .long("archive")
-                        .short('a')
-                        .value_name("ARCHIVE")
-                        .takes_value(true),
-                )
+                .arg(archive_arg.clone())
                 .arg(
                     Arg::new("BLOCK_SIZE")
                         .help("Specify the average block size used when deduplicating data")
@@ -61,7 +85,8 @@ fn main_() -> Result<()> {
                         .long("data-cache-size-meg")
                         .value_name("DATA_CACHE_SIZE_MEG")
                         .takes_value(true),
-                ),        )
+                ),
+        )
         .subcommand(
             Command::new("pack")
                 .about("packs a stream into the archive")
@@ -72,15 +97,7 @@ fn main_() -> Result<()> {
                         .value_name("INPUT")
                         .takes_value(true),
                 )
-                .arg(
-                    Arg::new("ARCHIVE")
-                        .help("Specify archive directory")
-                        .required(true)
-                        .long("archive")
-                        .short('a')
-                        .value_name("ARCHIVE")
-                        .takes_value(true),
-                )
+                .arg(archive_arg.clone())
                 .arg(
                     Arg::new("DELTA_STREAM")
                         .help(
@@ -102,24 +119,8 @@ fn main_() -> Result<()> {
                         .value_name("OUTPUT")
                         .takes_value(true),
                 )
-                .arg(
-                    Arg::new("ARCHIVE")
-                        .help("Specify archive directory")
-                        .required(true)
-                        .long("archive")
-                        .short('a')
-                        .value_name("ARCHIVE")
-                        .takes_value(true),
-                )
-                .arg(
-                    Arg::new("STREAM")
-                        .help("Specify an archived stream to unpack")
-                        .required(true)
-                        .long("stream")
-                        .short('s')
-                        .value_name("STREAM")
-                        .takes_value(true),
-                ),
+                .arg(archive_arg.clone())
+                .arg(stream_arg.clone()),
         )
         .subcommand(
             Command::new("verify")
@@ -131,59 +132,19 @@ fn main_() -> Result<()> {
                         .value_name("INPUT")
                         .takes_value(true),
                 )
-                .arg(
-                    Arg::new("ARCHIVE")
-                        .help("Specify archive directory")
-                        .required(true)
-                        .long("archive")
-                        .short('a')
-                        .value_name("ARCHIVE")
-                        .takes_value(true),
-                )
-                .arg(
-                    Arg::new("STREAM")
-                        .help("Specify an archived stream to unpack")
-                        .required(true)
-                        .long("stream")
-                        .short('s')
-                        .value_name("STREAM")
-                        .takes_value(true),
-                ),
+                .arg(archive_arg.clone())
+                .arg(stream_arg.clone()),
         )
         .subcommand(
             Command::new("dump-stream")
                 .about("dumps stream instructions (development tool)")
-                .arg(
-                    Arg::new("ARCHIVE")
-                        .help("Specify archive directory")
-                        .required(true)
-                        .long("archive")
-                        .short('a')
-                        .value_name("ARCHIVE")
-                        .takes_value(true),
-                )
-                .arg(
-                    Arg::new("STREAM")
-                        .help("Specify an archived stream to dump")
-                        .required(true)
-                        .long("stream")
-                        .short('s')
-                        .value_name("STREAM")
-                        .takes_value(true),
-                ),
+                .arg(archive_arg.clone())
+                .arg(stream_arg.clone()),
         )
         .subcommand(
             Command::new("list")
                 .about("lists the streams in the archive")
-                .arg(
-                    Arg::new("ARCHIVE")
-                        .help("Specify archive directory")
-                        .required(true)
-                        .long("archive")
-                        .short('a')
-                        .value_name("ARCHIVE")
-                        .takes_value(true),
-                ),
+                .arg(archive_arg.clone()),
         )
         .get_matches();
 
