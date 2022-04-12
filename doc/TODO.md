@@ -20,7 +20,7 @@ These are the work items that need to be done before the alpha/internal release.
 - [ ] Unpack --minimal-writes flag for restoring to thins (or turn on automatically when restoring to thin.)
 - [ ] Fix hang if pack is interrupted.  To do with shutting down compressor threads cleanly.
 - [ ] unpack should only create a new file to restore to if the --create switch is given.
-- [ ] Add --create switch to pack, this must be present to create a new output file.
+- [ ] Add --create switch to unpack, this must be present to create a new output file.
 
 # Beta
 These are the work items that need to be done before the beta/-rc release.  At this point the formats will be set in stone, and supported in perpetuity, so people can start using the tool.
