@@ -4,7 +4,7 @@ These are the work items that need to be done before the alpha/internal release.
 ## Documentation
 - [ ] Man page
 - [ ] Use cases document [[Use Cases]]
-- [ ] Design document
+- [X] Design document [Design]
 - [x] TODO list (this file)
 - [x] README
 
