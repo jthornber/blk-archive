@@ -38,7 +38,7 @@ When the archive is created a block size is specified (currently defaulting to 4
 Each block has a hash calculated for it.  This needs to be a strong crypto hash since we assume that if two blocks have the same hash then they contain the same data (if this assumption ever fails then the verify stage of packing will detect it).  I'm currently using the Blake256 crypto hash.  This is popular due to it's fast performance.
 
 ## Lookup
-We see if the hash for the current block has been seen before.  If it has we store a reference to the earlier block in the stream.  If not we add the data to the current data slab, and the hash to the current hash slab.
+We see if the hash for the current block has been seen before.  If it has, we store a reference to the earlier block in the stream.  If not, we add the data to the current data slab, and the hash to the current hash slab.
 
 
 # Indexer
@@ -169,6 +169,28 @@ Instruction frequencies:
              emit20 0         
               pos64 0
 ```
+
+The more duplicate data we find for a stream, the more complicated the stream program will be, and so the more space it will take up.  For instance here are the stream file sizes (before dedup) of archiving tar files containing kernel source for v5.0 -> v5.13 (each file is just under 1G):
+
+```
+-rw-r--r-- 1 ejt ejt   5284 Apr 12 10:05 test-archive/streams/affa251b5adf3720/stream
+-rw-r--r-- 1 ejt ejt  45388 Apr 12 10:05 test-archive/streams/d4dc32b7ce5ba564/stream
+-rw-r--r-- 1 ejt ejt  58370 Apr 12 10:05 test-archive/streams/9887832106101aeb/stream
+-rw-r--r-- 1 ejt ejt  72119 Apr 12 10:06 test-archive/streams/9fab1a8d530e37fa/stream
+-rw-r--r-- 1 ejt ejt  81200 Apr 12 10:06 test-archive/streams/c18311a4030502e3/stream
+-rw-r--r-- 1 ejt ejt  88732 Apr 12 10:06 test-archive/streams/1495a6c7f8172ec4/stream
+-rw-r--r-- 1 ejt ejt  95597 Apr 12 10:07 test-archive/streams/377eca0ba5217726/stream
+-rw-r--r-- 1 ejt ejt 100770 Apr 12 10:07 test-archive/streams/a98de0f3f954dc13/stream
+-rw-r--r-- 1 ejt ejt 103729 Apr 12 10:07 test-archive/streams/ea923330cafaae7d/stream
+-rw-r--r-- 1 ejt ejt 109686 Apr 12 10:08 test-archive/streams/0fcdd6a4585a8afb/stream
+-rw-r--r-- 1 ejt ejt 115406 Apr 12 10:08 test-archive/streams/41caf442bb453ff4/stream
+-rw-r--r-- 1 ejt ejt 123890 Apr 12 10:09 test-archive/streams/f8ca25fe34a15804/stream
+-rw-r--r-- 1 ejt ejt 129307 Apr 12 10:09 test-archive/streams/994733244c4b86f3/stream
+-rw-r--r-- 1 ejt ejt 132505 Apr 12 10:10 test-archive/streams/5be10fc74c1a2d27/stream
+
+```
+
+As more duplicates from earlier streams are found the streams get more and more fragmented.  This is just the nature of dedup.
 
 # Packing process
 The packer reads a stream from either a file, thick device or thin device and sends it through the above dedup + compress process.
