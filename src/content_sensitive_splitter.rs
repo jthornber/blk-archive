@@ -2,7 +2,6 @@ use anyhow::Result;
 use std::collections::VecDeque;
 
 use crate::iovec::*;
-use crate::rolling_hash::*;
 use crate::splitter::*;
 
 //-----------------------------------------
@@ -14,35 +13,33 @@ struct Cursor {
 }
 
 pub struct ContentSensitiveSplitter {
-    rhash: RollingHash,
+    window_size: u32,
+    hasher: gearhash::Hasher<'static>,
+    mask: u64,
 
-    len: usize, // length since last consume
+    len: u64,
     blocks: VecDeque<Vec<u8>>,
 
     leading_c: Cursor,
-    trailing_c: Cursor,
     consume_c: Cursor,
-
-    div: u32,
 }
 
 impl ContentSensitiveSplitter {
     pub fn new(window_size: u32) -> Self {
         // FIXME: round window size up to a power of 2
-        let mut blocks: VecDeque<Vec<u8>> = VecDeque::new();
-        blocks.push_back(vec![0; window_size as usize]);
+        let shift = 36;
 
         Self {
-            rhash: RollingHash::new(window_size),
+            window_size,
+
+            hasher: gearhash::Hasher::default(),
+            mask: (window_size as u64 - 1) << shift,
 
             len: 0,
-            blocks,
+            blocks: VecDeque::new(),
 
-            leading_c: Cursor { block: 1, offset: 0 },
-            trailing_c: Cursor::default(),
-            consume_c: Cursor { block: 1, offset: 0 },
-
-            div: window_size - 1,
+            leading_c: Cursor::default(),
+            consume_c: Cursor::default(),
         }
     }
 
@@ -77,13 +74,12 @@ impl ContentSensitiveSplitter {
     }
 
     fn drop_old_blocks(&mut self) {
-        let first_used = self.consume_c.block.min(self.trailing_c.block);
+        let first_used = self.consume_c.block;
         for _ in 0..first_used {
             self.blocks.pop_front();
         }
 
         self.consume_c.block -= first_used;
-        self.trailing_c.block -= first_used;
         self.leading_c.block -= first_used;
     }
 
@@ -113,7 +109,7 @@ impl ContentSensitiveSplitter {
                 c.block += 1;
             }
         }
-        self.len -= len;
+        self.len -= len as u64;
         r
     }
 
@@ -130,66 +126,49 @@ impl ContentSensitiveSplitter {
         r
     }
 
-    fn hit_break(&self, mask: u32) -> bool {
-        let h = self.rhash.hash >> 8;
-        (h & mask) == 0
-    }
-
     // Returns a vec of consume lengths
-    fn next_data_(
-        &mut self,
-        trailing: &[u8],
-        leading: &[u8],
-    ) -> Vec<usize> {
-        assert_eq!(leading.len(), trailing.len());
+    fn next_data_(&mut self, data: &[u8]) -> Vec<usize> {
+        let mut consumes = Vec::with_capacity(1024); // FIXME: estimate good capacity
 
-        let mut consumes = Vec::with_capacity(1024);   // FIXME: estimate good capcity
-        let mut consumed = 0;
+        let mut offset = 0;
+        let mut remainder = self.len as usize;
+        let _min_size = self.window_size as usize / 4;
 
-        for (t, l) in std::iter::zip(trailing.iter(), leading.iter()) {
-            self.rhash.step(*t, *l);
-            self.len += 1;
+        while let Some(boundary) = self.hasher.next_match(&data[offset..], self.mask) {
+            consumes.push(remainder + boundary);
+            remainder = 0;
+            offset += boundary;
 
-            if self.hit_break(self.div) && (self.len - consumed) > DIGEST_LEN * 2 {
-                consumes.push(self.len - consumed);
-                consumed = self.len;
-            } else if (self.len - consumed) >= self.rhash.window_size as usize * 2 {
-                // Any bytes older than the window size have no effect on
-                // the rolling hash.  So if we have built up a whole block
-                // of these we split at this point.  This can happen if
-                // we're getting very long runs of identical bytes (eg,
-                // zeroes in a thinly provisioned block).
-                consumes.push(self.rhash.window_size as usize);
-                consumed += self.rhash.window_size as usize;
+/*
+            if data.len() - offset > min_size {
+                offset += min_size;
+            } else {
+                break;
             }
+            */
         }
 
         consumes
     }
 }
 
-const DIGEST_LEN: usize = 32;
 impl Splitter for ContentSensitiveSplitter {
     fn next_data(&mut self, buffer: Vec<u8>, handler: &mut dyn IoVecHandler) -> Result<()> {
         self.blocks.push_back(buffer);
 
         while !self.eof() {
-            let len = std::cmp::min(
-                self.contiguous_size(&self.trailing_c),
-                self.contiguous_size(&self.leading_c),
-            );
+            let len = self.contiguous_size(&self.leading_c);
 
             let mut blocks = VecDeque::new();
             std::mem::swap(&mut self.blocks, &mut blocks);
-            let consumes = self.next_data_(
-                Self::ref_chunk(&blocks, &self.trailing_c, len),
-                Self::ref_chunk(&blocks, &self.leading_c, len),
-            );
+            let consumes = self.next_data_(Self::ref_chunk(&blocks, &self.leading_c, len));
             std::mem::swap(&mut self.blocks, &mut blocks);
+
+            self.len += len as u64;
+
             for consume_len in consumes {
                 handler.handle_data(&self.consume(consume_len))?;
             }
-            Self::inc_cursor(&self.blocks, &mut self.trailing_c, len);
             Self::inc_cursor(&self.blocks, &mut self.leading_c, len);
         }
 
@@ -206,10 +185,10 @@ impl Splitter for ContentSensitiveSplitter {
             }
             self.drop_old_blocks();
         }
-        self.blocks.push_back(vec![0; self.rhash.window_size as usize]);
-        self.trailing_c = Cursor::default();
-        self.leading_c = Cursor {block: 1, offset: 0};
-        self.consume_c = Cursor {block: 1, offset: 0};
+
+        self.leading_c = Cursor::default();
+        self.consume_c = Cursor::default();
+
         Ok(())
     }
 
@@ -400,7 +379,6 @@ mod splitter_tests {
     //-----------
 
     fn split<R: Read, H: IoVecHandler>(input: &mut R, handler: &mut H) {
-        // const BLOCK_SIZE: usize = 128;
         const BLOCK_SIZE: usize = 128;
         let mut splitter = ContentSensitiveSplitter::new(BLOCK_SIZE as u32);
 

@@ -81,6 +81,8 @@ fn parse_nr(input: &[u8]) -> IResult<&[u8], u32> {
 
 impl CuckooFilter {
     fn make_scatter(rng: &mut ChaCha20Rng) -> Vec<usize> {
+        // FIXME: this needs to be identical every time it's constructed.  Put
+        // a checksum in to make sure.
         repeat_with(|| rng.gen()).take(u16::MAX as usize + 1).collect()
     }
 
