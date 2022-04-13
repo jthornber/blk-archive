@@ -34,8 +34,8 @@ impl ContentSensitiveSplitter {
             window_size,
 
             hasher: gearhash::Hasher::default(),
-            mask_s: (((window_size as u64) << 2) - 1) << shift,
-            mask_l: (((window_size as u64) >> 2) - 1) << shift,
+            mask_s: (((window_size as u64) << 1) - 1) << shift,
+            mask_l: (((window_size as u64) >> 1) - 1) << shift,
 
             len: 0,
             blocks: VecDeque::new(),
