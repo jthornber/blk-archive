@@ -157,15 +157,6 @@ impl DedupHandler {
         Ok(())
     }
 
-    fn read_hashes(&mut self) -> Result<()> {
-        let nr_slabs = self.hashes_file.get_nr_slabs();
-        for s in 0..nr_slabs {
-            self.read_hash_slab_(s as u32)?;
-        }
-
-        Ok(())
-    }
-
     fn new(
         data_file: SlabFile,
         hashes_file: SlabFile,
@@ -177,7 +168,7 @@ impl DedupHandler {
         let nr_slabs = data_file.get_nr_slabs() as u32;
         assert_eq!(data_file.get_nr_slabs(), hashes_file.get_nr_slabs());
 
-        let mut r = Self {
+        Ok(Self {
             nr_chunks: 0,
 
             seen,
@@ -201,9 +192,7 @@ impl DedupHandler {
             data_written: 0,
             mapped_size: 0,
             fill_size: 0,
-        };
-        r.read_hashes()?;
-        Ok(r)
+        })
     }
 
     fn rebuild_index(&mut self, new_capacity: usize) -> Result<()> {
