@@ -15,7 +15,8 @@ struct Cursor {
 pub struct ContentSensitiveSplitter {
     window_size: u32,
     hasher: gearhash::Hasher<'static>,
-    mask: u64,
+    mask_s: u64,
+    mask_l: u64,
 
     len: u64,
     blocks: VecDeque<Vec<u8>>,
@@ -33,7 +34,8 @@ impl ContentSensitiveSplitter {
             window_size,
 
             hasher: gearhash::Hasher::default(),
-            mask: (window_size as u64 - 1) << shift,
+            mask_s: (((window_size as u64) >> 2) - 1) << shift,
+            mask_l: (((window_size as u64) << 2) - 1) << shift,
 
             len: 0,
             blocks: VecDeque::new(),
@@ -132,20 +134,38 @@ impl ContentSensitiveSplitter {
 
         let mut offset = 0;
         let mut remainder = self.len as usize;
-        let _min_size = self.window_size as usize / 4;
+        let min_size = self.window_size as usize / 4;
+        let ws = self.window_size as usize;
 
-        while let Some(boundary) = self.hasher.next_match(&data[offset..], self.mask) {
-            consumes.push(remainder + boundary);
-            remainder = 0;
-            offset += boundary;
+        while offset < data.len() {
+            let end = std::cmp::min(data.len(), offset + ws - remainder);
+            if let Some(boundary) = self.hasher.next_match(&data[offset..end], self.mask_s) {
+                consumes.push(remainder + boundary);
+                offset += boundary;
 
-/*
-            if data.len() - offset > min_size {
-                offset += min_size;
+                let skip_size = std::cmp::min(data.len() - offset, min_size);
+                offset += skip_size;
+                remainder = skip_size;
+                continue;
+            } else {
+                offset += ws;
+                remainder += ws;
+            }
+
+            if offset >= data.len() {
+                break;
+            }
+
+            if let Some(boundary) = self.hasher.next_match(&data[offset..], self.mask_l) {
+                consumes.push(remainder + boundary);
+                offset += boundary;
+
+                let skip_size = std::cmp::min(data.len() - offset, min_size);
+                offset += skip_size;
+                remainder = skip_size;
             } else {
                 break;
             }
-            */
         }
 
         consumes
