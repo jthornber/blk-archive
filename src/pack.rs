@@ -90,6 +90,7 @@ struct DedupHandler {
     data_written: u64,
     mapped_size: u64,
     fill_size: u64,
+    hash_slab_evictions: usize,
 }
 
 impl DedupHandler {
@@ -123,6 +124,7 @@ impl DedupHandler {
     }
 
     fn evict_hash_slab_(&mut self, slab: u32) -> Result<()> {
+        self.hash_slab_evictions += 1;
         let buf = self.hashes_file.read(slab)?;
         let (_, hashes) = Self::parse_hashes(&buf).map_err(|_| anyhow!("couldn't parse hashes"))?;
 
@@ -192,6 +194,7 @@ impl DedupHandler {
             data_written: 0,
             mapped_size: 0,
             fill_size: 0,
+            hash_slab_evictions: 0,
         })
     }
 
@@ -521,14 +524,16 @@ impl Packer {
         self.report
             .info(&format!("stream written   : {:.2}", Size(stream_written)));
 
-        let compression =
-            ((data_written + hashes_written + stream_written) * 100) as f64 / total_read as f64;
+        let ratio = (total_read as f64) /
+            ((data_written + hashes_written + stream_written) as f64);
         self.report
-            .info(&format!("compression      : {:.2}%", compression));
+            .info(&format!("ratio            : {:.2}", ratio));
         self.report.info(&format!(
             "speed            : {:.2}/s",
             Size((total_read as f64 / elapsed) as u64)
         ));
+        self.report.info(&format!(
+            "slab evictions   : {}", handler.hash_slab_evictions));
 
         // write the stream config
         let cfg = config::StreamConfig {
