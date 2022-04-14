@@ -1,6 +1,5 @@
 use anyhow::Result;
 use byteorder::{LittleEndian, WriteBytesExt};
-use flate2::{write::ZlibEncoder, Compression};
 use io::Write;
 use std::io;
 
@@ -11,19 +10,17 @@ use crate::hash::*;
 
 struct DataPacker {
     offset: u32,
-    packer: ZlibEncoder<Vec<u8>>,
-}
-
-impl Default for DataPacker {
-    fn default() -> Self {
-        Self {
-            offset: 0,
-            packer: ZlibEncoder::new(Vec::new(), Compression::default()),
-        }
-    }
+    packer: zstd::Encoder<'static, Vec<u8>>,
 }
 
 impl DataPacker {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            offset: 0,
+            packer: zstd::Encoder::new(Vec::new(), 0)?,
+        })
+    }
+
     fn write_iov(&mut self, iov: &IoVec) -> Result<()> {
         for v in iov {
             self.offset += v.len() as u32;
@@ -33,8 +30,8 @@ impl DataPacker {
         Ok(())
     }
 
-    fn complete(mut self) -> Result<Vec<u8>> {
-        let r = self.packer.reset(Vec::new())?;
+    fn complete(self) -> Result<Vec<u8>> {
+        let r = self.packer.finish()?;
         Ok(r)
     }
 }
@@ -46,24 +43,19 @@ pub struct SlabEntry {
     offset: u32,
 }
 
-#[derive(Default)]
 pub struct Slab {
     blocks: Vec<SlabEntry>,
     packer: DataPacker,
 }
 
-/*
-impl Default for Slab {
-    fn default() -> Self {
-        Self {
-            blocks: Vec::new(),
-            packer: DataPacker::default(),
-        }
-    }
-}
-*/
-
 impl Slab {
+    pub fn new() -> Result<Self> {
+        Ok(Self {
+            blocks: Vec::new(),
+            packer: DataPacker::new()?,
+        })
+    }
+
     pub fn add_chunk(&mut self, h: Hash256, iov: &IoVec) -> Result<()> {
         self.blocks.push(SlabEntry {
             h,

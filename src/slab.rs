@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use flate2::{read, write::ZlibEncoder, Compression};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -251,7 +250,7 @@ impl SlabFile {
         }));
 
         let (compressor, tx) = if flags == 1 {
-            let (c, tx) = CompressionService::new(8, tx.clone());
+            let (c, tx) = CompressionService::new(1, tx.clone());
             (Some(c), tx)
         } else {
             (None, tx)
@@ -409,8 +408,8 @@ impl SlabFile {
         assert_eq!(actual_csum, expected_csum);
 
         if self.compressed {
-            let mut z = read::ZlibDecoder::new(&buf[..]);
-            let mut buffer = Vec::new();
+            let mut z = zstd::Decoder::new(&buf[..])?;
+            let mut buffer = Vec::with_capacity(4 * 1024 * 1024);  // FIXME: make configurable
             z.read_to_end(&mut buffer)?;
             Ok(buffer)
         } else {
@@ -563,11 +562,11 @@ fn compression_worker_(rx: Arc<Mutex<Receiver<SlabData>>>, tx: SyncSender<SlabDa
 
         let data = data.unwrap();
 
-        let mut packer = ZlibEncoder::new(Vec::new(), Compression::default());
+        let mut packer = zstd::Encoder::new(Vec::new(), 0)?;
         packer.write_all(&data.data)?;
         tx.send(SlabData {
             index: data.index,
-            data: packer.reset(Vec::new())?,
+            data: packer.finish()?,
         })?;
     }
 

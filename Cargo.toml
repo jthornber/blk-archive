@@ -14,7 +14,6 @@ chrono = "0.4"
 clap = { version = "3.1.0", features = ["cargo"] }
 crossbeam = "0.8.1"
 devicemapper = { git = "https://github.com/stratis-storage/devicemapper-rs", branch = "master" }
-flate2 = "1.0"
 gearhash = "0.1.3"
 generic-array = "0.14"
 nix = "0.23.1"
@@ -30,6 +29,7 @@ thinp = { git = "https://github.com/jthornber/thin-provisioning-tools.git", bran
 # thinp = { path = "../thinp-for-dm-archive/" }
 threadpool = "1.0"
 toml = "0.5.8"
+zstd = "0.11"
 
 [profile.release]
 debug = 1
