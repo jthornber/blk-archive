@@ -1,13 +1,11 @@
-use anyhow::{anyhow, Context, Result};
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use anyhow::{Context, Result};
+use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::prelude::*;
 use clap::ArgMatches;
 use io::Write;
-use nom::{bytes::complete::*, multi::*, number::complete::*, IResult};
 use rand::prelude::*;
 use rand_chacha::ChaCha20Rng;
 use size_display::Size;
-use std::collections::BTreeMap;
 use std::env;
 use std::fs::OpenOptions;
 use std::io;
@@ -21,8 +19,8 @@ use crate::config;
 use crate::content_sensitive_splitter::*;
 use crate::cuckoo_filter::*;
 use crate::hash::*;
+use crate::hash_index::*;
 use crate::iovec::*;
-use crate::lru::*;
 use crate::paths;
 use crate::paths::*;
 use crate::run_iter::*;
@@ -68,18 +66,16 @@ pub const SLAB_SIZE_TARGET: usize = 4 * 1024 * 1024;
 struct DedupHandler {
     nr_chunks: usize,
 
-    // Maps hashes to the slab they're in
-    // seen: BTreeSet<Hash64>,
     seen: CuckooFilter,
-    slabs_loaded: LRU,
-    hashes: BTreeMap<Hash256, MapEntry>,
+    hashes: lru::LruCache<u32, ByHash>,
 
     data_file: SlabFile,
     hashes_file: SlabFile,
     stream_file: SlabFile,
 
     current_slab: u32,
-    current_entries: u32,
+    current_entries: usize,
+    current_index: IndexBuilder,
 
     data_buf: Vec<u8>,
     hashes_buf: Vec<u8>,
@@ -90,73 +86,20 @@ struct DedupHandler {
     data_written: u64,
     mapped_size: u64,
     fill_size: u64,
-    hash_slab_evictions: usize,
 }
 
 impl DedupHandler {
-    // Returns the len of the data entry
-    fn parse_hash_entry(input: &[u8]) -> IResult<&[u8], Hash256> {
-        let (input, hash) = take(std::mem::size_of::<Hash256>())(input)?;
-        let hash = Hash256::clone_from_slice(hash);
-        let (input, _len) = le_u32(input)?;
-        Ok((input, hash))
-    }
+    fn get_hash_index(&mut self, slab: u32) -> Result<&ByHash> {
+        // the current slab is not inserted into the self.hashes
+        assert!(slab != self.current_slab);
 
-    fn parse_hashes(input: &[u8]) -> IResult<&[u8], Vec<Hash256>> {
-        many0(Self::parse_hash_entry)(input)
-    }
-
-    fn read_hash_slab_(&mut self, slab: u32) -> Result<()> {
-        let buf = self.hashes_file.read(slab)?;
-        let (_, hashes) = Self::parse_hashes(&buf).map_err(|_| anyhow!("couldn't parse hashes"))?;
-
-        for (i, h) in hashes.iter().enumerate() {
-            self.hashes.insert(
-                h.clone(),
-                MapEntry::Data {
-                    slab,
-                    offset: i as u32,
-                    nr_entries: 1,
-                },
-            );
-        }
-        Ok(())
-    }
-
-    fn evict_hash_slab_(&mut self, slab: u32) -> Result<()> {
-        self.hash_slab_evictions += 1;
-        let buf = self.hashes_file.read(slab)?;
-        let (_, hashes) = Self::parse_hashes(&buf).map_err(|_| anyhow!("couldn't parse hashes"))?;
-
-        for h in hashes {
-            self.hashes.remove(&h);
-        }
-        Ok(())
-    }
-
-    fn ensure_hash_slab_loaded(&mut self, slab: u32) -> Result<()> {
-        use PushResult::*;
-
-        // Current slab is always loaded
-        if slab == self.current_slab {
-            return Ok(());
+        // FIXME: double lookup
+        if self.hashes.get(&slab).is_none() {
+            let buf = self.hashes_file.read(slab)?;
+            self.hashes.put(slab, ByHash::new(buf.to_vec())?);  // FIXME: is the to_vec() causing a copy?
         }
 
-        match self.slabs_loaded.push(slab) {
-            AlreadyPresent => {
-                // no need to do anything
-            }
-            Added => {
-                self.read_hash_slab_(slab)?;
-            }
-            AddAndEvict(old_slab) => {
-                assert!(old_slab != self.current_slab);
-                self.evict_hash_slab_(old_slab)?;
-                self.read_hash_slab_(slab)?;
-            }
-        }
-
-        Ok(())
+        Ok(self.hashes.get(&slab).unwrap())
     }
 
     fn new(
@@ -166,7 +109,7 @@ impl DedupHandler {
         slab_capacity: usize,
     ) -> Result<Self> {
         let seen = CuckooFilter::read(paths::index_path())?;
-        let hashes = BTreeMap::new();
+        let hashes = lru::LruCache::new(slab_capacity);
         let nr_slabs = data_file.get_nr_slabs() as u32;
         assert_eq!(data_file.get_nr_slabs(), hashes_file.get_nr_slabs());
 
@@ -174,7 +117,6 @@ impl DedupHandler {
             nr_chunks: 0,
 
             seen,
-            slabs_loaded: LRU::with_capacity(slab_capacity),
             hashes,
 
             data_file,
@@ -183,6 +125,7 @@ impl DedupHandler {
 
             current_slab: nr_slabs,
             current_entries: 0,
+            current_index: IndexBuilder::with_capacity(1024), // FIXME: estimate
 
             data_buf: Vec::new(),
             hashes_buf: Vec::new(),
@@ -194,7 +137,6 @@ impl DedupHandler {
             data_written: 0,
             mapped_size: 0,
             fill_size: 0,
-            hash_slab_evictions: 0,
         })
     }
 
@@ -205,10 +147,9 @@ impl DedupHandler {
         let nr_slabs = self.hashes_file.get_nr_slabs();
         for s in 0..nr_slabs {
             let buf = self.hashes_file.read(s as u32)?;
-            let (_, hashes) =
-                Self::parse_hashes(&buf).map_err(|_| anyhow!("couldn't parse hashes"))?;
-
-            for h in hashes {
+            let hi = ByHash::new(buf.to_vec())?;
+            for i in 0..hi.len() {
+                let h = hi.get(i);
                 let mini_hash = hash_64(&h[..]);
                 let mut c = Cursor::new(&mini_hash);
                 let mini_hash = c.read_u64::<LittleEndian>()?;
@@ -245,12 +186,15 @@ impl DedupHandler {
         }
     }
 
-    fn maybe_complete_data(&mut self) -> Result<()> {
-        if let PushResult::AddAndEvict(old_slab) = self.slabs_loaded.push(self.current_slab) {
-            self.evict_hash_slab_(old_slab)?;
-        }
+    fn maybe_complete_data(&mut self, target: usize) -> Result<()> {
+        if Self::complete_slab(&mut self.data_file, &mut self.data_buf, target)? {
+            let mut builder = IndexBuilder::with_capacity(1024);   // FIXME: estimate properly
+            std::mem::swap(&mut builder, &mut self.current_index);
+            let buffer = builder.build()?;
+            self.hashes_buf.write_all(&buffer[..])?;
+            let index = ByHash::new(buffer)?;
+            self.hashes.put(self.current_slab, index);
 
-        if Self::complete_slab(&mut self.data_file, &mut self.data_buf, SLAB_SIZE_TARGET)? {
             Self::complete_slab_(&mut self.hashes_file, &mut self.hashes_buf)?;
             self.current_slab += 1;
             self.current_entries = 0;
@@ -269,7 +213,7 @@ impl DedupHandler {
 
     // Returns the (slab, entry) for the newly added entry
     fn add_data_entry(&mut self, iov: &IoVec) -> Result<(u32, u32)> {
-        let r = (self.current_slab, self.current_entries);
+        let r = (self.current_slab as u32, self.current_entries as u32);
         for v in iov {
             self.data_buf.extend(v.iter()); // FIXME: this looks slow
             self.data_written += v.len() as u64;
@@ -278,26 +222,27 @@ impl DedupHandler {
         Ok(r)
     }
 
+/*
     fn add_hash_entry(&mut self, h: Hash256, len: u32) -> Result<()> {
         self.hashes_buf.write_all(&h)?;
         self.hashes_buf.write_u32::<LittleEndian>(len)?;
         Ok(())
     }
+*/
 
     fn add_stream_entry(&mut self, e: &MapEntry, len: u64) -> Result<()> {
         self.mapping_builder.next(e, len, &mut self.stream_buf)
     }
 
     fn do_add(&mut self, h: Hash256, iov: &IoVec, len: u64) -> Result<MapEntry> {
-        self.add_hash_entry(h, len as u32)?;
         let (slab, offset) = self.add_data_entry(iov)?;
         let me = MapEntry::Data {
             slab,
             offset,
             nr_entries: 1,
         };
-        self.hashes.insert(h, me);
-        self.maybe_complete_data()?;
+        self.current_index.insert(h, len as usize);
+        self.maybe_complete_data(SLAB_SIZE_TARGET)?;
         Ok(me)
     }
 }
@@ -330,11 +275,16 @@ impl IoVecHandler for DedupHandler {
                     me = self.do_add(h, iov, len)?;
                 }
                 InsertResult::AlreadyPresent(s) => {
-                    self.ensure_hash_slab_loaded(s)?;
-                    if let Some(e) = self.hashes.get(&h) {
-                        me = *e;
-                    } else {
+                    if s == self.current_slab {
+                        // FIXME: remove this clause
                         me = self.do_add(h, iov, len)?;
+                    } else {
+                        let hi = self.get_hash_index(s)?;
+                        if let Some(offset) = hi.lookup(&h) {
+                            me = MapEntry::Data {slab: s, offset: offset as u32, nr_entries: 1};
+                        } else {
+                            me = self.do_add(h, iov, len)?;
+                        }
                     }
                 }
             }
@@ -358,8 +308,7 @@ impl IoVecHandler for DedupHandler {
         std::mem::swap(&mut mapping_builder, &mut self.mapping_builder);
         mapping_builder.complete(&mut self.stream_buf)?;
 
-        Self::complete_slab(&mut self.hashes_file, &mut self.hashes_buf, 0)?;
-        Self::complete_slab(&mut self.data_file, &mut self.data_buf, 0)?;
+        self.maybe_complete_data(0)?;
         Self::complete_slab(&mut self.stream_file, &mut self.stream_buf, 0)?;
 
         self.hashes_file.close()?;
@@ -524,16 +473,13 @@ impl Packer {
         self.report
             .info(&format!("stream written   : {:.2}", Size(stream_written)));
 
-        let ratio = (total_read as f64) /
-            ((data_written + hashes_written + stream_written) as f64);
+        let ratio = (total_read as f64) / ((data_written + hashes_written + stream_written) as f64);
         self.report
             .info(&format!("ratio            : {:.2}", ratio));
         self.report.info(&format!(
             "speed            : {:.2}/s",
             Size((total_read as f64 / elapsed) as u64)
         ));
-        self.report.info(&format!(
-            "slab evictions   : {}", handler.hash_slab_evictions));
 
         // write the stream config
         let cfg = config::StreamConfig {

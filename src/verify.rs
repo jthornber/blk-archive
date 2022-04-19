@@ -1,7 +1,7 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use clap::ArgMatches;
 use io::Read;
-use nom::{bytes::complete::*, multi::*, number::complete::*, IResult};
+// use nom::{bytes::complete::*, multi::*, number::complete::*, IResult};
 use std::collections::BTreeMap;
 use std::env;
 use std::fs::OpenOptions;
@@ -12,11 +12,12 @@ use thinp::report::*;
 
 use crate::config;
 use crate::hash::*;
+use crate::hash_index::*;
+use crate::pack::SLAB_SIZE_TARGET;
 use crate::paths::*;
 use crate::slab::*;
 use crate::stream;
 use crate::stream::*;
-use crate::pack::SLAB_SIZE_TARGET;
 
 //-----------------------------------------
 
@@ -31,7 +32,7 @@ struct Verifier {
     hashes_file: SlabFile,
     stream_file: SlabFile,
 
-    slabs: BTreeMap<u32, Arc<SlabInfo>>,
+    slabs: BTreeMap<u32, Arc<ByIndex>>,
     total_verified: u64,
 }
 
@@ -53,43 +54,16 @@ impl Verifier {
         })
     }
 
-    // Returns the len of the data entry
-    fn parse_hash_entry(input: &[u8]) -> IResult<&[u8], (Hash256, u32)> {
-        let (input, hash) = take(std::mem::size_of::<Hash256>())(input)?;
-        let hash = Hash256::clone_from_slice(hash);
-        let (input, len) = le_u32(input)?;
-        Ok((input, (hash, len)))
-    }
-
-    fn parse_slab_info(input: &[u8]) -> IResult<&[u8], Vec<(Hash256, u32, u32)>> {
-        let (input, lens) = many0(Self::parse_hash_entry)(input)?;
-
-        let mut r = Vec::with_capacity(lens.len());
-        let mut total = 0;
-        for (h, l) in lens {
-            r.push((h, total, l));
-            total += l;
-        }
-
-        Ok((input, r))
-    }
-
-    fn read_info(&mut self, slab: u32) -> Result<Arc<SlabInfo>> {
-        // Read the hashes slab
+    fn read_info(&mut self, slab: u32) -> Result<ByIndex> {
         let hashes = self.hashes_file.read(slab)?;
-
-        // Find location and length of data
-        let (_, offsets) =
-            Self::parse_slab_info(&hashes).map_err(|_| anyhow!("unable to parse slab hashes"))?;
-
-        Ok(Arc::new(SlabInfo { offsets }))
+        ByIndex::new(hashes.to_vec()) // FIXME: redundant copy?
     }
 
-    fn get_info(&mut self, slab: u32) -> Result<Arc<SlabInfo>> {
+    fn get_info(&mut self, slab: u32) -> Result<Arc<ByIndex>> {
         if let Some(info) = self.slabs.get(&slab) {
             Ok(info.clone())
         } else {
-            let info = self.read_info(slab)?;
+            let info = Arc::new(self.read_info(slab)?);
             self.slabs.insert(slab, info.clone());
             Ok(info)
         }
@@ -121,29 +95,26 @@ impl Verifier {
             } => {
                 let mut total_len = 0;
                 for entry in 0..*nr_entries {
-                    let info = self.get_info(*slab)?;
                     let data = self.data_file.read(*slab)?;
-                    let (expected_hash, offset, len) =
-                        info.offsets[*offset as usize + entry as usize];
-                    let data_begin = offset as usize;
-                    let data_end = data_begin + len as usize;
-                    assert!(data_end <= data.len());
+                    let info = self.get_info(*slab)?;
+                    let (data_begin, data_end, expected_hash) = info.get(*offset as usize + entry as usize).unwrap();
+                    assert!(*data_end <= data.len() as u32);
 
                     // FIXME: make this paranioa check optional
                     // Verify hash
-                    let actual_hash = hash_256(&data[data_begin..data_end]);
-                    assert_eq!(actual_hash, expected_hash);
+                    let actual_hash = hash_256(&data[*data_begin as usize..*data_end as usize]);
+                    assert_eq!(actual_hash, *expected_hash);
 
                     // Verify data
-                    let mut actual = vec![0; data_end - data_begin];
+                    let mut actual = vec![0; (data_end - data_begin) as usize];
                     r.read_exact(&mut actual)?;
-                    if actual != &data[data_begin..data_end] {
+                    if actual != &data[*data_begin as usize..*data_end as usize] {
                         eprintln!("mismatched data at offset {}", self.total_verified);
                         assert!(false);
                     }
 
                     self.total_verified += actual.len() as u64;
-                    total_len += len as u64;
+                    total_len += (data_end - data_begin) as u64;
                 }
                 total_len
             }

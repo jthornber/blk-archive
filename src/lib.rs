@@ -6,6 +6,7 @@ pub mod create;
 pub mod cuckoo_filter;
 pub mod dump_stream;
 pub mod hash;
+pub mod hash_index;
 pub mod iovec;
 pub mod list;
 pub mod lru;
