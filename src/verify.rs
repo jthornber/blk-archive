@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::ArgMatches;
 use std::collections::BTreeMap;
 use std::env;
@@ -13,9 +13,11 @@ use crate::hash::*;
 use crate::hash_index::*;
 use crate::pack::SLAB_SIZE_TARGET;
 use crate::paths::*;
+use crate::run_iter::*;
 use crate::slab::*;
 use crate::stream;
 use crate::stream::*;
+use crate::thin_metadata::*;
 
 //-----------------------------------------
 
@@ -308,61 +310,70 @@ impl Verifier {
 
 //-----------------------------------------
 
-/*
-fn thick_verifier(
-    report: Arc<Report>,
-    input_file: &PathBuf,
-    input_name: String,
-    config: &config::Config,
-) -> Result<Packer> {
+fn thick_verifier(input_file: &Path, stream: &str, config: &config::Config) -> Result<Verifier> {
     let input = OpenOptions::new()
         .read(true)
         .write(false)
         .open(input_file.clone())
         .context("couldn't open input file/dev")?;
     let input_size = thinp::file_utils::file_size(&input_file)?;
+    let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
 
-    let mapped_size = input_size;
-    let thin_id = None;
+    let input_it = Box::new(ThickChunker::new(input, 16 * 1024 * 1024)?);
 
-    Ok(Packer::new(
-        report,
-        input_file.clone(),
-        input_name,
-        input_iter,
-        input_size,
-        mapped_size,
-        config.block_size,
-        thin_id,
-        config.hash_cache_size_meg,
-    ))
+    let v = Verifier::new(&stream, cache_nr_entries, input_it, input_size)?;
+    Ok(v)
 }
-*/
 
-pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
-    let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
-    let input_file = Path::new(matches.value_of("INPUT").unwrap());
-    let stream = matches.value_of("STREAM").unwrap();
-
+fn thin_verifier(input_file: &Path, stream: &str, config: &config::Config) -> Result<Verifier> {
     let input = OpenOptions::new()
         .read(true)
         .write(false)
-        .create(false)
-        .open(input_file)?;
+        .open(input_file.clone())
+        .context("couldn't open input file/dev")?;
     let input_size = thinp::file_utils::file_size(&input_file)?;
+    let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
+
+    let mappings = read_thin_mappings(&input_file)?;
+    /*
+    let _mapped_size =
+        mappings.provisioned_blocks.len() as u64 * mappings.data_block_size as u64 * 512;
+        */
+    let run_iter = RunIter::new(
+        mappings.provisioned_blocks,
+        (input_size / (mappings.data_block_size as u64 * 512)) as u32,
+    );
+    let input_it = Box::new(ThinChunker::new(
+        input,
+        run_iter,
+        mappings.data_block_size as u64 * 512,
+    ));
+
+    let v = Verifier::new(&stream, cache_nr_entries, input_it, input_size)?;
+    Ok(v)
+}
+
+pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
+    let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
+    let input_file = Path::new(matches.value_of("INPUT").unwrap()).canonicalize()?;
+    let stream = matches.value_of("STREAM").unwrap();
 
     env::set_current_dir(&archive_dir)?;
 
     let config = config::read_config(".")?;
-    let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
 
     report.set_title(&format!(
         "Verifying {} and {} match ...",
         input_file.display(),
         &stream
     ));
-    let input_it = Box::new(ThickChunker::new(input, 16 * 1024 * 1024)?);
-    let mut v = Verifier::new(&stream, cache_nr_entries, input_it, input_size)?;
+
+    let mut v = if is_thin_device(&input_file)? {
+        thin_verifier(&input_file, stream, &config)?
+    } else {
+        thick_verifier(&input_file, stream, &config)?
+    };
+
     v.verify(&report)
 }
 
