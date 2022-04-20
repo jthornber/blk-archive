@@ -512,7 +512,7 @@ fn thick_packer(
     let input_size = thinp::file_utils::file_size(&input_file)?;
 
     let mapped_size = input_size;
-    let input_iter = Box::new(FileChunker::new(input, 16 * 1024 * 1024)?);
+    let input_iter = Box::new(ThickChunker::new(input, 16 * 1024 * 1024)?);
     let thin_id = None;
 
     Ok(Packer::new(

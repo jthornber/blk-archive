@@ -1,15 +1,13 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use clap::ArgMatches;
-use io::Read;
-// use nom::{bytes::complete::*, multi::*, number::complete::*, IResult};
 use std::collections::BTreeMap;
 use std::env;
 use std::fs::OpenOptions;
-use std::io;
 use std::path::Path;
 use std::sync::Arc;
 use thinp::report::*;
 
+use crate::chunkers::*;
 use crate::config;
 use crate::hash::*;
 use crate::hash_index::*;
@@ -32,13 +30,23 @@ struct Verifier {
     hashes_file: SlabFile,
     stream_file: SlabFile,
 
+    input_it: Box<dyn Iterator<Item = Result<Chunk>>>,
+    input_size: u64,
+    chunk: Option<Chunk>,
+    chunk_offset: u64,
+
     slabs: BTreeMap<u32, Arc<ByIndex>>,
     total_verified: u64,
 }
 
 impl Verifier {
     // Assumes current directory is the root of the archive.
-    fn new(stream: &str, cache_nr_entries: usize) -> Result<Self> {
+    fn new(
+        stream: &str,
+        cache_nr_entries: usize,
+        input_it: Box<dyn Iterator<Item = Result<Chunk>>>,
+        input_size: u64,
+    ) -> Result<Self> {
         let data_file = SlabFileBuilder::open(data_path())
             .cache_nr_entries(cache_nr_entries)
             .build()?;
@@ -49,9 +57,20 @@ impl Verifier {
             data_file,
             hashes_file,
             stream_file,
+            input_it,
+            input_size,
+            chunk: None,
+            chunk_offset: 0,
             slabs: BTreeMap::new(),
             total_verified: 0,
         })
+    }
+
+    fn fail(&self, msg: &str) -> anyhow::Error {
+        anyhow!(format!(
+            "verify failed at offset ~{}: {}",
+            self.total_verified, msg
+        ))
     }
 
     fn read_info(&mut self, slab: u32) -> Result<ByIndex> {
@@ -69,61 +88,176 @@ impl Verifier {
         }
     }
 
-    fn verify_entry<R: Read>(&mut self, e: &MapEntry, r: &mut R) -> Result<u64> {
+    fn ensure_chunk(&mut self) -> Result<()> {
+        if self.chunk.is_none() {
+            match self.input_it.next() {
+                Some(rc) => {
+                    self.chunk = Some(rc?);
+                    self.chunk_offset = 0;
+                    Ok(())
+                }
+                None => Err(self.fail("archived stream is longer than expected")),
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    fn peek_data<'a>(&'a mut self, max_len: u64) -> Result<&'a [u8]> {
+        self.ensure_chunk()?;
+        match &self.chunk {
+            Some(Chunk::Mapped(bytes)) => {
+                let len = std::cmp::min(bytes.len() - self.chunk_offset as usize, max_len as usize);
+                Ok(&bytes[self.chunk_offset as usize..(self.chunk_offset + len as u64) as usize])
+            }
+            Some(Chunk::Unmapped(_)) => {
+                return Err(self.fail("expected data, got unmapped"));
+            }
+            None => {
+                return Err(self.fail("ensure_chunk() failed"));
+            }
+        }
+    }
+
+    fn consume_data(&mut self, len: u64) -> Result<()> {
+        match &self.chunk {
+            Some(Chunk::Mapped(bytes)) => {
+                let c_len = bytes.len() as u64 - self.chunk_offset;
+                if c_len < len {
+                    return Err(self.fail("bad consume, chunk too short"));
+                } else if c_len > len {
+                    self.chunk_offset += len;
+                } else {
+                    self.chunk = None;
+                }
+            }
+            Some(Chunk::Unmapped(_)) => {
+                return Err(self.fail("bad consume, unexpected unmapped chunk"));
+            }
+            None => {
+                return Err(self.fail("bad consume, no chunk"));
+            }
+        }
+        Ok(())
+    }
+
+    fn get_unmapped(&mut self, max_len: u64) -> Result<u64> {
+        self.ensure_chunk()?;
+        match &self.chunk {
+            Some(Chunk::Mapped(_)) => {
+                return Err(self.fail("expected unmapped, got data"));
+            }
+            Some(Chunk::Unmapped(len)) => {
+                let len = *len;
+                if len <= max_len {
+                    self.chunk = None;
+                    Ok(len)
+                } else {
+                    self.chunk = Some(Chunk::Unmapped(len - max_len));
+                    Ok(max_len)
+                }
+            }
+            None => {
+                return Err(self.fail("stream shorter than input"));
+            }
+        }
+    }
+
+    fn verify_fill(&mut self, byte: u8, len: u64) -> Result<()> {
+        let mut remaining = len;
+        while remaining > 0 {
+            let actual = self.peek_data(remaining)?;
+            for b in actual {
+                // FIXME: use intrinsics
+                if *b != byte {
+                    return Err(self.fail(&format!("fill with value {}, len {}", byte, len)));
+                }
+            }
+            let actual_len = actual.len() as u64;
+            drop(actual);
+            self.consume_data(actual_len)?;
+            remaining -= actual_len;
+        }
+
+        Ok(())
+    }
+
+    fn verify_unmapped(&mut self, len: u64) -> Result<()> {
+        let mut remaining = len;
+        while remaining > 0 {
+            let len = self.get_unmapped(remaining)?;
+            remaining -= len;
+        }
+        Ok(())
+    }
+
+    fn verify_data_(&mut self, expected: &[u8]) -> Result<()> {
+        let mut remaining = expected.len() as u64;
+        let mut offset = 0;
+        while remaining > 0 {
+            let actual = self.peek_data(remaining)?;
+            let actual_len = actual.len() as u64;
+            if actual != &expected[offset as usize..(offset + actual_len) as usize] {
+                return Err(self.fail("data mismatch"));
+            }
+            drop(actual);
+            self.consume_data(actual_len)?;
+            remaining -= actual_len;
+            offset += actual_len;
+        }
+        Ok(())
+    }
+
+    fn verify_data(&mut self, slab: u32, offset: u32, nr_entries: u32) -> Result<u64> {
+        let mut total_len = 0;
+        let data = self.data_file.read(slab)?;
+        let info = self.get_info(slab)?;
+        for entry in 0..nr_entries {
+            let (data_begin, data_end, expected_hash) =
+                info.get(offset as usize + entry as usize).unwrap();
+            assert!(*data_end <= data.len() as u32);
+
+            // FIXME: make this paranioa check optional
+            // Verify hash
+            let actual_hash = hash_256(&data[*data_begin as usize..*data_end as usize]);
+            assert_eq!(actual_hash, *expected_hash);
+
+            // Verify data
+            let expected = &data[*data_begin as usize..*data_end as usize];
+            self.verify_data_(expected)?;
+            total_len += (data_end - data_begin) as u64;
+        }
+        Ok(total_len)
+    }
+
+    fn verify_entry(&mut self, e: &MapEntry) -> Result<u64> {
         use MapEntry::*;
 
-        let len = match e {
+        match e {
             Fill { byte, len } => {
-                // FIXME: don't keep initialising this buffer,
-                // keep a suitable one around instead
-                // FIXME: put in a loop if len is too long
-                let expected: Vec<u8> = vec![*byte; *len as usize];
-                let mut actual = vec![*byte; *len as usize];
-                r.read_exact(&mut actual)?;
-                assert_eq!(&actual, &expected);
-                self.total_verified += *len as u64;
-                *len as u64
+                let len = *len as u64;
+                self.verify_fill(*byte, len)?;
+                self.total_verified += len;
+                Ok(len)
             }
             Unmapped { len } => {
-                todo!();
-                *len as u64
+                let len = *len;
+                self.verify_unmapped(len)?;
+                Ok(len)
             }
             Data {
                 slab,
                 offset,
                 nr_entries,
             } => {
-                let mut total_len = 0;
-                for entry in 0..*nr_entries {
-                    let data = self.data_file.read(*slab)?;
-                    let info = self.get_info(*slab)?;
-                    let (data_begin, data_end, expected_hash) = info.get(*offset as usize + entry as usize).unwrap();
-                    assert!(*data_end <= data.len() as u32);
-
-                    // FIXME: make this paranioa check optional
-                    // Verify hash
-                    let actual_hash = hash_256(&data[*data_begin as usize..*data_end as usize]);
-                    assert_eq!(actual_hash, *expected_hash);
-
-                    // Verify data
-                    let mut actual = vec![0; (data_end - data_begin) as usize];
-                    r.read_exact(&mut actual)?;
-                    if actual != &data[*data_begin as usize..*data_end as usize] {
-                        eprintln!("mismatched data at offset {}", self.total_verified);
-                        assert!(false);
-                    }
-
-                    self.total_verified += actual.len() as u64;
-                    total_len += (data_end - data_begin) as u64;
-                }
-                total_len
+                let len = self.verify_data(*slab, *offset, *nr_entries)?;
+                self.total_verified += len;
+                Ok(len)
             }
-        };
-
-        Ok(len)
+        }
     }
 
-    pub fn verify<R: Read>(&mut self, report: &Arc<Report>, r: &mut R) -> Result<()> {
+    pub fn verify(&mut self, report: &Arc<Report>) -> Result<()> {
         report.progress(0);
 
         let nr_slabs = self.stream_file.get_nr_slabs();
@@ -150,7 +284,7 @@ impl Verifier {
                     }
                 }
 
-                let entry_len = self.verify_entry(&e, r)?;
+                let entry_len = self.verify_entry(&e)?;
 
                 // FIXME: shouldn't inc before checking pos
                 current_pos += entry_len;
@@ -189,7 +323,6 @@ fn thick_verifier(
     let input_size = thinp::file_utils::file_size(&input_file)?;
 
     let mapped_size = input_size;
-    let input_iter = Box::new(FileChunker::new(input, 16 * 1024 * 1024)?);
     let thin_id = None;
 
     Ok(Packer::new(
@@ -211,11 +344,12 @@ pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     let input_file = Path::new(matches.value_of("INPUT").unwrap());
     let stream = matches.value_of("STREAM").unwrap();
 
-    let mut input = OpenOptions::new()
+    let input = OpenOptions::new()
         .read(true)
         .write(false)
         .create(false)
         .open(input_file)?;
+    let input_size = thinp::file_utils::file_size(&input_file)?;
 
     env::set_current_dir(&archive_dir)?;
 
@@ -227,8 +361,9 @@ pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
         input_file.display(),
         &stream
     ));
-    let mut v = Verifier::new(&stream, cache_nr_entries)?;
-    v.verify(&report, &mut input)
+    let input_it = Box::new(ThickChunker::new(input, 16 * 1024 * 1024)?);
+    let mut v = Verifier::new(&stream, cache_nr_entries, input_it, input_size)?;
+    v.verify(&report)
 }
 
 //-----------------------------------------

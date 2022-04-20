@@ -1,6 +1,6 @@
-use anyhow::{Result};
+use anyhow::Result;
 use io::prelude::*;
-use std::fs::{File};
+use std::fs::File;
 use std::io;
 use std::ops::Range;
 use std::os::unix::fs::FileExt;
@@ -15,14 +15,14 @@ pub enum Chunk {
     Unmapped(u64),
 }
 
-pub struct FileChunker {
+pub struct ThickChunker {
     input: File,
     input_size: u64,
     total_read: u64,
     block_size: usize,
 }
 
-impl FileChunker {
+impl ThickChunker {
     pub fn new(input: File, block_size: usize) -> Result<Self> {
         let input_size = input.metadata()?.len();
 
@@ -56,7 +56,7 @@ impl FileChunker {
     }
 }
 
-impl Iterator for FileChunker {
+impl Iterator for ThickChunker {
     type Item = Result<Chunk>;
 
     fn next(&mut self) -> Option<Self::Item> {
