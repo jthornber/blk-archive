@@ -26,7 +26,7 @@ pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
             entry.ok().and_then(|e| {
                 e.path()
                     .file_name()
-                    .and_then(|n| n.to_str().map(|s| String::from(s)))
+                    .and_then(|n| n.to_str().map(String::from))
             })
         })
         .collect::<Vec<String>>();

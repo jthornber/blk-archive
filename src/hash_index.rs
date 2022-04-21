@@ -153,15 +153,16 @@ impl ByHash {
     }
 
     pub fn lookup(&self, h: &Hash256) -> Option<usize> {
-        if let Some(i) = bsearch(h, &self.data[self.hashes_offset..], self.indexes.len()) {
-            Some(self.indexes[i as usize] as usize)
-        } else {
-            None
-        }
+        bsearch(h, &self.data[self.hashes_offset..], self.indexes.len())
+            .map(|i| self.indexes[i as usize] as usize)
     }
 
     pub fn len(&self) -> usize {
         self.indexes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.indexes.is_empty()
     }
 
     pub fn get(&self, i: usize) -> &Hash256 {
@@ -183,7 +184,7 @@ impl ByIndex {
         let offset = (entries_.len() * 10) + 2;
         let mut entries = BTreeMap::new();
         for (i, e) in entries_.iter().enumerate() {
-            entries.insert(e.0, (e.1, e.1 + e.2, get_hash(&data[offset..], i).clone()));
+            entries.insert(e.0, (e.1, e.1 + e.2, *get_hash(&data[offset..], i)));
         }
 
         Ok(Self { entries })
@@ -191,6 +192,10 @@ impl ByIndex {
 
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 
     pub fn get(&self, i: usize) -> Option<&(u32, u32, Hash256)> {

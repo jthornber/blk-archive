@@ -38,7 +38,7 @@ impl ThickChunker {
     fn do_read(&mut self, mut buffer: Vec<u8>) -> Result<Option<Chunk>> {
         self.input.read_exact(&mut buffer)?;
         self.total_read += buffer.len() as u64;
-        return Ok(Some(Chunk::Mapped(buffer)));
+        Ok(Some(Chunk::Mapped(buffer)))
     }
 
     fn next_chunk(&mut self) -> Result<Option<Chunk>> {

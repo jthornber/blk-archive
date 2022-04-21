@@ -149,7 +149,7 @@ impl Unpacker {
             let nr_entries = entries.len();
 
             for (i, e) in entries.iter().enumerate() {
-                self.unpack_entry(&e, w)?;
+                self.unpack_entry(e, w)?;
 
                 if i % 10240 == 0 {
                     // update progress bar
@@ -186,7 +186,7 @@ pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
 
     report.set_title(&format!("Unpacking {} ...", output_file.display()));
-    let mut u = Unpacker::new(&stream, cache_nr_entries)?;
+    let mut u = Unpacker::new(stream, cache_nr_entries)?;
     u.unpack(&report, &mut output)
 }
 

@@ -25,7 +25,7 @@ fn mk_report() -> Arc<Report> {
 fn main_() -> Result<()> {
     let default_archive = match env::var("DM_ARCHIVE_DIR") {
         Err(_) => String::new(),
-        Ok(s) => s.clone()
+        Ok(s) => s
     };
 
     let archive_arg = if default_archive.is_empty() {

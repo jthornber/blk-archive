@@ -1310,20 +1310,20 @@ impl Dumper {
     fn effects_stack(instr: &MapInstruction) -> bool {
         use MapInstruction::*;
 
-        match instr {
+        !matches!(
+            instr,
             Fill8 { .. }
-            | Fill16 { .. }
-            | Fill32 { .. }
-            | Fill64 { .. }
-            | SetFill { .. }
-            | Pos32 { .. }
-            | Pos64 { .. }
-            | Unmapped8 { .. }
-            | Unmapped16 { .. }
-            | Unmapped32 { .. }
-            | Unmapped64 { .. } => false,
-            _ => true,
-        }
+                | Fill16 { .. }
+                | Fill32 { .. }
+                | Fill64 { .. }
+                | SetFill { .. }
+                | Pos32 { .. }
+                | Pos64 { .. }
+                | Unmapped8 { .. }
+                | Unmapped16 { .. }
+                | Unmapped32 { .. }
+                | Unmapped64 { .. }
+        )
     }
 
     pub fn dump(&mut self) -> Result<()> {
@@ -1345,32 +1345,33 @@ impl Dumper {
             }
         }
 
-        let mut stats = Vec::new();
-        stats.push(("rot", self.stats.rot));
-        stats.push(("dup", self.stats.dup));
-        stats.push(("set-fill", self.stats.set_fill));
-        stats.push(("fill8", self.stats.fill8));
-        stats.push(("fill16", self.stats.fill16));
-        stats.push(("fill32", self.stats.fill32));
-        stats.push(("fill64", self.stats.fill64));
-        stats.push(("unmapped8", self.stats.unmapped8));
-        stats.push(("unmapped16", self.stats.unmapped16));
-        stats.push(("unmapped32", self.stats.unmapped32));
-        stats.push(("unmapped64", self.stats.unmapped64));
-        stats.push(("slab16", self.stats.slab16));
-        stats.push(("slab32", self.stats.slab32));
-        stats.push(("slab_delta4", self.stats.slab_delta4));
-        stats.push(("slab_delta12", self.stats.slab_delta12));
-        stats.push(("offset4", self.stats.offset4));
-        stats.push(("offset12", self.stats.offset12));
-        stats.push(("offset20", self.stats.offset20));
-        stats.push(("offset_delta4", self.stats.offset_delta4));
-        stats.push(("offset_delta12", self.stats.offset_delta12));
-        stats.push(("emit4", self.stats.emit4));
-        stats.push(("emit12", self.stats.emit12));
-        stats.push(("emit20", self.stats.emit20));
-        stats.push(("pos32", self.stats.pos32));
-        stats.push(("pos64", self.stats.pos64));
+        let mut stats = vec![
+            ("rot", self.stats.rot),
+            ("dup", self.stats.dup),
+            ("set-fill", self.stats.set_fill),
+            ("fill8", self.stats.fill8),
+            ("fill16", self.stats.fill16),
+            ("fill32", self.stats.fill32),
+            ("fill64", self.stats.fill64),
+            ("unmapped8", self.stats.unmapped8),
+            ("unmapped16", self.stats.unmapped16),
+            ("unmapped32", self.stats.unmapped32),
+            ("unmapped64", self.stats.unmapped64),
+            ("slab16", self.stats.slab16),
+            ("slab32", self.stats.slab32),
+            ("slab_delta4", self.stats.slab_delta4),
+            ("slab_delta12", self.stats.slab_delta12),
+            ("offset4", self.stats.offset4),
+            ("offset12", self.stats.offset12),
+            ("offset20", self.stats.offset20),
+            ("offset_delta4", self.stats.offset_delta4),
+            ("offset_delta12", self.stats.offset_delta12),
+            ("emit4", self.stats.emit4),
+            ("emit12", self.stats.emit12),
+            ("emit20", self.stats.emit20),
+            ("pos32", self.stats.pos32),
+            ("pos64", self.stats.pos64),
+        ];
 
         stats.sort_by(|l, r| r.1.cmp(&l.1));
 

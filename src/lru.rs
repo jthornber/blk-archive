@@ -66,7 +66,6 @@ impl LRU {
         let e = &mut self.entries[index];
         let prev = e.prev;
         let next = e.next;
-        drop(e);
 
         if self.tail == index {
             self.tail = next;
@@ -88,23 +87,21 @@ impl LRU {
             self.lru_del_(index);
             self.lru_add_(n, index);
             AlreadyPresent
+        } else if self.entries.len() < self.capacity {
+            // insert
+            self.lru_push_(n);
+            self.tree.insert(n, self.entries.len() - 1);
+            Added
         } else {
-            if self.entries.len() < self.capacity {
-                // insert
-                self.lru_push_(n);
-                self.tree.insert(n, self.entries.len() - 1);
-                Added
-            } else {
-                // evict and insert
-                let index = self.tail;
-                self.tail = self.entries[index].next;
-                let evicted = self.entries[index].n;
-                self.tree.remove(&evicted);
-                self.lru_del_(index);
-                self.lru_add_(n, index);
-                self.tree.insert(n, index);
-                AddAndEvict(evicted)
-            }
+            // evict and insert
+            let index = self.tail;
+            self.tail = self.entries[index].next;
+            let evicted = self.entries[index].n;
+            self.tree.remove(&evicted);
+            self.lru_del_(index);
+            self.lru_add_(n, index);
+            self.tree.insert(n, index);
+            AddAndEvict(evicted)
         };
 
         assert_eq!(self.entries.len(), self.tree.len());

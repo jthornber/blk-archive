@@ -15,7 +15,7 @@ pub fn run(matches: &ArgMatches, _report: Arc<Report>) -> Result<()> {
 
     env::set_current_dir(&archive_dir)?;
 
-    let mut d = Dumper::new(&stream)?;
+    let mut d = Dumper::new(stream)?;
     d.dump()
 }
 

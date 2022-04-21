@@ -66,8 +66,8 @@ fn parse_counts(input: &[u8], nr: usize) -> IResult<&[u8], Vec<u8>> {
 fn parse_buckets<'a>(mut input: &'a [u8], counts: &[u8]) -> IResult<&'a [u8], Vec<Bucket>> {
     let mut buckets: Vec<Bucket> = Vec::with_capacity(counts.len());
 
-    for i in 0..counts.len() {
-        let (inp, bucket) = parse_bucket(input, counts[i] as usize)?;
+    for c in counts {
+        let (inp, bucket) = parse_bucket(input, *c as usize)?;
         buckets.push(bucket);
         input = inp;
     }
@@ -116,7 +116,7 @@ impl CuckooFilter {
         let (input, buckets) =
             parse_buckets(input, &bucket_counts).map_err(|_| anyhow!("couldn't parse buckets"))?;
 
-        if input.len() != 0 {
+        if !input.is_empty() {
             // FIXME: throwing here causes a hang, presumably waiting for threads.
             return Err(anyhow!("extra bytes at end of index file"));
         }
@@ -250,6 +250,10 @@ impl CuckooFilter {
 
     pub fn len(&self) -> usize {
         self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
 }
 

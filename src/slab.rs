@@ -29,7 +29,7 @@ impl DataCache {
         Self { lru, tree, hits: 0, misses: 0 }
     }
 
-    fn find<'a>(&mut self, slab: u32) -> Option<Arc<Vec<u8>>> {
+    fn find(&mut self, slab: u32) -> Option<Arc<Vec<u8>>> {
         let r = self.tree.get(&slab).cloned();
         if r.is_some() {
             self.hits += 1;
@@ -159,7 +159,7 @@ impl Drop for SlabFile {
 }
 
 fn write_slab(shared: &Arc<Mutex<SlabShared>>, data: &[u8]) -> Result<()> {
-    assert!(data.len() > 0);
+    assert!(!data.is_empty());
 
     let mut shared = shared.lock().unwrap();
 
@@ -170,9 +170,9 @@ fn write_slab(shared: &Arc<Mutex<SlabShared>>, data: &[u8]) -> Result<()> {
     shared.data.seek(SeekFrom::End(0))?;
     shared.data.write_u64::<LittleEndian>(SLAB_MAGIC)?;
     shared.data.write_u64::<LittleEndian>(data.len() as u64)?;
-    let csum = hash_64(&data);
+    let csum = hash_64(data);
     shared.data.write_all(&csum)?;
-    shared.data.write_all(&data)?;
+    shared.data.write_all(data)?;
 
     Ok(())
 }
@@ -185,7 +185,7 @@ fn writer_(shared: Arc<Mutex<SlabShared>>, rx: Receiver<SlabData>) -> Result<()>
         let buf = rx.recv();
         if buf.is_err() {
             // all send ends have been closed, so we're done.
-            assert!(queued.len() == 0);
+            assert!(queued.is_empty());
             break;
         }
 
@@ -250,7 +250,7 @@ impl SlabFile {
         }));
 
         let (compressor, tx) = if flags == 1 {
-            let (c, tx) = CompressionService::new(1, tx.clone());
+            let (c, tx) = CompressionService::new(1, tx);
             (Some(c), tx)
         } else {
             (None, tx)
@@ -301,7 +301,7 @@ impl SlabFile {
         let compressed = flags == 1;
         let (tx, rx) = sync_channel(queue_depth);
         let (compressor, tx) = if flags == 1 {
-            let (c, tx) = CompressionService::new(4, tx.clone());
+            let (c, tx) = CompressionService::new(4, tx);
             (Some(c), tx)
         } else {
             (None, tx)
@@ -419,7 +419,7 @@ impl SlabFile {
 
     pub fn read(&mut self, slab: u32) -> Result<Arc<Vec<u8>>> {
         if let Some(data) = self.data_cache.find(slab) {
-            Ok(data.clone())
+            Ok(data)
         } else {
             let data = Arc::new(self.read_(slab)?);
             self.data_cache.insert(slab, data.clone());

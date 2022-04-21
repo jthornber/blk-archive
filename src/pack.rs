@@ -96,7 +96,7 @@ impl DedupHandler {
         // FIXME: double lookup
         if self.hashes.get(&slab).is_none() {
             let buf = self.hashes_file.read(slab)?;
-            self.hashes.put(slab, ByHash::new(buf.to_vec())?);  // FIXME: is the to_vec() causing a copy?
+            self.hashes.put(slab, ByHash::new(buf.to_vec())?); // FIXME: is the to_vec() causing a copy?
         }
 
         Ok(self.hashes.get(&slab).unwrap())
@@ -172,7 +172,7 @@ impl DedupHandler {
     }
 
     fn complete_slab_(slab: &mut SlabFile, buf: &mut Vec<u8>) -> Result<()> {
-        slab.write_slab(&buf)?;
+        slab.write_slab(buf)?;
         buf.clear();
         Ok(())
     }
@@ -188,7 +188,7 @@ impl DedupHandler {
 
     fn maybe_complete_data(&mut self, target: usize) -> Result<()> {
         if Self::complete_slab(&mut self.data_file, &mut self.data_buf, target)? {
-            let mut builder = IndexBuilder::with_capacity(1024);   // FIXME: estimate properly
+            let mut builder = IndexBuilder::with_capacity(1024); // FIXME: estimate properly
             std::mem::swap(&mut builder, &mut self.current_index);
             let buffer = builder.build()?;
             self.hashes_buf.write_all(&buffer[..])?;
@@ -222,13 +222,13 @@ impl DedupHandler {
         Ok(r)
     }
 
-/*
-    fn add_hash_entry(&mut self, h: Hash256, len: u32) -> Result<()> {
-        self.hashes_buf.write_all(&h)?;
-        self.hashes_buf.write_u32::<LittleEndian>(len)?;
-        Ok(())
-    }
-*/
+    /*
+        fn add_hash_entry(&mut self, h: Hash256, len: u32) -> Result<()> {
+            self.hashes_buf.write_all(&h)?;
+            self.hashes_buf.write_u32::<LittleEndian>(len)?;
+            Ok(())
+        }
+    */
 
     fn add_stream_entry(&mut self, e: &MapEntry, len: u64) -> Result<()> {
         self.mapping_builder.next(e, len, &mut self.stream_buf)
@@ -281,7 +281,11 @@ impl IoVecHandler for DedupHandler {
                     } else {
                         let hi = self.get_hash_index(s)?;
                         if let Some(offset) = hi.lookup(&h) {
-                            me = MapEntry::Data {slab: s, offset: offset as u32, nr_entries: 1};
+                            me = MapEntry::Data {
+                                slab: s,
+                                offset: offset as u32,
+                                nr_entries: 1,
+                            };
                         } else {
                             me = self.do_add(h, iov, len)?;
                         }
@@ -387,7 +391,7 @@ impl Packer {
         }
     }
 
-    fn pack<'a>(&mut self) -> Result<()> {
+    fn pack(&mut self) -> Result<()> {
         let mut splitter = ContentSensitiveSplitter::new(self.block_size as u32);
 
         let data_file = SlabFileBuilder::open(data_path())
@@ -500,16 +504,16 @@ impl Packer {
 
 fn thick_packer(
     report: Arc<Report>,
-    input_file: &PathBuf,
+    input_file: &Path,
     input_name: String,
     config: &config::Config,
 ) -> Result<Packer> {
     let input = OpenOptions::new()
         .read(true)
         .write(false)
-        .open(input_file.clone())
+        .open(input_file)
         .context("couldn't open input file/dev")?;
-    let input_size = thinp::file_utils::file_size(&input_file)?;
+    let input_size = thinp::file_utils::file_size(input_file)?;
 
     let mapped_size = input_size;
     let input_iter = Box::new(ThickChunker::new(input, 16 * 1024 * 1024)?);
@@ -517,7 +521,7 @@ fn thick_packer(
 
     Ok(Packer::new(
         report,
-        input_file.clone(),
+        input_file.to_path_buf(),
         input_name,
         input_iter,
         input_size,
@@ -530,18 +534,18 @@ fn thick_packer(
 
 fn thin_packer(
     report: Arc<Report>,
-    input_file: &PathBuf,
+    input_file: &Path,
     input_name: String,
     config: &config::Config,
 ) -> Result<Packer> {
     let input = OpenOptions::new()
         .read(true)
         .write(false)
-        .open(input_file.clone())
+        .open(input_file)
         .context("couldn't open input file/dev")?;
-    let input_size = thinp::file_utils::file_size(&input_file)?;
+    let input_size = thinp::file_utils::file_size(input_file)?;
 
-    let mappings = read_thin_mappings(input_file.clone())?;
+    let mappings = read_thin_mappings(input_file)?;
     let mapped_size =
         mappings.provisioned_blocks.len() as u64 * mappings.data_block_size as u64 * 512;
     let run_iter = RunIter::new(
@@ -557,8 +561,8 @@ fn thin_packer(
 
     report.set_title(&format!("Packing {} ...", input_file.display()));
     Ok(Packer::new(
-        report.clone(),
-        input_file.clone(),
+        report,
+        input_file.to_path_buf(),
         input_name,
         input_iter,
         input_size,
@@ -579,7 +583,7 @@ pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     env::set_current_dir(&archive_dir)?;
     let config = config::read_config(".")?;
 
-    report.set_title(&format!("Packing {} ...", input_file.clone().display()));
+    report.set_title(&format!("Packing {} ...", input_file.display()));
 
     let mut packer = if is_thin_device(&input_file)? {
         thin_packer(report, &input_file, input_name, &config)?

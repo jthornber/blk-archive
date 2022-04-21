@@ -107,8 +107,8 @@ pub struct ThinInfo {
     pub provisioned_blocks: RoaringBitmap,
 }
 
-fn read_info(metadata: &PathBuf, thin_id: u32) -> Result<ThinInfo> {
-    let engine = Arc::new(SyncIoEngine::new_with(metadata.as_path(), 8, false, false)?);
+fn read_info(metadata: &Path, thin_id: u32) -> Result<ThinInfo> {
+    let engine = Arc::new(SyncIoEngine::new_with(metadata, 8, false, false)?);
 
     // Read metadata superblock
     let sb = read_superblock_snap(&*engine)?;
@@ -121,7 +121,7 @@ fn read_info(metadata: &PathBuf, thin_id: u32) -> Result<ThinInfo> {
             btree_to_map(&mut path, engine.clone(), true, sb.details_root)?;
         let thin_id = thin_id as u64;
         if let Some(d) = details.get(&thin_id) {
-            d.clone()
+            *d
         } else {
             return Err(anyhow!("couldn't find thin device with that id"));
         }
@@ -278,7 +278,7 @@ pub fn read_thin_mappings<P: AsRef<Path>>(thin: P) -> Result<ThinInfo> {
         .unwrap()
         .clone();
     let metadata_name = std::str::from_utf8(metadata_name.as_bytes())?;
-    let metadata_path: PathBuf = ["/dev", "mapper", &metadata_name]
+    let metadata_path: PathBuf = ["/dev", "mapper", metadata_name]
         .iter()
         .collect();
 

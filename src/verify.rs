@@ -105,7 +105,7 @@ impl Verifier {
         }
     }
 
-    fn peek_data<'a>(&'a mut self, max_len: u64) -> Result<&'a [u8]> {
+    fn peek_data(&mut self, max_len: u64) -> Result<&[u8]> {
         self.ensure_chunk()?;
         match &self.chunk {
             Some(Chunk::Mapped(bytes)) => {
@@ -113,24 +113,29 @@ impl Verifier {
                 Ok(&bytes[self.chunk_offset as usize..(self.chunk_offset + len as u64) as usize])
             }
             Some(Chunk::Unmapped(_)) => {
-                return Err(self.fail("expected data, got unmapped"));
+                Err(self.fail("expected data, got unmapped"))
             }
             None => {
-                return Err(self.fail("ensure_chunk() failed"));
+                Err(self.fail("ensure_chunk() failed"))
             }
         }
     }
 
     fn consume_data(&mut self, len: u64) -> Result<()> {
+        use std::cmp::Ordering::*;
         match &self.chunk {
             Some(Chunk::Mapped(bytes)) => {
                 let c_len = bytes.len() as u64 - self.chunk_offset;
-                if c_len < len {
-                    return Err(self.fail("bad consume, chunk too short"));
-                } else if c_len > len {
-                    self.chunk_offset += len;
-                } else {
-                    self.chunk = None;
+                match c_len.cmp(&len) {
+                    Less => {
+                        return Err(self.fail("bad consume, chunk too short"));
+                    }
+                    Greater => {
+                        self.chunk_offset += len;
+                    }
+                    Equal => {
+                        self.chunk = None;
+                    }
                 }
             }
             Some(Chunk::Unmapped(_)) => {
@@ -146,9 +151,7 @@ impl Verifier {
     fn get_unmapped(&mut self, max_len: u64) -> Result<u64> {
         self.ensure_chunk()?;
         match &self.chunk {
-            Some(Chunk::Mapped(_)) => {
-                return Err(self.fail("expected unmapped, got data"));
-            }
+            Some(Chunk::Mapped(_)) => Err(self.fail("expected unmapped, got data")),
             Some(Chunk::Unmapped(len)) => {
                 let len = *len;
                 if len <= max_len {
@@ -159,9 +162,7 @@ impl Verifier {
                     Ok(max_len)
                 }
             }
-            None => {
-                return Err(self.fail("stream shorter than input"));
-            }
+            None => Err(self.fail("stream shorter than input")),
         }
     }
 
@@ -176,7 +177,6 @@ impl Verifier {
                 }
             }
             let actual_len = actual.len() as u64;
-            drop(actual);
             self.consume_data(actual_len)?;
             remaining -= actual_len;
         }
@@ -202,7 +202,6 @@ impl Verifier {
             if actual != &expected[offset as usize..(offset + actual_len) as usize] {
                 return Err(self.fail("data mismatch"));
             }
-            drop(actual);
             self.consume_data(actual_len)?;
             remaining -= actual_len;
             offset += actual_len;
@@ -280,13 +279,13 @@ impl Verifier {
                                 "pos didn't match: expected {} != actual {}",
                                 pos.0, current_pos
                             );
-                            assert!(false);
+                            panic!();
                         }
                         next_pos = pos_iter.next();
                     }
                 }
 
-                let entry_len = self.verify_entry(&e)?;
+                let entry_len = self.verify_entry(e)?;
 
                 // FIXME: shouldn't inc before checking pos
                 current_pos += entry_len;
@@ -314,14 +313,14 @@ fn thick_verifier(input_file: &Path, stream: &str, config: &config::Config) -> R
     let input = OpenOptions::new()
         .read(true)
         .write(false)
-        .open(input_file.clone())
+        .open(input_file)
         .context("couldn't open input file/dev")?;
-    let input_size = thinp::file_utils::file_size(&input_file)?;
+    let input_size = thinp::file_utils::file_size(input_file)?;
     let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
 
     let input_it = Box::new(ThickChunker::new(input, 16 * 1024 * 1024)?);
 
-    let v = Verifier::new(&stream, cache_nr_entries, input_it, input_size)?;
+    let v = Verifier::new(stream, cache_nr_entries, input_it, input_size)?;
     Ok(v)
 }
 
@@ -329,9 +328,9 @@ fn thin_verifier(input_file: &Path, stream: &str, config: &config::Config) -> Re
     let input = OpenOptions::new()
         .read(true)
         .write(false)
-        .open(input_file.clone())
+        .open(input_file)
         .context("couldn't open input file/dev")?;
-    let input_size = thinp::file_utils::file_size(&input_file)?;
+    let input_size = thinp::file_utils::file_size(input_file)?;
     let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
 
     let mappings = read_thin_mappings(&input_file)?;
@@ -349,7 +348,7 @@ fn thin_verifier(input_file: &Path, stream: &str, config: &config::Config) -> Re
         mappings.data_block_size as u64 * 512,
     ));
 
-    let v = Verifier::new(&stream, cache_nr_entries, input_it, input_size)?;
+    let v = Verifier::new(stream, cache_nr_entries, input_it, input_size)?;
     Ok(v)
 }
 
