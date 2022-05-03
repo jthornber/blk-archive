@@ -37,6 +37,7 @@ struct Verifier {
     chunk: Option<Chunk>,
     chunk_offset: u64,
 
+    // FIXME: make this an lru cache?
     slabs: BTreeMap<u32, Arc<ByIndex>>,
     total_verified: u64,
 }
@@ -112,12 +113,9 @@ impl Verifier {
                 let len = std::cmp::min(bytes.len() - self.chunk_offset as usize, max_len as usize);
                 Ok(&bytes[self.chunk_offset as usize..(self.chunk_offset + len as u64) as usize])
             }
-            Some(Chunk::Unmapped(_)) => {
-                Err(self.fail("expected data, got unmapped"))
-            }
-            None => {
-                Err(self.fail("ensure_chunk() failed"))
-            }
+            Some(Chunk::Unmapped(_)) => Err(self.fail("expected data, got unmapped")),
+            Some(Chunk::Ref(_)) => Err(self.fail("expected data, got ref")),
+            None => Err(self.fail("ensure_chunk() failed")),
         }
     }
 
@@ -141,6 +139,9 @@ impl Verifier {
             Some(Chunk::Unmapped(_)) => {
                 return Err(self.fail("bad consume, unexpected unmapped chunk"));
             }
+            Some(Chunk::Ref(_)) => {
+                return Err(self.fail("bad consume, unexpected ref chunk"));
+            }
             None => {
                 return Err(self.fail("bad consume, no chunk"));
             }
@@ -161,6 +162,9 @@ impl Verifier {
                     self.chunk = Some(Chunk::Unmapped(len - max_len));
                     Ok(max_len)
                 }
+            }
+            Some(Chunk::Ref(_)) => {
+                Err(self.fail("unexpected Ref"))
             }
             None => Err(self.fail("stream shorter than input")),
         }
@@ -254,6 +258,12 @@ impl Verifier {
                 let len = self.verify_data(*slab, *offset, *nr_entries)?;
                 self.total_verified += len;
                 Ok(len)
+            }
+            Partial { .. } => {
+                todo!();
+            }
+            Ref { .. } => {
+                todo!();
             }
         }
     }

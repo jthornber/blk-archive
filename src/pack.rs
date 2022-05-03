@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::prelude::*;
 use clap::ArgMatches;
@@ -6,12 +6,13 @@ use io::Write;
 use rand::prelude::*;
 use rand_chacha::ChaCha20Rng;
 use size_display::Size;
+use std::boxed::Box;
 use std::env;
 use std::fs::OpenOptions;
 use std::io;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use thinp::report::*;
 
 use crate::chunkers::*;
@@ -27,6 +28,7 @@ use crate::run_iter::*;
 use crate::slab::*;
 use crate::splitter::*;
 use crate::stream::*;
+use crate::stream_builders::*;
 use crate::thin_metadata::*;
 
 //-----------------------------------------
@@ -70,7 +72,7 @@ struct DedupHandler {
     hashes: lru::LruCache<u32, ByHash>,
 
     data_file: SlabFile,
-    hashes_file: SlabFile,
+    hashes_file: Arc<Mutex<SlabFile>>,
     stream_file: SlabFile,
 
     current_slab: u32,
@@ -81,7 +83,7 @@ struct DedupHandler {
     hashes_buf: Vec<u8>,
     stream_buf: Vec<u8>,
 
-    mapping_builder: MappingBuilder,
+    mapping_builder: Arc<Mutex<dyn Builder>>,
 
     data_written: u64,
     mapped_size: u64,
@@ -95,7 +97,8 @@ impl DedupHandler {
 
         // FIXME: double lookup
         if self.hashes.get(&slab).is_none() {
-            let buf = self.hashes_file.read(slab)?;
+            let mut hashes_file = self.hashes_file.lock().unwrap();
+            let buf = hashes_file.read(slab)?;
             self.hashes.put(slab, ByHash::new(buf.to_vec())?); // FIXME: is the to_vec() causing a copy?
         }
 
@@ -104,14 +107,19 @@ impl DedupHandler {
 
     fn new(
         data_file: SlabFile,
-        hashes_file: SlabFile,
+        hashes_file: Arc<Mutex<SlabFile>>,
         stream_file: SlabFile,
         slab_capacity: usize,
+        mapping_builder: Arc<Mutex<dyn Builder>>,
     ) -> Result<Self> {
         let seen = CuckooFilter::read(paths::index_path())?;
         let hashes = lru::LruCache::new(slab_capacity);
         let nr_slabs = data_file.get_nr_slabs() as u32;
-        assert_eq!(data_file.get_nr_slabs(), hashes_file.get_nr_slabs());
+
+        {
+            let hashes_file = hashes_file.lock().unwrap();
+            assert_eq!(data_file.get_nr_slabs(), hashes_file.get_nr_slabs());
+        }
 
         Ok(Self {
             nr_chunks: 0,
@@ -131,7 +139,7 @@ impl DedupHandler {
             hashes_buf: Vec::new(),
             stream_buf: Vec::new(),
 
-            mapping_builder: MappingBuilder::default(),
+            mapping_builder,
 
             // Stats
             data_written: 0,
@@ -144,9 +152,10 @@ impl DedupHandler {
         let mut seen = CuckooFilter::with_capacity(new_capacity);
 
         // Scan the hashes file.
-        let nr_slabs = self.hashes_file.get_nr_slabs();
+        let mut hashes_file = self.hashes_file.lock().unwrap();
+        let nr_slabs = hashes_file.get_nr_slabs();
         for s in 0..nr_slabs {
-            let buf = self.hashes_file.read(s as u32)?;
+            let buf = hashes_file.read(s as u32)?;
             let hi = ByHash::new(buf.to_vec())?;
             for i in 0..hi.len() {
                 let h = hi.get(i);
@@ -195,7 +204,8 @@ impl DedupHandler {
             let index = ByHash::new(buffer)?;
             self.hashes.put(self.current_slab, index);
 
-            Self::complete_slab_(&mut self.hashes_file, &mut self.hashes_buf)?;
+            let mut hashes_file = self.hashes_file.lock().unwrap();
+            Self::complete_slab_(&mut hashes_file, &mut self.hashes_buf)?;
             self.current_slab += 1;
             self.current_entries = 0;
         }
@@ -222,16 +232,9 @@ impl DedupHandler {
         Ok(r)
     }
 
-    /*
-        fn add_hash_entry(&mut self, h: Hash256, len: u32) -> Result<()> {
-            self.hashes_buf.write_all(&h)?;
-            self.hashes_buf.write_u32::<LittleEndian>(len)?;
-            Ok(())
-        }
-    */
-
     fn add_stream_entry(&mut self, e: &MapEntry, len: u64) -> Result<()> {
-        self.mapping_builder.next(e, len, &mut self.stream_buf)
+        let mut builder = self.mapping_builder.lock().unwrap();
+        builder.next(e, len, &mut self.stream_buf)
     }
 
     fn do_add(&mut self, h: Hash256, iov: &IoVec, len: u64) -> Result<MapEntry> {
@@ -245,6 +248,7 @@ impl DedupHandler {
         self.maybe_complete_data(SLAB_SIZE_TARGET)?;
         Ok(me)
     }
+
 }
 
 impl IoVecHandler for DedupHandler {
@@ -307,15 +311,32 @@ impl IoVecHandler for DedupHandler {
         Ok(())
     }
 
+/*
+    fn handle(&mut self, e: &MapEntry) -> Result<()> {
+        match e {
+            Fill { byte, len } => self.handle_fill(*byte, *len),
+            Unmapped { len } => self.handle_unmapped(*len),
+            Data {
+                slab,
+                offset,
+                nr_entries,
+            } => self.handle_data(*slab, *offset, *nr_entries),
+            Partial { begin, end } => self.handle_partial(*begin, *end),
+            Ref { len } => self.handle_ref(*len),
+        }
+    }
+    */
+
     fn complete(&mut self) -> Result<()> {
-        let mut mapping_builder = MappingBuilder::default();
-        std::mem::swap(&mut mapping_builder, &mut self.mapping_builder);
-        mapping_builder.complete(&mut self.stream_buf)?;
+        let mut builder = self.mapping_builder.lock().unwrap();
+        builder.complete(&mut self.stream_buf)?;
+        drop(builder);
 
         self.maybe_complete_data(0)?;
         Self::complete_slab(&mut self.stream_file, &mut self.stream_buf, 0)?;
 
-        self.hashes_file.close()?;
+        let mut hashes_file = self.hashes_file.lock().unwrap();
+        hashes_file.close()?;
         self.data_file.close()?;
         self.stream_file.close()?;
 
@@ -360,6 +381,7 @@ struct Packer {
     stream_name: String,
     it: Box<dyn Iterator<Item = Result<Chunk>>>,
     input_size: u64,
+    mapping_builder: Arc<Mutex<dyn Builder>>,
     mapped_size: u64,
     block_size: usize,
     thin_id: Option<u32>,
@@ -373,6 +395,7 @@ impl Packer {
         stream_name: String,
         it: Box<dyn Iterator<Item = Result<Chunk>>>,
         input_size: u64,
+        mapping_builder: Arc<Mutex<dyn Builder>>,
         mapped_size: u64,
         block_size: usize,
         thin_id: Option<u32>,
@@ -384,6 +407,7 @@ impl Packer {
             stream_name,
             it,
             input_size,
+            mapping_builder,
             mapped_size,
             block_size,
             thin_id,
@@ -391,7 +415,7 @@ impl Packer {
         }
     }
 
-    fn pack(&mut self) -> Result<()> {
+    fn pack(mut self, hashes_file: Arc<Mutex<SlabFile>>) -> Result<()> {
         let mut splitter = ContentSensitiveSplitter::new(self.block_size as u32);
 
         let data_file = SlabFileBuilder::open(data_path())
@@ -401,12 +425,11 @@ impl Packer {
             .context("couldn't open data slab file")?;
         let data_size = data_file.get_file_size();
 
-        let hashes_file = SlabFileBuilder::open(hashes_path())
-            .write(true)
-            .queue_depth(16)
-            .build()
-            .context("couldn't open hashes slab file")?;
-        let hashes_size = hashes_file.get_file_size();
+        let hashes_size = {
+            let hashes_file = hashes_file.lock().unwrap();
+            hashes_file.get_file_size()
+        };
+
         let (stream_id, mut stream_path) = new_stream_path()?;
 
         std::fs::create_dir(stream_path.clone())?;
@@ -423,7 +446,13 @@ impl Packer {
             / std::mem::size_of::<Hash256>())
             / hashes_per_slab;
 
-        let mut handler = DedupHandler::new(data_file, hashes_file, stream_file, slab_capacity)?;
+        let mut handler = DedupHandler::new(
+            data_file,
+            hashes_file,
+            stream_file,
+            slab_capacity,
+            self.mapping_builder.clone(),
+        )?;
         handler.ensure_extra_capacity(self.mapped_size as usize / self.block_size)?;
 
         self.report.progress(0);
@@ -440,6 +469,17 @@ impl Packer {
                         .progress(((100 * total_read) / self.mapped_size) as u8);
                 }
                 Chunk::Unmapped(len) => {
+                    /*
+                    let builder = self.mapping_builder.lock().unwrap();
+                    builder.next(MapEntry::Unmapped { len: *len }, *len, w);
+                    */
+                    splitter.next_break(len, &mut handler)?;
+                }
+                Chunk::Ref(len) => {
+                    /*
+                    let builder = self.mapping_builder.lock().unwrap();
+                    builder.next(MapEntry::Ref { len: *len }, *len, w);
+                    */
                     splitter.next_break(len, &mut handler)?;
                 }
             }
@@ -467,7 +507,11 @@ impl Packer {
         ));
 
         let data_written = handler.data_file.get_file_size() - data_size;
-        let hashes_written = handler.hashes_file.get_file_size() - hashes_size;
+
+        let hashes_written = {
+            let hashes_file = handler.hashes_file.lock().unwrap();
+            hashes_file.get_file_size() - hashes_size
+        };
         let stream_written = handler.stream_file.get_file_size();
 
         self.report
@@ -491,6 +535,7 @@ impl Packer {
             source_path: self.input_path.display().to_string(),
             pack_time: config::now(),
             size: self.input_size,
+            mapped_size: self.mapped_size,
             packed_size: data_written + hashes_written + stream_written,
             thin_id: self.thin_id,
         };
@@ -518,6 +563,7 @@ fn thick_packer(
     let mapped_size = input_size;
     let input_iter = Box::new(ThickChunker::new(input, 16 * 1024 * 1024)?);
     let thin_id = None;
+    let builder = Arc::new(Mutex::new(MappingBuilder::default()));
 
     Ok(Packer::new(
         report,
@@ -525,6 +571,7 @@ fn thick_packer(
         input_name,
         input_iter,
         input_size,
+        builder,
         mapped_size,
         config.block_size,
         thin_id,
@@ -558,6 +605,7 @@ fn thin_packer(
         mappings.data_block_size as u64 * 512,
     ));
     let thin_id = Some(mappings.thin_id);
+    let builder = Arc::new(Mutex::new(MappingBuilder::default()));
 
     report.set_title(&format!("Packing {} ...", input_file.display()));
     Ok(Packer::new(
@@ -566,11 +614,144 @@ fn thin_packer(
         input_name,
         input_iter,
         input_size,
+        builder,
         mapped_size,
         config.block_size,
         thin_id,
         config.hash_cache_size_meg,
     ))
+}
+
+/*
+fn is_hidden(entry: &DirEntry) -> bool {
+    entry
+        .file_name()
+        .to_str()
+        .map(|s| s.starts_with("."))
+        .unwrap_or(false)
+}
+
+fn is_config(entry: &DirEntry) -> bool {
+    entry
+        .file_name()
+        .to_str()
+        .map(|s| s == "config.toml")
+        .unwrap_or(false)
+}
+
+fn containing_dir(entry: &DirEntry) -> String {
+    entry
+        .path()
+        .parent()
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string()
+}
+
+fn find_stream(thin_id: u32) -> Result<Option<String>> {
+    for entry in WalkDir::new("streams")
+        .into_iter()
+        .filter_entry(|e| !is_hidden(e))
+    {
+        let entry = entry?;
+        if is_config(&entry) {
+            let stream_id = containing_dir(&entry);
+            let config = config::read_stream_config(&stream_id)?;
+            if let Some(actual_thin_id) = config.thin_id {
+                if thin_id == actual_thin_id {
+                    return Ok(Some(stream_id));
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+*/
+
+// FIXME: slow
+fn open_thin_stream(stream_id: &str) -> Result<SlabFile> {
+    Ok(SlabFileBuilder::open(stream_path(&stream_id))
+        .build()
+        .context("couldn't open old stream file")?)
+}
+
+fn thin_delta_packer(
+    report: Arc<Report>,
+    input_file: &Path,
+    input_name: String,
+    config: &config::Config,
+    delta_device: &Path,
+    delta_id: &str,
+    hashes_file: Arc<Mutex<SlabFile>>,
+) -> Result<Packer> {
+    let input = OpenOptions::new()
+        .read(true)
+        .write(false)
+        .open(input_file)
+        .context("couldn't open input file/dev")?;
+    let input_size = thinp::file_utils::file_size(input_file)?;
+
+    let mappings = read_thin_delta(delta_device, input_file)?;
+    let old_config = config::read_stream_config(delta_id)?;
+    let mapped_size = old_config.mapped_size;
+
+    let additions = RunIter::new(
+        mappings.additions,
+        (input_size / (mappings.data_block_size as u64 * 512)) as u32,
+    );
+
+    let removals = RunIter::new(
+        mappings.removals,
+        (input_size / (mappings.data_block_size as u64 * 512)) as u32,
+    );
+
+    let input_iter = Box::new(DeltaChunker::new(
+        input,
+        additions,
+        removals,
+        mappings.data_block_size as u64 * 512,
+    ));
+    let thin_id = Some(mappings.thin_id);
+
+    let old_stream = open_thin_stream(delta_id)?;
+    let old_entries = StreamIter::new(old_stream)?;
+    let builder = Arc::new(Mutex::new(DeltaBuilder::new(old_entries, hashes_file)));
+
+    report.set_title(&format!("Packing {} ...", input_file.display()));
+    Ok(Packer::new(
+        report,
+        input_file.to_path_buf(),
+        input_name,
+        input_iter,
+        input_size,
+        builder,
+        mapped_size,
+        config.block_size,
+        thin_id,
+        config.hash_cache_size_meg,
+    ))
+}
+
+// Looks up both --delta-stream and --delta-device
+fn get_delta_args(matches: &ArgMatches) -> Result<Option<(String, PathBuf)>> {
+    match (
+        matches.value_of("DELTA_STREAM"),
+        matches.value_of("DELTA_DEVICE"),
+    ) {
+        (None, None) => Ok(None),
+        (Some(stream), Some(device)) => {
+            let mut buf = PathBuf::new();
+            buf.push(device);
+            Ok(Some((stream.to_string(), buf)))
+        }
+        _ => Err(anyhow!(
+            "--delta-stream and --delta-device must both be given"
+        )),
+    }
 }
 
 pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
@@ -585,53 +766,31 @@ pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
 
     report.set_title(&format!("Packing {} ...", input_file.display()));
 
-    let mut packer = if is_thin_device(&input_file)? {
+    let hashes_file = Arc::new(Mutex::new(
+        SlabFileBuilder::open(hashes_path())
+            .write(true)
+            .queue_depth(16)
+            .build()
+            .context("couldn't open hashes slab file")?,
+    ));
+
+    let packer = if let Some((delta_stream, delta_device)) = get_delta_args(matches)? {
+        thin_delta_packer(
+            report,
+            &input_file,
+            input_name,
+            &config,
+            &delta_device,
+            &delta_stream,
+            hashes_file.clone(),
+        )?
+    } else if is_thin_device(&input_file)? {
         thin_packer(report, &input_file, input_name, &config)?
     } else {
         thick_packer(report, &input_file, input_name, &config)?
     };
-    packer.pack()
+
+    packer.pack(hashes_file)
 }
-
-/*
-pub fn run_thin_delta(matches: &ArgMatches) -> Result<()> {
-    let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
-    let input_file = Path::new(matches.value_of("INPUT").unwrap());
-    let input_name = input_file.file_name().unwrap();
-    let input_file = input_file.canonicalize()?;
-    let report = mk_report();
-
-    env::set_current_dir(&archive_dir)?;
-    let config = config::read_config(".")?;
-
-    let mappings = read_thin_mappings(input_file.clone())?;
-
-    let input = OpenOptions::new()
-        .read(true)
-        .write(false)
-        .open(input_file.clone())
-        .context("couldn't open input file/dev")?;
-    let input_size = thinp::file_utils::file_size(&input_file)?;
-    let mapped_size =
-        mappings.provisioned_blocks.len() as u64 * mappings.data_block_size as u64 * 512;
-    let run_iter = RunIter::new(
-        &mappings.provisioned_blocks,
-        (input_size / (mappings.data_block_size as u64 * 512)) as u32,
-    );
-    let input_iter = ThinChunker::new(input, run_iter, mappings.data_block_size as u64 * 512);
-    report.set_title(&format!("Packing {} ...", input_file.display()));
-    pack_(
-        &report,
-        &input_file.display().to_string(),
-        &input_name.to_str().unwrap(),
-        input_iter,
-        input_size,
-        mapped_size,
-        config.block_size,
-        Some(mappings.thin_id),
-        config.hash_cache_size_meg,
-    )
-}
-*/
 
 //-----------------------------------------

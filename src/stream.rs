@@ -131,7 +131,7 @@ fn offset_delta_cost(lhs: u32, rhs: u32) -> usize {
 // the lower bound?
 
 #[derive(Copy, Clone, Debug)]
-enum MapInstruction {
+pub enum MapInstruction {
     Rot { index: u8 },
     Dup { index: u8 },
 
@@ -166,6 +166,8 @@ enum MapInstruction {
 
     Pos32 { pos: u32 },
     Pos64 { pos: u64 },
+
+    Partial { begin: u32, end: u32 },
 }
 
 // 4 bit tags
@@ -176,8 +178,8 @@ enum MapTag {
     TagDup,
 
     // These have the operand length packed in the low nibble
-    TagFill,     // This also doubles up as SetFill
-    TagUnmapped, // Doubles up as Pos
+    TagFill,               // This also doubles up as SetFill
+    TagUnmappedPosPartial, // Doubles up as Pos or Partial
 
     TagSlab16,
     TagSlab32,
@@ -241,19 +243,19 @@ impl MapInstruction {
                 w.write_u64::<LittleEndian>(*len)?;
             }
             Unmapped8 { len } => {
-                w.write_u8(pack_tag(TagUnmapped, 1))?;
+                w.write_u8(pack_tag(TagUnmappedPosPartial, 1))?;
                 w.write_u8(*len)?;
             }
             Unmapped16 { len } => {
-                w.write_u8(pack_tag(TagUnmapped, 2))?;
+                w.write_u8(pack_tag(TagUnmappedPosPartial, 2))?;
                 w.write_u16::<LittleEndian>(*len)?;
             }
             Unmapped32 { len } => {
-                w.write_u8(pack_tag(TagUnmapped, 3))?;
+                w.write_u8(pack_tag(TagUnmappedPosPartial, 3))?;
                 w.write_u32::<LittleEndian>(*len)?;
             }
             Unmapped64 { len } => {
-                w.write_u8(pack_tag(TagUnmapped, 4))?;
+                w.write_u8(pack_tag(TagUnmappedPosPartial, 4))?;
                 w.write_u64::<LittleEndian>(*len)?;
             }
             Slab16 { slab } => {
@@ -309,12 +311,17 @@ impl MapInstruction {
                 w.write_u16::<LittleEndian>((len >> 4) as u16)?;
             }
             Pos32 { pos } => {
-                w.write_u8(pack_tag(TagUnmapped, 5))?;
+                w.write_u8(pack_tag(TagUnmappedPosPartial, 5))?;
                 w.write_u32::<LittleEndian>(*pos)?;
             }
             Pos64 { pos } => {
-                w.write_u8(pack_tag(TagUnmapped, 6))?;
+                w.write_u8(pack_tag(TagUnmappedPosPartial, 6))?;
                 w.write_u64::<LittleEndian>(*pos)?;
+            }
+            Partial { begin, end } => {
+                w.write_u8(pack_tag(TagUnmappedPosPartial, 7))?;
+                w.write_u32::<LittleEndian>(*begin)?;
+                w.write_u32::<LittleEndian>(*end)?;
             }
         }
         Ok(())
@@ -358,7 +365,7 @@ impl MapInstruction {
                     fail(input)?
                 }
             },
-            TagUnmapped => match nibble {
+            TagUnmappedPosPartial => match nibble {
                 1 => {
                     let (input, len) = le_u8(input)?;
                     (input, Unmapped8 { len })
@@ -464,6 +471,8 @@ impl MapInstruction {
 
 //-----------------------------------------
 
+pub type IVec = Vec<MapInstruction>;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MapEntry {
     Fill {
@@ -478,6 +487,17 @@ pub enum MapEntry {
         offset: u32,
         nr_entries: u32,
     },
+    Partial {
+        begin: u32,
+        end: u32,
+    },
+    Ref {
+        len: u64,
+    },
+}
+
+pub trait MapEntryHandler {
+    fn handle(&mut self, e: &MapEntry) -> Result<()>;
 }
 
 #[derive(Default, Copy, Clone, PartialEq, Eq)]
@@ -489,7 +509,7 @@ struct Register {
 const STACK_SIZE: usize = 16;
 
 #[derive(Default)]
-struct VMState {
+pub struct VMState {
     fill: u8,
     stack: [Register; STACK_SIZE],
 }
@@ -580,7 +600,7 @@ impl VMState {
         Ok(())
     }
 
-    fn encode_fill(&mut self, byte: u8, len: u64, instrs: &mut IVec) -> Result<()> {
+    pub fn encode_fill(&mut self, byte: u8, len: u64, instrs: &mut IVec) -> Result<()> {
         use MapInstruction::*;
 
         if self.fill != byte {
@@ -601,7 +621,7 @@ impl VMState {
         Ok(())
     }
 
-    fn encode_unmapped(&mut self, len: u64, instrs: &mut IVec) -> Result<()> {
+    pub fn encode_unmapped(&mut self, len: u64, instrs: &mut IVec) -> Result<()> {
         use MapInstruction::*;
 
         if len < 0x10 {
@@ -617,7 +637,7 @@ impl VMState {
         Ok(())
     }
 
-    fn encode_pos(&mut self, pos: u64, instrs: &mut IVec) -> Result<()> {
+    pub fn encode_pos(&mut self, pos: u64, instrs: &mut IVec) -> Result<()> {
         use MapInstruction::*;
         if pos < u32::MAX as u64 {
             instrs.push(Pos32 { pos: pos as u32 });
@@ -628,7 +648,7 @@ impl VMState {
         Ok(())
     }
 
-    fn encode_slab(&mut self, slab: u32, instrs: &mut IVec) -> Result<()> {
+    pub fn encode_slab(&mut self, slab: u32, instrs: &mut IVec) -> Result<()> {
         use MapInstruction::*;
 
         let top = self.top();
@@ -649,7 +669,7 @@ impl VMState {
         Ok(())
     }
 
-    fn encode_offset(&mut self, offset: u32, instrs: &mut IVec) -> Result<()> {
+    pub fn encode_offset(&mut self, offset: u32, instrs: &mut IVec) -> Result<()> {
         use MapInstruction::*;
 
         let top = self.top();
@@ -676,7 +696,7 @@ impl VMState {
         Ok(())
     }
 
-    fn encode_emit(&mut self, len: u32, instrs: &mut IVec) -> Result<()> {
+    pub fn encode_emit(&mut self, len: u32, instrs: &mut IVec) -> Result<()> {
         use MapInstruction::*;
 
         if len < 0x10 {
@@ -693,7 +713,7 @@ impl VMState {
         Ok(())
     }
 
-    fn encode_data(
+    pub fn encode_data(
         &mut self,
         slab: u32,
         offset: u32,
@@ -706,139 +726,15 @@ impl VMState {
         self.encode_emit(nr_entries, instrs)?;
         Ok(())
     }
-}
 
-pub struct MappingBuilder {
-    // We insert a Pos instruction for every 'index_period' entries.
-    index_period: u64,
-    entries_emitted: u64,
-    position: u64, // byte len of stream so far
-    entry: Option<MapEntry>,
-    vm_state: VMState,
-}
-
-type IVec = Vec<MapInstruction>;
-
-fn pack_instrs<W: Write>(w: &mut W, instrs: &IVec) -> Result<()> {
-    for i in instrs {
-        i.pack(w)?;
-    }
-    Ok(())
-}
-
-// FIXME: bump up to 128
-const INDEX_PERIOD: u64 = 128;
-
-impl Default for MappingBuilder {
-    fn default() -> Self {
-        Self {
-            index_period: INDEX_PERIOD,
-            entries_emitted: 0,
-            position: 0,
-            entry: None,
-            vm_state: VMState::default(),
-        }
-    }
-}
-
-impl MappingBuilder {
-    fn encode_entry(&mut self, e: &MapEntry, instrs: &mut IVec) -> Result<()> {
-        use MapEntry::*;
-
-        match e {
-            Fill { byte, len } => {
-                self.vm_state.encode_fill(*byte, *len, instrs)?;
-            }
-            Unmapped { len } => {
-                self.vm_state.encode_unmapped(*len, instrs)?;
-            }
-            Data {
-                slab,
-                offset,
-                nr_entries,
-            } => {
-                self.vm_state
-                    .encode_data(*slab, *offset, *nr_entries, instrs)?;
-            }
-        }
-
-        self.entries_emitted += 1;
-        if self.entries_emitted % self.index_period == 0 {
-            self.vm_state.encode_pos(self.position, instrs)?;
-        }
-
-        Ok(())
-    }
-
-    pub fn next<W: Write>(&mut self, e: &MapEntry, len: u64, w: &mut W) -> Result<()> {
-        use MapEntry::*;
-
-        if self.entry.is_none() {
-            self.entry = Some(*e);
-            self.position += len;
-            return Ok(());
-        }
-
-        let mut instrs = Vec::new();
-        match (self.entry.take().unwrap(), e) {
-            (Fill { byte: b1, len: l1 }, Fill { byte: b2, len: l2 }) if b1 == *b2 => {
-                self.entry = Some(Fill {
-                    byte: b1,
-                    len: l1 + l2,
-                });
-            }
-            (Unmapped { len: l1 }, Unmapped { len: l2 }) => {
-                self.entry = Some(Unmapped { len: l1 + l2 });
-            }
-            (
-                Data {
-                    slab: s1,
-                    offset: o1,
-                    nr_entries: n1,
-                },
-                Data {
-                    slab: s2,
-                    offset: o2,
-                    nr_entries: n2,
-                },
-            ) => {
-                if s1 == *s2 && o1 + n1 == *o2 {
-                    self.entry = Some(Data {
-                        slab: s1,
-                        offset: o1,
-                        nr_entries: n1 + n2,
-                    });
-                } else {
-                    self.vm_state.encode_data(s1, o1, n1, &mut instrs)?;
-                    self.entry = Some(Data {
-                        slab: *s2,
-                        offset: *o2,
-                        nr_entries: *n2,
-                    });
-                }
-            }
-            (old_e, new_e) => {
-                self.encode_entry(&old_e, &mut instrs)?;
-                self.entry = Some(*new_e);
-            }
-        }
-
-        self.position += len;
-        pack_instrs(w, &instrs)
-    }
-
-    pub fn complete<W: Write>(mut self, w: &mut W) -> Result<()> {
-        if let Some(e) = self.entry.take() {
-            let mut instrs = Vec::new();
-            self.encode_entry(&e, &mut instrs)?;
-            pack_instrs(w, &instrs)?;
-        }
-
+    pub fn encode_partial(&mut self, begin: u32, end: u32, instrs: &mut IVec) -> Result<()> {
+        use MapInstruction::*;
+        instrs.push(Partial { begin, end });
         Ok(())
     }
 }
 
-//-----------------------------------------
+//--------------------------------
 
 #[derive(Default)]
 pub struct MappingUnpacker {
@@ -859,6 +755,10 @@ impl MappingUnpacker {
             nr_entries: len as u32,
         });
         top.offset += len as u32;
+    }
+
+    fn emit_partial(&mut self, begin: u32, end: u32, r: &mut Vec<MapEntry>) {
+        r.push(MapEntry::Partial { begin, end });
     }
 
     pub fn unpack(&mut self, buf: &[u8]) -> Result<(EntryVec, PosVec)> {
@@ -961,6 +861,9 @@ impl MappingUnpacker {
                 Pos64 { pos } => {
                     positions.push((pos, entries.len()));
                 }
+                Partial { begin, end } => {
+                    self.emit_partial(begin, end, &mut entries);
+                }
             }
         }
         Ok((entries, positions))
@@ -985,79 +888,62 @@ fn unpack_instructions(buf: &[u8]) -> Result<Vec<MapInstruction>> {
 
 //-----------------------------------------
 
-/*
-enum PartialEntry {
-    Complete(MapEntry),
-
-    // (e, skip_front, skip_back)
-    Partial(MapEntry, u64, u64),
-}
-
-// FIXME: this reads and unpacks the complete stream and holds in
-// memory.  For huge streams we may need to page entries in on demand.
-// Revisit.
-struct Stream {
+pub struct StreamIter {
+    file: SlabFile,
+    slab: u32,
     entries: Vec<MapEntry>,
-
-    // The index stores the offset into the data of each map entry.
-    // FIXME: Don't index every entry.
-    index: Vec<u64>,
+    index: usize,
 }
 
-impl Stream {
-    pub fn new(file: SlabFile) -> Self {
-        use MapEntry::*;
+impl StreamIter {
+    pub fn new(mut file: SlabFile) -> Result<Self> {
+        let entries = Self::read_slab(&mut file, 0)?;
+        Ok(Self {
+            file,
+            slab: 0,
+            entries,
+            index: 0,
+        })
+    }
 
-        let mut entries = Vec::new();
+    fn read_slab(file: &mut SlabFile, slab: u32) -> Result<Vec<MapEntry>> {
+        let buf = file.read(slab)?;
+        let (entries, _positions) = unpack(&buf)?;
+        Ok(entries)
+    }
 
-        let mut unpacker = MappingUnpacker::default();
-
-        let nr_slabs = file.get_nr_slabs()?;
-        for s in 0..nr_slabs {
-            let data = file.read(s as u32)?;
-            let mut slab_entries = unpacker.unpack(&data[..])?;
-            entries.extend(&mut slab_entries);
+    fn next_slab(&mut self) -> Result<bool> {
+        if self.slab >= self.file.get_nr_slabs() as u32 {
+            return Ok(false);
         }
 
-        let mut index = Vec::with_capacity(entries.len());
+        self.slab += 1;
+        let entries = Self::read_slab(&mut self.file, self.slab)?;
+        self.entries = entries;
+        self.index = 0;
+        Ok(true)
+    }
+}
 
-        for e in &entries {
-            index.push(total);
-            match e {
-                Fill { len, .. } => {
-                    total += len;
+impl Iterator for StreamIter {
+    type Item = Result<MapEntry>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.entries.len() {
+            match self.next_slab() {
+                Err(e) => {
+                    return Some(Err(e));
                 }
-                Unmapped { len } => {
-                    total += len;
+                Ok(true) => {
+                    // do nothing
                 }
-                Data { .. } => {
-                    // don't know the length
-                }
+                Ok(false) => return None,
             }
         }
 
-        Self { file, index }
-    }
-
-    // The first and last entries may be truncated
-    pub fn get_entries<'a>(&mut self, begin: u64, end: u64) -> StreamIter<'a> {
-        todo!();
+        Some(Ok(self.entries[self.index]))
     }
 }
-
-struct StreamIter<'a> {
-
-}
-
-impl<'a> Iterator for StreamIter<'a> {
-    type Item = PartialEntry;
-
-
-    fn next(&mut self) -> Option<Self::Item> {
-
-    }
-}
-*/
 
 //-----------------------------------------
 
@@ -1088,6 +974,7 @@ struct Stats {
     emit20: u64,
     pos32: u64,
     pos64: u64,
+    partial: u64,
 }
 
 pub struct Dumper {
@@ -1206,6 +1093,9 @@ impl Dumper {
             Pos64 { .. } => {
                 self.stats.pos64 += 1;
             }
+            Partial { .. } => {
+                self.stats.partial += 1;
+            }
         }
     }
 
@@ -1290,6 +1180,9 @@ impl Dumper {
             }
             Pos64 { pos } => {
                 format!("     pos {:<10}", pos)
+            }
+            Partial { begin, end } => {
+                format!("     partial {:<10}..{:<10}", begin, end)
             }
         }
     }

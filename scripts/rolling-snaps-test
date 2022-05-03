@@ -4,20 +4,39 @@ set -e
 archive=test-archive
 cmd=./target/release/dm-archive
 
-pack() {
+checkout() {
 	echo Checking out $1 ...
 
 	pushd > /dev/null 2>&1
 	git checkout $1 > /dev/null 2>&1
 	sync -f ./README > /dev/null 2>&1
 	pushd > /dev/null 2>&1
+}
 
+snapshot() {
         echo Taking snapshot ...
         lvcreate -s --name $1 test-vg/kernel-builds
-        lvchange -ay -Ky test-vg/$1
+        lvchange -kn test-vg/$1
+        lvchange -ay test-vg/$1
+        lvchange -an test-vg/$1
+        lvchange -ay test-vg/$1
+}
+
+pack() {
+	checkout $1
+	snapshot $1
 
 	echo Packing $1
 	$cmd pack -a $archive /dev/test-vg/$1
+}
+
+pack_delta() {
+	checkout $1
+	snapshot $1
+
+	echo Packing delta $2 -> $1
+	echo $cmd pack -a $archive /dev/test-vg/$1 --delta-stream `get_id $2` --delta-device $2
+	$cmd pack -a $archive /dev/test-vg/$1 --delta-stream `get_id $2` --delta-device /dev/test-vg/$2
 }
 
 get_id() {
@@ -35,8 +54,8 @@ remove() {
 
 cycle() {
 	pack $1
-	verify $1
-	remove $1
+	# verify $1
+	# remove $1
 }
 
 #-----------------------
@@ -64,6 +83,13 @@ pushd test-mnt
 git clone ~ejt/work/RedHat/riscv-kernel/ linux
 cd linux
 pushd
+
+# pack v5.0
+# verify v5.0
+
+# pack_delta v5.1 v5.0
+# verify v5.1
+# remove v5.0
 
 for f in v5.0 v5.1 v5.2 # v5.3 v5.4 v5.5 v5.6 v5.7 v5.8 v5.9 v5.10 v5.11 v5.12 v5.13
 do

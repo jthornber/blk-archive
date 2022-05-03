@@ -13,6 +13,9 @@ use crate::run_iter::*;
 pub enum Chunk {
     Mapped(Vec<u8>),
     Unmapped(u64),
+
+    // Reference a prior stream
+    Ref(u64),
 }
 
 pub struct ThickChunker {
@@ -128,6 +131,81 @@ impl ThinChunker {
 }
 
 impl Iterator for ThinChunker {
+    type Item = Result<Chunk>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mc = self.next_chunk();
+        match mc {
+            Err(e) => Some(Err(e)),
+            Ok(Some(c)) => Some(Ok(c)),
+            Ok(None) => None,
+        }
+    }
+}
+
+//-----------------------------------------
+
+pub struct DeltaChunker {
+    input: File,
+    additions: RunIter,
+    removals: RunIter,
+    data_block_size: u64,
+
+    max_read_size: usize,
+    current_run: Option<(bool, Range<u64>)>,
+}
+
+impl DeltaChunker {
+    pub fn new(input: File, additions: RunIter, removals: RunIter, data_block_size: u64) -> Self {
+        Self {
+            input,
+            additions,
+            removals,
+            data_block_size,
+
+            max_read_size: 16 * 1024 * 1024,
+            current_run: None,
+        }
+    }
+
+    // FIXME: removals are being ignored
+    fn next_run_bytes(&mut self) -> Option<(bool, Range<u64>)> {
+        self.additions.next().map(|(b, Range { start, end })| {
+            (
+                b,
+                Range {
+                    start: start as u64 * self.data_block_size,
+                    end: end as u64 * self.data_block_size,
+                },
+            )
+        })
+    }
+
+    fn next_chunk(&mut self) -> Result<Option<Chunk>> {
+        let mut run = None;
+        std::mem::swap(&mut run, &mut self.current_run);
+
+        match run.or_else(|| self.next_run_bytes()) {
+            Some((false, run)) => Ok(Some(Chunk::Ref(run.end - run.start))),
+            Some((true, run)) => {
+                let run_len = run.end - run.start;
+                if run_len <= self.max_read_size as u64 {
+                    let mut buf = vec![0; run_len as usize];
+                    self.input.read_exact_at(&mut buf, run.start)?;
+                    Ok(Some(Chunk::Mapped(buf)))
+                } else {
+                    let mut buf = vec![0; self.max_read_size];
+                    self.input.read_exact_at(&mut buf, run.start)?;
+                    self.current_run = Some((true, (run.start + buf.len() as u64)..run.end));
+                    Ok(Some(Chunk::Mapped(buf)))
+                }
+            }
+            None => Ok(None),
+        }
+    }
+}
+
+impl Iterator for DeltaChunker {
     type Item = Result<Chunk>;
 
     fn next(&mut self) -> Option<Self::Item> {

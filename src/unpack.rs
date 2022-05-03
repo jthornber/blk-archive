@@ -132,6 +132,14 @@ impl Unpacker {
                 // Copy data
                 w.write_all(&data[data_begin..data_end])?;
             }
+            Partial {
+                ..
+            } => {
+                todo!();
+            }
+            Ref { .. } => {
+                todo!();
+            }
         }
 
         Ok(())

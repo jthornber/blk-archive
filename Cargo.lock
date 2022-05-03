@@ -21,9 +21,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.56"
+version = "1.0.57"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4361135be9122e0870de935d7c439aef945b9f9ddd4199a553b5270b49c82a27"
+checksum = "08f9b8508dccb7687a1d6c4ce66b2b0ecef467c94667de27d8d7fe1f8d2a9cdc"
 
 [[package]]
 name = "atty"
@@ -159,9 +159,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "3.1.9"
+version = "3.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6aad2534fad53df1cc12519c5cda696dd3e20e6118a027e24054aea14a0bdcbe"
+checksum = "7c167e37342afc5f33fd87bbc870cedd020d2a6dffa05d45ccd9241fbdd146db"
 dependencies = [
  "atty",
  "bitflags",
@@ -301,7 +301,7 @@ checksum = "3ee2393c4a91429dffb4bedf19f4d6abf27d8a732c8ce4980305d782e5426d57"
 [[package]]
 name = "devicemapper"
 version = "0.32.0"
-source = "git+https://github.com/stratis-storage/devicemapper-rs?branch=master#fe4dadbb08e6253f5ba3dc431aff83f0d0f820d7"
+source = "git+https://github.com/stratis-storage/devicemapper-rs?branch=master#f5c73f279b21dac93c670a85c303b0a455655597"
 dependencies = [
  "bitflags",
  "devicemapper-sys",
@@ -313,7 +313,7 @@ dependencies = [
 [[package]]
 name = "devicemapper-sys"
 version = "0.1.2"
-source = "git+https://github.com/stratis-storage/devicemapper-rs?branch=master#fe4dadbb08e6253f5ba3dc431aff83f0d0f820d7"
+source = "git+https://github.com/stratis-storage/devicemapper-rs?branch=master#f5c73f279b21dac93c670a85c303b0a455655597"
 dependencies = [
  "bindgen",
  "nix",
@@ -357,6 +357,7 @@ dependencies = [
  "thinp",
  "threadpool",
  "toml",
+ "walkdir",
  "zstd",
 ]
 
@@ -946,6 +947,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef703b7cb59335eae2eb93ceb664c0eb7ea6bf567079d843e09420219668e072"
 
 [[package]]
+name = "same-file"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
+dependencies = [
+ "winapi-util",
+]
+
+[[package]]
 name = "scopeguard"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1067,7 +1077,6 @@ checksum = "b1141d4d61095b28419e22cb0bbf02755f5e54e0526f97f1e3d1d160e60885fb"
 [[package]]
 name = "thinp"
 version = "0.1.0"
-source = "git+https://github.com/jthornber/thin-provisioning-tools.git?branch=main#11d03d0a920f82b01d7e95dc5340c4b9139f32e5"
 dependencies = [
  "anyhow",
  "atty",
@@ -1162,6 +1171,17 @@ name = "version_check"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
+
+[[package]]
+name = "walkdir"
+version = "2.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "808cf2735cd4b6866113f648b791c6adc5714537bc222d9347bb203386ffda56"
+dependencies = [
+ "same-file",
+ "winapi",
+ "winapi-util",
+]
 
 [[package]]
 name = "wasi"

@@ -32,6 +32,7 @@ pub struct StreamConfig {
     pub source_path: String,
     pub pack_time: toml::value::Datetime,
     pub size: u64,
+    pub mapped_size: u64,
     pub packed_size: u64,
     pub thin_id: Option<u32>,
 }

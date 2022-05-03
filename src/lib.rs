@@ -16,6 +16,7 @@ pub mod run_iter;
 pub mod slab;
 pub mod splitter;
 pub mod stream;
+pub mod stream_builders;
 pub mod thin_metadata;
 pub mod unpack;
 pub mod verify;

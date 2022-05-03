@@ -15,35 +15,38 @@ use dm_archive::verify;
 //-----------------------
 
 fn mk_report() -> Arc<Report> {
+    /*
     if atty::is(atty::Stream::Stdout) {
         Arc::new(mk_progress_bar_report())
     } else {
         Arc::new(mk_simple_report())
     }
+    */
+    Arc::new(mk_simple_report())
 }
 
 fn main_() -> Result<()> {
     let default_archive = match env::var("DM_ARCHIVE_DIR") {
         Err(_) => String::new(),
-        Ok(s) => s
+        Ok(s) => s,
     };
 
     let archive_arg = if default_archive.is_empty() {
         Arg::new("ARCHIVE")
-        .help("Specify archive directory")
-        .required(true)
-        .long("archive")
-        .short('a')
-        .value_name("ARCHIVE")
-        .takes_value(true)
+            .help("Specify archive directory")
+            .required(true)
+            .long("archive")
+            .short('a')
+            .value_name("ARCHIVE")
+            .takes_value(true)
     } else {
         Arg::new("ARCHIVE")
-        .help("Specify archive directory")
-        .default_value(&default_archive)
-        .long("archive")
-        .short('a')
-        .value_name("ARCHIVE")
-        .takes_value(true)
+            .help("Specify archive directory")
+            .default_value(&default_archive)
+            .long("archive")
+            .short('a')
+            .value_name("ARCHIVE")
+            .takes_value(true)
     };
 
     let stream_arg = Arg::new("STREAM")
@@ -106,6 +109,16 @@ fn main_() -> Result<()> {
                         .required(false)
                         .long("delta-stream")
                         .value_name("DELTA_STREAM")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::new("DELTA_DEVICE")
+                        .help(
+                            "Specify the device that contains an older version of this thin device",
+                        )
+                        .required(false)
+                        .long("delta-device")
+                        .value_name("DELTA_DEVICE")
                         .takes_value(true),
                 ),
         )
