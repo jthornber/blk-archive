@@ -33,32 +33,36 @@ use crate::thin_metadata::*;
 
 //-----------------------------------------
 
-fn all_same(iov: &IoVec) -> (u8, u64, bool) {
+fn iov_len_(iov: &IoVec) -> u64 {
     let mut len = 0;
-    let mut same = true;
-    let first_b = iov[0][0];
-
-    for b in iov[0] {
-        if *b != first_b {
-            same = false;
-            break;
-        }
+    for v in iov {
+        len += v.len() as u64;
     }
-    len += iov[0].len();
 
-    for v in iov.iter().skip(1) {
-        if same {
+    len
+}
+
+fn first_b_(iov: &IoVec) -> Option<u8> {
+    for v in iov.iter().skip_while(|v| v.is_empty()) {
+        return Some(v[0]);
+    }
+
+    None
+}
+
+fn all_same(iov: &IoVec) -> Option<u8> {
+    if let Some(first_b) = first_b_(iov) {
+        for v in iov.iter() {
             for b in *v {
                 if *b != first_b {
-                    same = false;
-                    break;
+                    return None;
                 }
             }
         }
-        len += v.len();
+        Some(first_b)
+    } else {
+        None
     }
-
-    (first_b, len as u64, same)
 }
 
 //-----------------------------------------
@@ -249,15 +253,29 @@ impl DedupHandler {
         Ok(me)
     }
 
+    fn handle_gap(&mut self, len: u64) -> Result<()> {
+        self.add_stream_entry(&MapEntry::Unmapped { len }, len)?;
+        self.maybe_complete_stream()?;
+
+        Ok(())
+    }
+
+    fn handle_ref(&mut self, len: u64) -> Result<()> {
+        self.add_stream_entry(&MapEntry::Ref { len }, len)?;
+        self.maybe_complete_stream()?;
+
+        Ok(())
+    }
 }
 
 impl IoVecHandler for DedupHandler {
     fn handle_data(&mut self, iov: &IoVec) -> Result<()> {
         self.nr_chunks += 1;
-        let (first_byte, len, same) = all_same(iov);
+        let len = iov_len_(iov);
+        // let (first_byte, len, same) = all_same(iov);
         self.mapped_size += len;
 
-        if same {
+        if let Some(first_byte) = all_same(iov) {
             self.fill_size += len;
             self.add_stream_entry(
                 &MapEntry::Fill {
@@ -304,14 +322,7 @@ impl IoVecHandler for DedupHandler {
         Ok(())
     }
 
-    fn handle_gap(&mut self, len: u64) -> Result<()> {
-        self.add_stream_entry(&MapEntry::Unmapped { len }, len)?;
-        self.maybe_complete_stream()?;
-
-        Ok(())
-    }
-
-/*
+    /*
     fn handle(&mut self, e: &MapEntry) -> Result<()> {
         match e {
             Fill { byte, len } => self.handle_fill(*byte, *len),
@@ -458,7 +469,7 @@ impl Packer {
         self.report.progress(0);
         let start_time: DateTime<Utc> = Utc::now();
 
-        let mut total_read = 0;
+        let mut total_read = 0u64;
         for chunk in &mut self.it {
             match chunk? {
                 Chunk::Mapped(buffer) => {
@@ -469,18 +480,13 @@ impl Packer {
                         .progress(((100 * total_read) / self.mapped_size) as u8);
                 }
                 Chunk::Unmapped(len) => {
-                    /*
-                    let builder = self.mapping_builder.lock().unwrap();
-                    builder.next(MapEntry::Unmapped { len: *len }, *len, w);
-                    */
+                    assert!(len > 0);
                     splitter.next_break(len, &mut handler)?;
+                    handler.handle_gap(len)?;
                 }
                 Chunk::Ref(len) => {
-                    /*
-                    let builder = self.mapping_builder.lock().unwrap();
-                    builder.next(MapEntry::Ref { len: *len }, *len, w);
-                    */
                     splitter.next_break(len, &mut handler)?;
+                    handler.handle_ref(len)?;
                 }
             }
         }
@@ -491,12 +497,15 @@ impl Packer {
         let elapsed = end_time - start_time;
         let elapsed = elapsed.num_milliseconds() as f64 / 1000.0;
 
+        self.report.info(&format!("elapsed          : {}", elapsed));
         self.report
             .info(&format!("stream id        : {}", stream_id));
         self.report
             .info(&format!("file size        : {:.2}", Size(self.input_size)));
         self.report
             .info(&format!("mapped size      : {:.2}", Size(self.mapped_size)));
+        self.report
+            .info(&format!("total read       : {:.2}", Size(total_read)));
         self.report.info(&format!(
             "fills size       : {:.2}",
             Size(handler.fill_size)
@@ -622,56 +631,6 @@ fn thin_packer(
     ))
 }
 
-/*
-fn is_hidden(entry: &DirEntry) -> bool {
-    entry
-        .file_name()
-        .to_str()
-        .map(|s| s.starts_with("."))
-        .unwrap_or(false)
-}
-
-fn is_config(entry: &DirEntry) -> bool {
-    entry
-        .file_name()
-        .to_str()
-        .map(|s| s == "config.toml")
-        .unwrap_or(false)
-}
-
-fn containing_dir(entry: &DirEntry) -> String {
-    entry
-        .path()
-        .parent()
-        .unwrap()
-        .file_name()
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string()
-}
-
-fn find_stream(thin_id: u32) -> Result<Option<String>> {
-    for entry in WalkDir::new("streams")
-        .into_iter()
-        .filter_entry(|e| !is_hidden(e))
-    {
-        let entry = entry?;
-        if is_config(&entry) {
-            let stream_id = containing_dir(&entry);
-            let config = config::read_stream_config(&stream_id)?;
-            if let Some(actual_thin_id) = config.thin_id {
-                if thin_id == actual_thin_id {
-                    return Ok(Some(stream_id));
-                }
-            }
-        }
-    }
-
-    Ok(None)
-}
-*/
-
 // FIXME: slow
 fn open_thin_stream(stream_id: &str) -> Result<SlabFile> {
     Ok(SlabFileBuilder::open(stream_path(&stream_id))
@@ -764,7 +723,7 @@ pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     env::set_current_dir(&archive_dir)?;
     let config = config::read_config(".")?;
 
-    report.set_title(&format!("Packing {} ...", input_file.display()));
+    report.set_title(&format!("Building packer {} ...", input_file.display()));
 
     let hashes_file = Arc::new(Mutex::new(
         SlabFileBuilder::open(hashes_path())
@@ -776,7 +735,7 @@ pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
 
     let packer = if let Some((delta_stream, delta_device)) = get_delta_args(matches)? {
         thin_delta_packer(
-            report,
+            report.clone(),
             &input_file,
             input_name,
             &config,
@@ -785,11 +744,12 @@ pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
             hashes_file.clone(),
         )?
     } else if is_thin_device(&input_file)? {
-        thin_packer(report, &input_file, input_name, &config)?
+        thin_packer(report.clone(), &input_file, input_name, &config)?
     } else {
-        thick_packer(report, &input_file, input_name, &config)?
+        thick_packer(report.clone(), &input_file, input_name, &config)?
     };
 
+    report.set_title(&format!("Packing {} ...", input_file.display()));
     packer.pack(hashes_file)
 }
 

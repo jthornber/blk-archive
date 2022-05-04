@@ -122,7 +122,6 @@ fn read_info(metadata: &Path, thin_id: u32) -> Result<ThinInfo> {
         let mut path = vec![];
         let details: BTreeMap<u64, DeviceDetail> =
             btree_to_map(&mut path, engine.clone(), true, sb.details_root)?;
-        eprintln!("details: {:?}", details);
         let thin_id = thin_id as u64;
         if let Some(d) = details.get(&thin_id) {
             *d
@@ -175,7 +174,6 @@ fn read_delta_info(metadata: &Path, old_thin_id: u32, new_thin_id: u32) -> Resul
         let mut path = vec![];
         let details: BTreeMap<u64, DeviceDetail> =
             btree_to_map(&mut path, engine.clone(), true, sb.details_root)?;
-        eprintln!("details: {:?}", details);
         let thin_id = new_thin_id as u64;
         if let Some(d) = details.get(&thin_id) {
             *d
@@ -377,14 +375,12 @@ pub fn read_thin_mappings<P: AsRef<Path>>(thin: P) -> Result<ThinInfo> {
 //---------------------------------
 
 fn get_thin_name<P: AsRef<Path>>(thin: P, dm_devs: &DevMap) -> Result<DmNameBuf> {
-    eprintln!("v");
     let thin = OpenOptions::new()
         .read(true)
         .write(false)
         .create(false)
         // .custom_flags(nix::fcntl::OFlag::O_EXCL as i32)
         .open(thin)?;
-    eprintln!("^");
 
     let metadata = thin.metadata()?;
 
@@ -396,7 +392,9 @@ fn get_thin_name<P: AsRef<Path>>(thin: P, dm_devs: &DevMap) -> Result<DmNameBuf>
     let rdev = metadata.rdev();
     let thin_major = (rdev >> 8) as u32;
     let thin_minor = (rdev & 0xff) as u32;
-    Ok(DmNameBuf::from(dm_devs.get(&(thin_major, thin_minor)).unwrap().clone()))
+    Ok(DmNameBuf::from(
+        dm_devs.get(&(thin_major, thin_minor)).unwrap().clone(),
+    ))
 }
 
 fn get_thin_details_(thin_id: &DevId, dm: &mut DM) -> Result<ThinDetails> {
@@ -410,10 +408,10 @@ pub fn read_thin_delta<P: AsRef<Path>>(old_thin: P, new_thin: P) -> Result<Delta
     let mut dm = DM::new()?;
     let dm_devs = collect_dm_devs(&mut dm)?;
 
-    let old_name = get_thin_name(old_thin, &dm_devs).context("unable to identify --delta-device")?;
+    let old_name =
+        get_thin_name(old_thin, &dm_devs).context("unable to identify --delta-device")?;
     let new_name = get_thin_name(new_thin, &dm_devs).context("unable to identify input file")?;
 
-    eprintln!("v");
     let old_thin_details = get_thin_details_(&DevId::Name(&old_name), &mut dm)?;
     let new_thin_details = get_thin_details_(&DevId::Name(&new_name), &mut dm)?;
 
@@ -441,7 +439,6 @@ pub fn read_thin_delta<P: AsRef<Path>>(old_thin: P, new_thin: P) -> Result<Delta
     // Parse thin metadata
     dm.target_msg(&pool_id, None, "reserve_metadata_snap")?;
     let r = read_delta_info(&metadata_path, old_thin_details.id, new_thin_details.id);
-    eprintln!("^");
     dm.target_msg(&pool_id, None, "release_metadata_snap")?;
 
     r

@@ -70,9 +70,7 @@ impl MappingBuilder {
             Partial { begin, end } => {
                 self.vm_state.encode_partial(*begin, *end, instrs)?;
             }
-            Ref { .. } => {
-                return Err(anyhow!("MappingBuilder does not support Ref"))
-            }
+            Ref { .. } => return Err(anyhow!("MappingBuilder does not support Ref")),
         }
 
         self.entries_emitted += 1;
@@ -161,7 +159,7 @@ pub struct DeltaBuilder {
 
     // FIXME: wrap these two up together, lru cache, share somehow with pack?
     hashes_file: Arc<Mutex<SlabFile>>,
-    slabs: BTreeMap<u32, Arc<ByIndex>>,  // FIXME: why an Arc if they're not shared
+    slabs: BTreeMap<u32, Arc<ByIndex>>, // FIXME: why an Arc if they're not shared?
 
     builder: MappingBuilder,
 }
@@ -177,10 +175,22 @@ impl DeltaBuilder {
         }
     }
 
-    fn get_index(&mut self, slab: u32) -> Result<Arc<ByIndex>> {
+    fn get_index_(&mut self, slab: u32) -> Result<Arc<ByIndex>> {
         let mut hashes_file = self.hashes_file.lock().unwrap();
         let hashes = hashes_file.read(slab)?;
         Ok(Arc::new(ByIndex::new(hashes.to_vec())?)) // FIXME: redundant copy?
+    }
+
+    fn get_index(&mut self, slab: u32) -> Result<Arc<ByIndex>> {
+        let index = if let Some(index) = self.slabs.get(&slab) {
+            index.clone()
+        } else {
+            let r = self.get_index_(slab)?;
+            self.slabs.insert(slab, r.clone());
+            r
+        };
+
+        Ok(index)
     }
 
     fn entry_len(&mut self, e: &MapEntry) -> Result<u64> {
@@ -207,7 +217,12 @@ impl DeltaBuilder {
         }
     }
 
-    fn split_entry(&mut self, e: &MapEntry, entry_len: u64, split_point: u64) -> (MapEntry, MapEntry) {
+    fn split_entry(
+        &mut self,
+        e: &MapEntry,
+        entry_len: u64,
+        split_point: u64,
+    ) -> (MapEntry, MapEntry) {
         use MapEntry::*;
         assert!(split_point < entry_len);
 
@@ -229,7 +244,10 @@ impl DeltaBuilder {
                 },
             ),
             Data { .. } => (
-                Partial { begin: 0, end: split_point as u32 },
+                Partial {
+                    begin: 0,
+                    end: split_point as u32,
+                },
                 Partial {
                     begin: split_point as u32,
                     end: entry_len as u32,
@@ -238,17 +256,19 @@ impl DeltaBuilder {
             Partial { begin, end } => (
                 Partial {
                     begin: *begin as u32,
-                    end: end + split_point as u32,
+                    end: *begin + split_point as u32,
                 },
                 Partial {
-                    begin: end + split_point as u32,
-                    end: *end
-                }
+                    begin: *begin + split_point as u32,
+                    end: *end,
+                },
             ),
             Ref { len } => (
                 Ref { len: split_point },
-                Ref { len: *len - split_point },
-            )
+                Ref {
+                    len: entry_len - split_point,
+                },
+            ),
         }
     }
 
@@ -257,10 +277,8 @@ impl DeltaBuilder {
 
         if maybe_entry.is_none() {
             maybe_entry = match self.old_entries.next() {
-                Some(re) => {
-                    Some(re?)
-                },
-                None => { None }
+                Some(re) => Some(re?),
+                None => None,
             };
         }
 
@@ -281,13 +299,13 @@ impl DeltaBuilder {
                         let (e1, e2) = self.split_entry(&e, e_len, remaining);
                         self.builder.next(&e1, remaining, w)?;
                         self.old_entry = Some(e2);
-                        remaining -= len;
+                        remaining = 0;
                     } else {
                         self.builder.next(&e, e_len, w)?;
                         remaining -= e_len;
                     }
-                },
-                None => { return Err(anyhow!("expected short stream")) }
+                }
+                None => return Err(anyhow!("expected short stream")),
             }
         }
         Ok(())
@@ -306,12 +324,12 @@ impl DeltaBuilder {
                     if remaining < e_len {
                         let (_, e2) = self.split_entry(&e, e_len, remaining);
                         self.old_entry = Some(e2);
-                        remaining -= len;
+                        remaining = 0;
                     } else {
                         remaining -= e_len;
                     }
-                },
-                None => { return Err(anyhow!("expected short stream")) }
+                }
+                None => return Err(anyhow!("expected short stream")),
             }
         }
         Ok(())
@@ -323,7 +341,7 @@ impl Builder for DeltaBuilder {
         use MapEntry::*;
 
         match e {
-            Unmapped { len } => self.emit_old(*len, w),
+            Ref { len } => self.emit_old(*len, w),
             _ => {
                 self.skip_old(len)?;
                 self.builder.next(e, len, w)

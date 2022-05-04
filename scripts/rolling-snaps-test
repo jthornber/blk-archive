@@ -36,7 +36,7 @@ pack_delta() {
 
 	echo Packing delta $2 -> $1
 	echo $cmd pack -a $archive /dev/test-vg/$1 --delta-stream `get_id $2` --delta-device $2
-	$cmd pack -a $archive /dev/test-vg/$1 --delta-stream `get_id $2` --delta-device /dev/test-vg/$2
+ 	time $cmd pack -a $archive /dev/test-vg/$1 --delta-stream `get_id $2` --delta-device /dev/test-vg/$2
 }
 
 get_id() {
@@ -54,8 +54,8 @@ remove() {
 
 cycle() {
 	pack $1
-	# verify $1
-	# remove $1
+	verify $1
+	remove $1
 }
 
 #-----------------------
@@ -84,15 +84,20 @@ git clone ~ejt/work/RedHat/riscv-kernel/ linux
 cd linux
 pushd
 
-# pack v5.0
+pack v5.0
 # verify v5.0
 
-# pack_delta v5.1 v5.0
-# verify v5.1
-# remove v5.0
+pack_delta v5.1 v5.0
+# cargo flamegraph -- pack -a $archive /dev/test-vg/v5.1 --delta-stream `get_id v5.0` --delta-device /dev/test-vg/v.50
+verify v5.1
+remove v5.0
 
-for f in v5.0 v5.1 v5.2 # v5.3 v5.4 v5.5 v5.6 v5.7 v5.8 v5.9 v5.10 v5.11 v5.12 v5.13
-do
-	cycle $f
-done
+pack_delta v5.2 v5.1
+verify v5.2
+remove v5.1
+
+# for f in v5.0 v5.1 v5.2 # v5.3 v5.4 v5.5 v5.6 v5.7 v5.8 v5.9 v5.10 v5.11 v5.12 v5.13
+# do
+	# cycle $f
+# done
 

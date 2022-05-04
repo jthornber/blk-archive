@@ -196,13 +196,10 @@ impl Splitter for ContentSensitiveSplitter {
         Ok(())
     }
 
-    fn next_break(&mut self, len: u64, handler: &mut dyn IoVecHandler) -> Result<()> {
+    fn next_break(&mut self, _len: u64, handler: &mut dyn IoVecHandler) -> Result<()> {
         let iov = self.consume_all();
         if !iov.is_empty() {
             handler.handle_data(&iov)?;
-            if len > 0 {
-                handler.handle_gap(len)?;
-            }
             self.drop_old_blocks();
         }
 
