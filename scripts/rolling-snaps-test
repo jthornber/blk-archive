@@ -58,6 +58,15 @@ cycle() {
 	remove $1
 }
 
+pack_deltas() {
+	while (( "$#" > 1 )); do
+		pack_delta $2 $1
+		verify $2
+		remove $1
+		shift 1
+	done
+}
+
 #-----------------------
 
 echo Cleaning up from earlier run ...
@@ -85,19 +94,4 @@ cd linux
 pushd
 
 pack v5.0
-# verify v5.0
-
-pack_delta v5.1 v5.0
-# cargo flamegraph -- pack -a $archive /dev/test-vg/v5.1 --delta-stream `get_id v5.0` --delta-device /dev/test-vg/v.50
-verify v5.1
-remove v5.0
-
-pack_delta v5.2 v5.1
-verify v5.2
-remove v5.1
-
-# for f in v5.0 v5.1 v5.2 # v5.3 v5.4 v5.5 v5.6 v5.7 v5.8 v5.9 v5.10 v5.11 v5.12 v5.13
-# do
-	# cycle $f
-# done
-
+pack_deltas v5.0 v5.1 v5.2 v5.3 v5.4 v5.5 v5.6 v5.7 v5.8 v5.9 v5.10 v5.11 v5.12 v5.13
