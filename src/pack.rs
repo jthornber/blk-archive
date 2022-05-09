@@ -481,11 +481,11 @@ impl Packer {
                 }
                 Chunk::Unmapped(len) => {
                     assert!(len > 0);
-                    splitter.next_break(len, &mut handler)?;
+                    splitter.next_break(&mut handler)?;
                     handler.handle_gap(len)?;
                 }
                 Chunk::Ref(len) => {
-                    splitter.next_break(len, &mut handler)?;
+                    splitter.next_break(&mut handler)?;
                     handler.handle_ref(len)?;
                 }
             }
@@ -530,7 +530,7 @@ impl Packer {
         self.report
             .info(&format!("stream written   : {:.2}", Size(stream_written)));
 
-        let ratio = (total_read as f64) / ((data_written + hashes_written + stream_written) as f64);
+        let ratio = (self.mapped_size as f64) / ((data_written + hashes_written + stream_written) as f64);
         self.report
             .info(&format!("ratio            : {:.2}", ratio));
         self.report.info(&format!(

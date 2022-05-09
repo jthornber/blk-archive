@@ -92,36 +92,6 @@ fn test_delta_as_i12() {
     }
 }
 
-/*
-fn slab_delta_cost(lhs: u32, rhs: u32) -> usize {
-    let delta: i64 = (rhs as i64) - (lhs as i64);
-    if delta >= I4_MIN && delta <= I4_MAX {
-        1
-    } else if delta >= I12_MIN && delta <= I12_MAX {
-        2
-    } else if rhs <= u16::MAX as u32 {
-        3
-    } else {
-        5
-    }
-}
-
-fn offset_delta_cost(lhs: u32, rhs: u32) -> usize {
-    let delta: i64 = (rhs as i64) - (lhs as i64);
-    if delta >= I4_MIN && delta <= I4_MAX {
-        1
-    } else if rhs <= 16 {
-        1
-    } else if delta >= I12_MIN && delta <= I12_MAX {
-        2
-    } else if rhs <= 4096 {
-        2
-    } else {
-        3
-    }
-}
-*/
-
 //-----------------------------------------
 
 // FIXME: when encoding it will be common to switch to a different
@@ -537,27 +507,10 @@ impl VMState {
         self.stack[STACK_SIZE - 1] = tmp;
     }
 
-    /*
-    fn bytes_cost(r1: &Register, r2: &Register) -> usize {
-        slab_delta_cost(r1.slab, r2.slab) +
-            offset_delta_cost(r1.offset, r2.offset)
-    }
-    */
-
     fn distance_cost(r1: &Register, r2: &Register) -> usize {
         ((r2.slab as i64 - r1.slab as i64).abs() * 1024
             + (r2.offset as i64 - r1.offset as i64).abs()) as usize
     }
-
-    /*
-    fn exact_cost(r1: &Register, r2: &Register) -> usize {
-        if r1 == r2 {
-            0
-        } else {
-            1024
-        }
-    }
-    */
 
     // Finds the register that would take the fewest bytes to encode
     // FIXME: so slow

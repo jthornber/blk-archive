@@ -34,7 +34,7 @@ pack_delta() {
 	checkout $1
 	snapshot $1
 
-	echo Packing delta $2 -> $1
+	echo Packing delta $2 -\> $1
 	echo $cmd pack -a $archive /dev/test-vg/$1 --delta-stream `get_id $2` --delta-device $2
  	time $cmd pack -a $archive /dev/test-vg/$1 --delta-stream `get_id $2` --delta-device /dev/test-vg/$2
 }

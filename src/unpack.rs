@@ -32,6 +32,7 @@ struct Unpacker {
     stream_file: SlabFile,
 
     slabs: BTreeMap<u32, Arc<SlabInfo>>,
+    partial: Option<(u32, u32)>,
 }
 
 impl Unpacker {
@@ -48,6 +49,7 @@ impl Unpacker {
             hashes_file,
             stream_file,
             slabs: BTreeMap::new(),
+            partial: None,
         })
     }
 
@@ -98,6 +100,7 @@ impl Unpacker {
 
         match e {
             Fill { byte, len } => {
+                assert!(self.partial.is_none());
                 // len may be very big, so we have to be prepared to write in chunks.
                 // FIXME: if we're writing to a file would this be zeroes anyway?  fallocate?
                 const MAX_BUFFER: u64 = 16 * 1024 * 1024;
@@ -113,6 +116,7 @@ impl Unpacker {
                 }
             }
             Unmapped { len } => {
+                assert!(self.partial.is_none());
                 w.seek(std::io::SeekFrom::Current(*len as i64))?;
             }
             Data {
@@ -120,25 +124,32 @@ impl Unpacker {
                 offset,
                 nr_entries,
             } => {
-                let info = self.get_info(*slab)?;
-                let data = self.data_file.read(*slab)?;
-                let (_expected_hash, offset, _len) = info.offsets[*offset as usize];
-                let data_begin = offset as usize;
-                let (_expected_hash, offset, len) =
-                    info.offsets[(offset as usize) + *nr_entries as usize];
-                let data_end = offset as usize + len as usize;
-                assert!(data_end <= data.len());
+                    let info = self.get_info(*slab)?;
+                    let data = self.data_file.read(*slab)?;
+                    let (_expected_hash, offset, _len) = info.offsets[*offset as usize];
+                    let data_begin = offset as usize;
+                    let (_expected_hash, offset, len) =
+                        info.offsets[(offset as usize) + *nr_entries as usize];
+                    let data_end = offset as usize + len as usize;
+                    assert!(data_end <= data.len());
 
-                // Copy data
-                w.write_all(&data[data_begin..data_end])?;
+                    // Copy data
+                    if let Some((begin, end)) = self.partial {
+                        let data_end = data_begin + end as usize;
+                        let data_begin = data_begin + begin as usize;
+                        w.write_all(&data[data_begin..data_end])?;
+                        self.partial = None;
+                    } else {
+                        w.write_all(&data[data_begin..data_end])?;
+                    }
             }
-            Partial {
-                ..
-            } => {
-                todo!();
+            Partial { begin, end } => {
+                assert!(self.partial.is_none());
+                self.partial = Some((*begin, *end));
             }
             Ref { .. } => {
-                todo!();
+                // Can't get here.
+                return Err(anyhow!("unexpected MapEntry::Ref (shouldn't be possible)"));
             }
         }
 

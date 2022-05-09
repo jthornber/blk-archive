@@ -210,7 +210,7 @@ impl Splitter for ContentSensitiveSplitter {
     }
 
     fn complete(mut self, handler: &mut dyn IoVecHandler) -> Result<()> {
-        self.next_break(0, handler)?;
+        self.next_break(handler)?;
         handler.complete()?;
         Ok(())
     }

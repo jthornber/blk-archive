@@ -263,7 +263,7 @@ impl DeltaBuilder {
                     end: *end,
                 },
             ),
-            Ref { len } => (
+            Ref { .. } => (
                 Ref { len: split_point },
                 Ref {
                     len: entry_len - split_point,
