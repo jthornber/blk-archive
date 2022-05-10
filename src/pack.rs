@@ -43,7 +43,7 @@ fn iov_len_(iov: &IoVec) -> u64 {
 }
 
 fn first_b_(iov: &IoVec) -> Option<u8> {
-    for v in iov.iter().skip_while(|v| v.is_empty()) {
+    if let Some(v) = iov.iter().find(|v| !v.is_empty()) {
         return Some(v[0]);
     }
 
@@ -633,9 +633,9 @@ fn thin_packer(
 
 // FIXME: slow
 fn open_thin_stream(stream_id: &str) -> Result<SlabFile> {
-    Ok(SlabFileBuilder::open(stream_path(&stream_id))
+    SlabFileBuilder::open(stream_path(stream_id))
         .build()
-        .context("couldn't open old stream file")?)
+        .context("couldn't open old stream file")
 }
 
 fn thin_delta_packer(

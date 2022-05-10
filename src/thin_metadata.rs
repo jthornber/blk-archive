@@ -194,7 +194,7 @@ fn read_delta_info(metadata: &Path, old_thin_id: u32, new_thin_id: u32) -> Resul
 
     let new_root = roots.get(&(new_thin_id as u64)).unwrap();
     let new_mappings: BTreeMap<u64, BlockTime> =
-        btree_to_map(&mut path, engine.clone(), true, *new_root)?;
+        btree_to_map(&mut path, engine, true, *new_root)?;
 
     let mut additions = RoaringBitmap::default();
     let mut removals = RoaringBitmap::default();
@@ -211,7 +211,7 @@ fn read_delta_info(metadata: &Path, old_thin_id: u32, new_thin_id: u32) -> Resul
         }
     }
 
-    for (k, _) in &new_mappings {
+    for k in new_mappings.keys() {
         if old_mappings.get(k).is_none() {
             additions.insert(*k as u32);
         }
@@ -309,7 +309,7 @@ fn get_table(dm: &mut DM, dev: &DevId, expected_target_type: &str) -> Result<Str
     Ok(args.to_string())
 }
 
-fn get_thin_details<'a, P: AsRef<Path>>(
+fn get_thin_details<P: AsRef<Path>>(
     thin: P,
     dm_devs: &DevMap,
     dm: &mut DM,
@@ -392,13 +392,13 @@ fn get_thin_name<P: AsRef<Path>>(thin: P, dm_devs: &DevMap) -> Result<DmNameBuf>
     let rdev = metadata.rdev();
     let thin_major = (rdev >> 8) as u32;
     let thin_minor = (rdev & 0xff) as u32;
-    Ok(DmNameBuf::from(
+    Ok(
         dm_devs.get(&(thin_major, thin_minor)).unwrap().clone(),
-    ))
+    )
 }
 
 fn get_thin_details_(thin_id: &DevId, dm: &mut DM) -> Result<ThinDetails> {
-    let thin_args = get_table(dm, &thin_id, "thin")?;
+    let thin_args = get_table(dm, thin_id, "thin")?;
     let (_, thin_details) =
         parse_thin_table(&thin_args).map_err(|_| anyhow!("couldn't parse thin table"))?;
     Ok(thin_details)

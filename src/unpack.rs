@@ -1,43 +1,49 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::ArgMatches;
 use io::{Seek, Write};
-use nom::{bytes::complete::*, multi::*, number::complete::*, IResult};
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
+use std::fs::OpenOptions;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
 use thinp::report::*;
 
+use crate::chunkers::*;
 use crate::config;
-use crate::hash::*;
+use crate::hash_index::*;
 use crate::pack::SLAB_SIZE_TARGET;
 use crate::paths::*;
+use crate::run_iter::*;
 use crate::slab::*;
 use crate::stream;
 use crate::stream::*;
+use crate::thin_metadata::*;
 
 //-----------------------------------------
 
-#[allow(dead_code)]
-struct SlabInfo {
-    offsets: Vec<(Hash256, u32, u32)>,
+// Unpack and verify do different things with the data.
+trait UnpackDest {
+    fn handle_mapped(&mut self, data: &[u8]) -> Result<()>;
+    fn handle_unmapped(&mut self, len: u64) -> Result<()>;
 }
 
-#[allow(dead_code)]
-struct Unpacker {
+struct Unpacker<D: UnpackDest> {
     data_file: SlabFile,
     hashes_file: SlabFile,
     stream_file: SlabFile,
 
-    slabs: BTreeMap<u32, Arc<SlabInfo>>,
+    // FIXME: make this an lru cache
+    slabs: BTreeMap<u32, Arc<ByIndex>>,
     partial: Option<(u32, u32)>,
+
+    dest: D,
 }
 
-impl Unpacker {
+impl<D: UnpackDest> Unpacker<D> {
     // Assumes current directory is the root of the archive.
-    fn new(stream: &str, cache_nr_entries: usize) -> Result<Self> {
+    fn new(stream: &str, cache_nr_entries: usize, dest: D) -> Result<Self> {
         let data_file = SlabFileBuilder::open(data_path())
             .cache_nr_entries(cache_nr_entries)
             .build()?;
@@ -50,52 +56,26 @@ impl Unpacker {
             stream_file,
             slabs: BTreeMap::new(),
             partial: None,
+            dest,
         })
     }
 
-    // Returns the len of the data entry
-    fn parse_hash_entry(input: &[u8]) -> IResult<&[u8], (Hash256, u32)> {
-        let (input, hash) = take(std::mem::size_of::<Hash256>())(input)?;
-        let hash = Hash256::clone_from_slice(hash);
-        let (input, len) = le_u32(input)?;
-        Ok((input, (hash, len)))
-    }
-
-    fn parse_slab_info(input: &[u8]) -> IResult<&[u8], Vec<(Hash256, u32, u32)>> {
-        let (input, lens) = many0(Self::parse_hash_entry)(input)?;
-
-        let mut r = Vec::with_capacity(lens.len());
-        let mut total = 0;
-        for (h, l) in lens {
-            r.push((h, total, l));
-            total += l;
-        }
-
-        Ok((input, r))
-    }
-
-    fn read_info(&mut self, slab: u32) -> Result<Arc<SlabInfo>> {
-        // Read the hashes slab
+    fn read_info(&mut self, slab: u32) -> Result<ByIndex> {
         let hashes = self.hashes_file.read(slab)?;
-
-        // Find location and length of data
-        let (_, offsets) =
-            Self::parse_slab_info(&hashes).map_err(|_| anyhow!("unable to parse slab hashes"))?;
-
-        Ok(Arc::new(SlabInfo { offsets }))
+        ByIndex::new(hashes.to_vec()) // FIXME: redundant copy?
     }
 
-    fn get_info(&mut self, slab: u32) -> Result<Arc<SlabInfo>> {
+    fn get_info(&mut self, slab: u32) -> Result<Arc<ByIndex>> {
         if let Some(info) = self.slabs.get(&slab) {
             Ok(info.clone())
         } else {
-            let info = self.read_info(slab)?;
+            let info = Arc::new(self.read_info(slab)?);
             self.slabs.insert(slab, info.clone());
             Ok(info)
         }
     }
 
-    fn unpack_entry<W: Seek + Write>(&mut self, e: &MapEntry, w: &mut W) -> Result<()> {
+    fn unpack_entry(&mut self, e: &MapEntry) -> Result<()> {
         use MapEntry::*;
 
         match e {
@@ -107,41 +87,42 @@ impl Unpacker {
                 let mut written = 0;
                 while written < *len {
                     let write_len = std::cmp::min(*len - written, MAX_BUFFER);
-
-                    // FIXME: don't keep initialising this buffer,
-                    // keep a suitable one around instead
                     let bytes: Vec<u8> = vec![*byte; write_len as usize];
-                    w.write_all(&bytes)?;
+                    self.dest.handle_mapped(&bytes[..])?;
                     written += write_len;
                 }
             }
             Unmapped { len } => {
                 assert!(self.partial.is_none());
-                w.seek(std::io::SeekFrom::Current(*len as i64))?;
+                self.dest.handle_unmapped(*len)?;
             }
             Data {
                 slab,
                 offset,
                 nr_entries,
             } => {
-                    let info = self.get_info(*slab)?;
-                    let data = self.data_file.read(*slab)?;
-                    let (_expected_hash, offset, _len) = info.offsets[*offset as usize];
-                    let data_begin = offset as usize;
-                    let (_expected_hash, offset, len) =
-                        info.offsets[(offset as usize) + *nr_entries as usize];
-                    let data_end = offset as usize + len as usize;
-                    assert!(data_end <= data.len());
+                let info = self.get_info(*slab)?;
+                let data = self.data_file.read(*slab)?;
 
-                    // Copy data
-                    if let Some((begin, end)) = self.partial {
-                        let data_end = data_begin + end as usize;
-                        let data_begin = data_begin + begin as usize;
-                        w.write_all(&data[data_begin..data_end])?;
-                        self.partial = None;
-                    } else {
-                        w.write_all(&data[data_begin..data_end])?;
-                    }
+                let (data_begin, data_end) = if *nr_entries == 1 {
+                    let (data_begin, data_end, _expected_hash) = info.get(*offset as usize).unwrap();
+                    (*data_begin as usize, *data_end as usize)
+                } else {
+                    let (data_begin, _data_end, _expected_hash) = info.get(*offset as usize).unwrap();
+                    let (_data_begin, data_end, _expected_hash) =
+                        info.get((*offset as usize) + (*nr_entries as usize) - 1).unwrap();
+                    (*data_begin as usize, *data_end as usize)
+                };
+                assert!(data_end as usize <= data.len());
+
+                if let Some((begin, end)) = self.partial {
+                    let data_end = data_begin + end as usize;
+                    let data_begin = data_begin + begin as usize;
+                    self.dest.handle_mapped(&data[data_begin..data_end])?;
+                    self.partial = None;
+                } else {
+                    self.dest.handle_mapped(&data[data_begin..data_end])?;
+                }
             }
             Partial { begin, end } => {
                 assert!(self.partial.is_none());
@@ -156,7 +137,7 @@ impl Unpacker {
         Ok(())
     }
 
-    pub fn unpack<W: Seek + Write>(&mut self, report: &Arc<Report>, w: &mut W) -> Result<()> {
+    pub fn unpack(&mut self, report: &Arc<Report>) -> Result<()> {
         report.progress(0);
 
         let nr_slabs = self.stream_file.get_nr_slabs();
@@ -168,7 +149,7 @@ impl Unpacker {
             let nr_entries = entries.len();
 
             for (i, e) in entries.iter().enumerate() {
-                self.unpack_entry(e, w)?;
+                self.unpack_entry(e)?;
 
                 if i % 10240 == 0 {
                     // update progress bar
@@ -188,12 +169,28 @@ impl Unpacker {
 
 //-----------------------------------------
 
-pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
+struct WriteDest<W: Write + Seek> {
+    output: W,
+}
+
+impl<W: Write + Seek> UnpackDest for WriteDest<W> {
+    fn handle_mapped(&mut self, data: &[u8]) -> Result<()> {
+        self.output.write_all(data)?;
+        Ok(())
+    }
+
+    fn handle_unmapped(&mut self, len: u64) -> Result<()> {
+        self.output.seek(std::io::SeekFrom::Current(len as i64))?;
+        Ok(())
+    }
+}
+
+pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
     let output_file = Path::new(matches.value_of("OUTPUT").unwrap());
     let stream = matches.value_of("STREAM").unwrap();
 
-    let mut output = fs::OpenOptions::new()
+    let output = fs::OpenOptions::new()
         .read(false)
         .write(true)
         .create(true)
@@ -205,8 +202,209 @@ pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
 
     report.set_title(&format!("Unpacking {} ...", output_file.display()));
-    let mut u = Unpacker::new(stream, cache_nr_entries)?;
-    u.unpack(&report, &mut output)
+    let dest = WriteDest { output };
+    let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
+    u.unpack(&report)
+}
+
+//-----------------------------------------
+
+struct VerifyDest {
+    input_it: Box<dyn Iterator<Item = Result<Chunk>>>,
+    chunk: Option<Chunk>,
+    chunk_offset: u64,
+    total_verified: u64,
+}
+
+impl VerifyDest {
+    fn new(input_it: Box<dyn Iterator<Item = Result<Chunk>>>) -> Self {
+        Self {
+            input_it,
+            chunk: None,
+            chunk_offset: 0,
+            total_verified: 0,
+        }
+    }
+}
+
+impl VerifyDest {
+    fn fail(&self, msg: &str) -> anyhow::Error {
+        anyhow!(format!(
+            "verify failed at offset ~{}: {}",
+            self.total_verified, msg
+        ))
+    }
+
+    fn ensure_chunk(&mut self) -> Result<()> {
+        if self.chunk.is_none() {
+            match self.input_it.next() {
+                Some(rc) => {
+                    self.chunk = Some(rc?);
+                    self.chunk_offset = 0;
+                    Ok(())
+                }
+                None => Err(self.fail("archived stream is longer than expected")),
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    fn peek_data(&mut self, max_len: u64) -> Result<&[u8]> {
+        self.ensure_chunk()?;
+        match &self.chunk {
+            Some(Chunk::Mapped(bytes)) => {
+                let len = std::cmp::min(bytes.len() - self.chunk_offset as usize, max_len as usize);
+                Ok(&bytes[self.chunk_offset as usize..(self.chunk_offset + len as u64) as usize])
+            }
+            Some(Chunk::Unmapped(_)) => Err(self.fail("expected data, got unmapped")),
+            Some(Chunk::Ref(_)) => Err(self.fail("expected data, got ref")),
+            None => Err(self.fail("ensure_chunk() failed")),
+        }
+    }
+
+    fn consume_data(&mut self, len: u64) -> Result<()> {
+        use std::cmp::Ordering::*;
+        match &self.chunk {
+            Some(Chunk::Mapped(bytes)) => {
+                let c_len = bytes.len() as u64 - self.chunk_offset;
+                match c_len.cmp(&len) {
+                    Less => {
+                        return Err(self.fail("bad consume, chunk too short"));
+                    }
+                    Greater => {
+                        self.chunk_offset += len;
+                    }
+                    Equal => {
+                        self.chunk = None;
+                    }
+                }
+            }
+            Some(Chunk::Unmapped(_)) => {
+                return Err(self.fail("bad consume, unexpected unmapped chunk"));
+            }
+            Some(Chunk::Ref(_)) => {
+                return Err(self.fail("bad consume, unexpected ref chunk"));
+            }
+            None => {
+                return Err(self.fail("bad consume, no chunk"));
+            }
+        }
+        Ok(())
+    }
+
+    fn get_unmapped(&mut self, max_len: u64) -> Result<u64> {
+        self.ensure_chunk()?;
+        match &self.chunk {
+            Some(Chunk::Mapped(_)) => Err(self.fail("expected unmapped, got data")),
+            Some(Chunk::Unmapped(len)) => {
+                let len = *len;
+                if len <= max_len {
+                    self.chunk = None;
+                    Ok(len)
+                } else {
+                    self.chunk = Some(Chunk::Unmapped(len - max_len));
+                    Ok(max_len)
+                }
+            }
+            Some(Chunk::Ref(_)) => Err(self.fail("unexpected Ref")),
+            None => Err(self.fail("stream shorter than input")),
+        }
+    }
+}
+
+impl UnpackDest for VerifyDest {
+    fn handle_mapped(&mut self, expected: &[u8]) -> Result<()> {
+        let mut remaining = expected.len() as u64;
+        let mut offset = 0;
+        while remaining > 0 {
+            let actual = self.peek_data(remaining)?;
+            let actual_len = actual.len() as u64;
+            if actual != &expected[offset as usize..(offset + actual_len) as usize] {
+                return Err(self.fail("data mismatch"));
+            }
+            self.consume_data(actual_len)?;
+            remaining -= actual_len;
+            offset += actual_len;
+        }
+        self.total_verified += expected.len() as u64;
+        Ok(())
+    }
+
+    fn handle_unmapped(&mut self, len: u64) -> Result<()> {
+        let mut remaining = len;
+        while remaining > 0 {
+            let len = self.get_unmapped(remaining)?;
+            remaining -= len;
+        }
+        self.total_verified += len;
+        Ok(())
+    }
+}
+
+impl Drop for VerifyDest {
+    fn drop(&mut self) {
+        eprintln!("verified {}", self.total_verified);
+    }
+}
+
+fn thick_verifier(input_file: &Path) -> Result<VerifyDest> {
+    let input = OpenOptions::new()
+        .read(true)
+        .write(false)
+        .open(input_file)
+        .context("couldn't open input file/dev")?;
+    let input_it = Box::new(ThickChunker::new(input, 16 * 1024 * 1024)?);
+    Ok(VerifyDest::new(input_it))
+}
+
+fn thin_verifier(input_file: &Path) -> Result<VerifyDest> {
+    let input = OpenOptions::new()
+        .read(true)
+        .write(false)
+        .open(input_file)
+        .context("couldn't open input file/dev")?;
+    let input_size = thinp::file_utils::file_size(input_file)?;
+
+    let mappings = read_thin_mappings(&input_file)?;
+
+    let run_iter = RunIter::new(
+        mappings.provisioned_blocks,
+        (input_size / (mappings.data_block_size as u64 * 512)) as u32,
+    );
+    let input_it = Box::new(ThinChunker::new(
+        input,
+        run_iter,
+        mappings.data_block_size as u64 * 512,
+    ));
+
+    Ok(VerifyDest::new(input_it))
+}
+
+pub fn run_verify(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
+    let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
+    let input_file = Path::new(matches.value_of("INPUT").unwrap()).canonicalize()?;
+    let stream = matches.value_of("STREAM").unwrap();
+
+    env::set_current_dir(&archive_dir)?;
+
+    let config = config::read_config(".")?;
+    let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
+
+    report.set_title(&format!(
+        "Verifying {} and {} match ...",
+        input_file.display(),
+        &stream
+    ));
+
+    let dest = if is_thin_device(&input_file)? {
+        thin_verifier(&input_file)?
+    } else {
+        thick_verifier(&input_file)?
+    };
+
+    let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
+    u.unpack(&report)
 }
 
 //-----------------------------------------

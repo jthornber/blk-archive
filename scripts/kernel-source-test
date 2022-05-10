@@ -20,7 +20,7 @@ verify() {
 
 cycle() {
 	pack $1
-	# verify $1
+	verify $1
 }
 
 cargo build --release

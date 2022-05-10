@@ -10,7 +10,6 @@ use dm_archive::dump_stream;
 use dm_archive::list;
 use dm_archive::pack;
 use dm_archive::unpack;
-use dm_archive::verify;
 
 //-----------------------
 
@@ -170,10 +169,10 @@ fn main_() -> Result<()> {
             pack::run(sub_matches, report)?;
         }
         Some(("unpack", sub_matches)) => {
-            unpack::run(sub_matches, report)?;
+            unpack::run_unpack(sub_matches, report)?;
         }
         Some(("verify", sub_matches)) => {
-            verify::run(sub_matches, report)?;
+            unpack::run_verify(sub_matches, report)?;
         }
         Some(("list", sub_matches)) => {
             list::run(sub_matches, report)?;

@@ -19,5 +19,4 @@ pub mod stream;
 pub mod stream_builders;
 pub mod thin_metadata;
 pub mod unpack;
-pub mod verify;
 pub mod version;
