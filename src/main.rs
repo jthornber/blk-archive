@@ -14,14 +14,11 @@ use dm_archive::unpack;
 //-----------------------
 
 fn mk_report() -> Arc<Report> {
-    /*
     if atty::is(atty::Stream::Stdout) {
         Arc::new(mk_progress_bar_report())
     } else {
         Arc::new(mk_simple_report())
     }
-    */
-    Arc::new(mk_simple_report())
 }
 
 fn main_() -> Result<()> {

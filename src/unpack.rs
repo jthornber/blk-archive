@@ -165,7 +165,7 @@ impl<D: UnpackDest> Unpacker<D> {
             for (i, e) in entries.iter().enumerate() {
                 self.unpack_entry(e)?;
 
-                if i % 10240 == 0 {
+                if i % 1024 == 0 {
                     // update progress bar
                     let entry_fraction = i as f64 / nr_entries as f64;
                     let slab_fraction = s as f64 / nr_slabs as f64;
