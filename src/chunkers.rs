@@ -1,9 +1,11 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use io::prelude::*;
 use std::fs::File;
+use std::fs::OpenOptions;
 use std::io;
 use std::ops::Range;
 use std::os::unix::fs::FileExt;
+use std::path::Path;
 
 use crate::run_iter::*;
 
@@ -26,8 +28,13 @@ pub struct ThickChunker {
 }
 
 impl ThickChunker {
-    pub fn new(input: File, block_size: usize) -> Result<Self> {
-        let input_size = input.metadata()?.len();
+    pub fn new(input_path: &Path, block_size: usize) -> Result<Self> {
+        let input_size = thinp::file_utils::file_size(input_path)?;
+        let input = OpenOptions::new()
+            .read(true)
+            .write(false)
+            .open(input_path)
+            .context("couldn't open input file/dev")?;
 
         Ok(Self {
             input,

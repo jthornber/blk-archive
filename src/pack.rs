@@ -562,15 +562,10 @@ fn thick_packer(
     input_name: String,
     config: &config::Config,
 ) -> Result<Packer> {
-    let input = OpenOptions::new()
-        .read(true)
-        .write(false)
-        .open(input_file)
-        .context("couldn't open input file/dev")?;
     let input_size = thinp::file_utils::file_size(input_file)?;
 
     let mapped_size = input_size;
-    let input_iter = Box::new(ThickChunker::new(input, 16 * 1024 * 1024)?);
+    let input_iter = Box::new(ThickChunker::new(input_file, 16 * 1024 * 1024)?);
     let thin_id = None;
     let builder = Arc::new(Mutex::new(MappingBuilder::default()));
 

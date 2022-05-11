@@ -360,6 +360,11 @@ impl MapInstruction {
                     let (input, pos) = le_u64(input)?;
                     (input, Pos64 { pos })
                 }
+                7 => {
+                    let (input, begin) = le_u32(input)?;
+                    let (input, end) = le_u32(input)?;
+                    (input, Partial { begin, end })
+                }
                 _ => {
                     // Bad length for unmapped tag
                     fail(input)?
@@ -460,6 +465,11 @@ pub enum MapEntry {
     Partial {
         begin: u32,
         end: u32,
+
+        // These are the data fields
+        slab: u32,
+        offset: u32,
+        nr_entries: u32,
     },
     Ref {
         len: u64,
@@ -482,6 +492,7 @@ const STACK_SIZE: usize = 16;
 pub struct VMState {
     fill: u8,
     stack: [Register; STACK_SIZE],
+    partial: Option<(u32, u32)>,
 }
 
 impl VMState {
@@ -505,6 +516,15 @@ impl VMState {
             self.stack[i] = self.stack[i + 1];
         }
         self.stack[STACK_SIZE - 1] = tmp;
+    }
+
+    fn set_partial(&mut self, begin: u32, end: u32) -> Result<()> {
+        if self.partial.is_some() {
+            return Err(anyhow!("nested partials"));
+        }
+
+        self.partial = Some((begin, end));
+        Ok(())
     }
 
     fn distance_cost(r1: &Register, r2: &Register) -> usize {
@@ -681,8 +701,7 @@ impl VMState {
     }
 
     pub fn encode_partial(&mut self, begin: u32, end: u32, instrs: &mut IVec) -> Result<()> {
-        use MapInstruction::*;
-        instrs.push(Partial { begin, end });
+        instrs.push(MapInstruction::Partial { begin, end });
         Ok(())
     }
 }
@@ -701,17 +720,34 @@ type PosVec = Vec<(u64, usize)>;
 
 impl MappingUnpacker {
     fn emit_run(&mut self, r: &mut Vec<MapEntry>, len: usize) {
+        let p = self.vm_state.partial.take();
         let top = self.vm_state.top();
-        r.push(MapEntry::Data {
-            slab: top.slab,
-            offset: top.offset,
-            nr_entries: len as u32,
-        });
+        if let Some((begin, end)) = p {
+            r.push(MapEntry::Partial {
+                begin,
+                end,
+                slab: top.slab,
+                offset: top.offset,
+                nr_entries: len as u32,
+            });
+        } else {
+            r.push(MapEntry::Data {
+                slab: top.slab,
+                offset: top.offset,
+                nr_entries: len as u32,
+            });
+        }
         top.offset += len as u32;
     }
 
-    fn emit_partial(&mut self, begin: u32, end: u32, r: &mut Vec<MapEntry>) {
-        r.push(MapEntry::Partial { begin, end });
+    fn emit_unmapped(&mut self, len: u64, r: &mut Vec<MapEntry>) {
+        assert!(self.vm_state.partial.is_none());
+        r.push(MapEntry::Unmapped { len });
+    }
+
+    fn emit_fill(&mut self, byte: u8, len: u64, r: &mut Vec<MapEntry>) {
+        assert!(self.vm_state.partial.is_none());
+        r.push(MapEntry::Fill { byte, len });
     }
 
     pub fn unpack(&mut self, buf: &[u8]) -> Result<(EntryVec, PosVec)> {
@@ -735,41 +771,29 @@ impl MappingUnpacker {
                     self.vm_state.fill = byte;
                 }
                 Fill8 { len } => {
-                    entries.push(MapEntry::Fill {
-                        byte: self.vm_state.fill,
-                        len: len as u64,
-                    });
+                    self.emit_fill(self.vm_state.fill, len as u64, &mut entries);
                 }
                 Fill16 { len } => {
-                    entries.push(MapEntry::Fill {
-                        byte: self.vm_state.fill,
-                        len: len as u64,
-                    });
+                    self.emit_fill(self.vm_state.fill, len as u64, &mut entries);
                 }
                 Fill32 { len } => {
-                    entries.push(MapEntry::Fill {
-                        byte: self.vm_state.fill,
-                        len: len as u64,
-                    });
+                    self.emit_fill(self.vm_state.fill, len as u64, &mut entries);
                 }
                 Fill64 { len } => {
-                    entries.push(MapEntry::Fill {
-                        byte: self.vm_state.fill,
-                        len: len as u64,
-                    });
+                    self.emit_fill(self.vm_state.fill, len as u64, &mut entries);
                 }
 
                 Unmapped8 { len } => {
-                    entries.push(MapEntry::Unmapped { len: len as u64 });
+                    self.emit_unmapped(len as u64, &mut entries);
                 }
                 Unmapped16 { len } => {
-                    entries.push(MapEntry::Unmapped { len: len as u64 });
+                    self.emit_unmapped(len as u64, &mut entries);
                 }
                 Unmapped32 { len } => {
-                    entries.push(MapEntry::Unmapped { len: len as u64 });
+                    self.emit_unmapped(len as u64, &mut entries);
                 }
                 Unmapped64 { len } => {
-                    entries.push(MapEntry::Unmapped { len: len as u64 });
+                    self.emit_unmapped(len as u64, &mut entries);
                 }
 
                 Slab16 { slab } => {
@@ -815,7 +839,7 @@ impl MappingUnpacker {
                     positions.push((pos, entries.len()));
                 }
                 Partial { begin, end } => {
-                    self.emit_partial(begin, end, &mut entries);
+                    self.vm_state.set_partial(begin, end)?;
                 }
             }
         }
@@ -894,7 +918,9 @@ impl Iterator for StreamIter {
             }
         }
 
-        Some(Ok(self.entries[self.index]))
+        let r = Some(Ok(self.entries[self.index]));
+        self.index += 1;
+        r
     }
 }
 

@@ -27,6 +27,7 @@ use crate::thin_metadata::*;
 trait UnpackDest {
     fn handle_mapped(&mut self, data: &[u8]) -> Result<()>;
     fn handle_unmapped(&mut self, len: u64) -> Result<()>;
+    fn complete(&mut self) -> Result<()>;
 }
 
 struct Unpacker<D: UnpackDest> {
@@ -102,19 +103,21 @@ impl<D: UnpackDest> Unpacker<D> {
                 nr_entries,
             } => {
                 let info = self.get_info(*slab)?;
-                let data = self.data_file.read(*slab)?;
 
                 let (data_begin, data_end) = if *nr_entries == 1 {
-                    let (data_begin, data_end, _expected_hash) = info.get(*offset as usize).unwrap();
+                    let (data_begin, data_end, _expected_hash) =
+                        info.get(*offset as usize).unwrap();
                     (*data_begin as usize, *data_end as usize)
                 } else {
-                    let (data_begin, _data_end, _expected_hash) = info.get(*offset as usize).unwrap();
-                    let (_data_begin, data_end, _expected_hash) =
-                        info.get((*offset as usize) + (*nr_entries as usize) - 1).unwrap();
+                    let (data_begin, _data_end, _expected_hash) =
+                        info.get(*offset as usize).unwrap();
+                    let (_data_begin, data_end, _expected_hash) = info
+                        .get((*offset as usize) + (*nr_entries as usize) - 1)
+                        .unwrap();
                     (*data_begin as usize, *data_end as usize)
                 };
-                assert!(data_end as usize <= data.len());
 
+                let data = self.data_file.read(*slab)?;
                 if let Some((begin, end)) = self.partial {
                     let data_end = data_begin + end as usize;
                     let data_begin = data_begin + begin as usize;
@@ -124,9 +127,20 @@ impl<D: UnpackDest> Unpacker<D> {
                     self.dest.handle_mapped(&data[data_begin..data_end])?;
                 }
             }
-            Partial { begin, end } => {
+            Partial {
+                begin,
+                end,
+                slab,
+                offset,
+                nr_entries,
+            } => {
                 assert!(self.partial.is_none());
                 self.partial = Some((*begin, *end));
+                self.unpack_entry(&MapEntry::Data {
+                    slab: *slab,
+                    offset: *offset,
+                    nr_entries: *nr_entries,
+                })?;
             }
             Ref { .. } => {
                 // Can't get here.
@@ -161,6 +175,7 @@ impl<D: UnpackDest> Unpacker<D> {
                 }
             }
         }
+        self.dest.complete()?;
         report.progress(100);
 
         Ok(())
@@ -181,6 +196,10 @@ impl<W: Write + Seek> UnpackDest for WriteDest<W> {
 
     fn handle_unmapped(&mut self, len: u64) -> Result<()> {
         self.output.seek(std::io::SeekFrom::Current(len as i64))?;
+        Ok(())
+    }
+
+    fn complete(&mut self) -> Result<()> {
         Ok(())
     }
 }
@@ -287,7 +306,7 @@ impl VerifyDest {
                 return Err(self.fail("bad consume, unexpected ref chunk"));
             }
             None => {
-                return Err(self.fail("bad consume, no chunk"));
+                return Err(self.fail("archived stream longer than input"));
             }
         }
         Ok(())
@@ -308,8 +327,12 @@ impl VerifyDest {
                 }
             }
             Some(Chunk::Ref(_)) => Err(self.fail("unexpected Ref")),
-            None => Err(self.fail("stream shorter than input")),
+            None => Err(self.fail("archived stream longer than input")),
         }
+    }
+
+    fn more_data(&self) -> bool {
+        self.chunk.is_some()
     }
 }
 
@@ -340,21 +363,17 @@ impl UnpackDest for VerifyDest {
         self.total_verified += len;
         Ok(())
     }
-}
 
-impl Drop for VerifyDest {
-    fn drop(&mut self) {
-        eprintln!("verified {}", self.total_verified);
+    fn complete(&mut self) -> Result<()> {
+        if self.more_data() {
+            return Err(anyhow!("archived stream is too short"));
+        }
+        Ok(())
     }
 }
 
 fn thick_verifier(input_file: &Path) -> Result<VerifyDest> {
-    let input = OpenOptions::new()
-        .read(true)
-        .write(false)
-        .open(input_file)
-        .context("couldn't open input file/dev")?;
-    let input_it = Box::new(ThickChunker::new(input, 16 * 1024 * 1024)?);
+    let input_it = Box::new(ThickChunker::new(input_file, 16 * 1024 * 1024)?);
     Ok(VerifyDest::new(input_it))
 }
 
@@ -365,9 +384,9 @@ fn thin_verifier(input_file: &Path) -> Result<VerifyDest> {
         .open(input_file)
         .context("couldn't open input file/dev")?;
     let input_size = thinp::file_utils::file_size(input_file)?;
-
     let mappings = read_thin_mappings(&input_file)?;
 
+    // FIXME: what if input_size is not a multiple of the block size?
     let run_iter = RunIter::new(
         mappings.provisioned_blocks,
         (input_size / (mappings.data_block_size as u64 * 512)) as u32,

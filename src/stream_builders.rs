@@ -67,8 +67,16 @@ impl MappingBuilder {
                 self.vm_state
                     .encode_data(*slab, *offset, *nr_entries, instrs)?;
             }
-            Partial { begin, end } => {
+            Partial {
+                begin,
+                end,
+                slab,
+                offset,
+                nr_entries,
+            } => {
                 self.vm_state.encode_partial(*begin, *end, instrs)?;
+                self.vm_state
+                    .encode_data(*slab, *offset, *nr_entries, instrs)?;
             }
             Ref { .. } => return Err(anyhow!("MappingBuilder does not support Ref")),
         }
@@ -212,7 +220,7 @@ impl DeltaBuilder {
                 Ok(total_len as u64)
             }
             Unmapped { len } => Ok(*len),
-            Partial { begin, end } => Ok((end - begin) as u64),
+            Partial { begin, end, .. } => Ok((end - begin) as u64),
             Ref { len } => Ok(*len),
         }
     }
@@ -243,24 +251,46 @@ impl DeltaBuilder {
                     len: entry_len - split_point,
                 },
             ),
-            Data { .. } => (
+            Data {
+                slab,
+                offset,
+                nr_entries,
+            } => (
                 Partial {
                     begin: 0,
                     end: split_point as u32,
+                    slab: *slab,
+                    offset: *offset,
+                    nr_entries: *nr_entries,
                 },
                 Partial {
                     begin: split_point as u32,
                     end: entry_len as u32,
+                    slab: *slab,
+                    offset: *offset,
+                    nr_entries: *nr_entries,
                 },
             ),
-            Partial { begin, end } => (
+            Partial {
+                begin,
+                end,
+                slab,
+                offset,
+                nr_entries,
+            } => (
                 Partial {
                     begin: *begin as u32,
                     end: *begin + split_point as u32,
+                    slab: *slab,
+                    offset: *offset,
+                    nr_entries: *nr_entries,
                 },
                 Partial {
                     begin: *begin + split_point as u32,
                     end: *end,
+                    slab: *slab,
+                    offset: *offset,
+                    nr_entries: *nr_entries,
                 },
             ),
             Ref { .. } => (
