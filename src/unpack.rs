@@ -208,11 +208,12 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
     let output_file = Path::new(matches.value_of("OUTPUT").unwrap());
     let stream = matches.value_of("STREAM").unwrap();
+    let create = matches.is_present("CREATE");
 
     let output = fs::OpenOptions::new()
         .read(false)
         .write(true)
-        .create(true)
+        .create(create)
         .open(output_file)?;
 
     env::set_current_dir(&archive_dir)?;

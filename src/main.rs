@@ -128,6 +128,13 @@ fn main_() -> Result<()> {
                         .value_name("OUTPUT")
                         .takes_value(true),
                 )
+                .arg(
+                    Arg::new("CREATE")
+                        .help("Create a new file rather than unpack to an existing device/file.")
+                        .long("create")
+                        .value_name("CREATE")
+                        .takes_value(false)
+                )
                 .arg(archive_arg.clone())
                 .arg(stream_arg.clone()),
         )

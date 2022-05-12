@@ -9,6 +9,13 @@ pack() {
 	$cmd pack -a $archive ../dm-archive-tests/linux-$1.tar
 }
 
+unpack() {
+	echo Unpacking $1
+	$cmd unpack -a $archive --stream `get_id $1` --create ./unpacked.bin
+	diff -bq ./unpacked.bin ../dm-archive-tests/linux-$1.tar
+	rm ./unpacked.bin
+}
+
 get_id() {
 	$cmd list -a $archive 2>&1 | grep $1 | cut -f1 -d' '
 }
@@ -21,6 +28,7 @@ verify() {
 cycle() {
 	pack $1
 	verify $1
+	unpack $1
 }
 
 cargo build --release
