@@ -25,6 +25,7 @@ use crate::thin_metadata::*;
 
 // Unpack and verify do different things with the data.
 trait UnpackDest {
+    fn handle_fill(&mut self, byte: u8, len: u64) -> Result<()>;
     fn handle_mapped(&mut self, data: &[u8]) -> Result<()>;
     fn handle_unmapped(&mut self, len: u64) -> Result<()>;
     fn complete(&mut self) -> Result<()>;
@@ -184,11 +185,54 @@ impl<D: UnpackDest> Unpacker<D> {
 
 //-----------------------------------------
 
-struct WriteDest<W: Write + Seek> {
+struct ThickDest<W: Write> {
     output: W,
 }
 
-impl<W: Write + Seek> UnpackDest for WriteDest<W> {
+fn write_bytes<W: Write>(w: &mut W, byte: u8, len: u64) -> Result<()> {
+    let buf_size = std::cmp::min(len, 64 * 1024 * 1024);
+    let buf = vec![byte; buf_size as usize];
+
+    let mut remaining = len;
+    while remaining > 0 {
+        let w_len = std::cmp::min(buf_size, remaining);
+        w.write_all(&buf[0..(w_len as usize)])?;
+        remaining -= w_len;
+    }
+
+    Ok(())
+}
+
+impl<W: Write> UnpackDest for ThickDest<W> {
+    fn handle_fill(&mut self, byte: u8, len: u64) -> Result<()> {
+        write_bytes(&mut self.output, byte, len)
+    }
+
+    fn handle_mapped(&mut self, data: &[u8]) -> Result<()> {
+        self.output.write_all(data)?;
+        Ok(())
+    }
+
+    fn handle_unmapped(&mut self, len: u64) -> Result<()> {
+        write_bytes(&mut self.output, 0, len)
+    }
+
+    fn complete(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+//-----------------------------------------
+
+struct ThinDest<W: Seek + Write> {
+    output: W,
+}
+
+impl<W: Seek + Write> UnpackDest for ThinDest<W> {
+    fn handle_fill(&mut self, byte: u8, len: u64) -> Result<()> {
+        write_bytes(&mut self.output, byte, len)
+    }
+
     fn handle_mapped(&mut self, data: &[u8]) -> Result<()> {
         self.output.write_all(data)?;
         Ok(())
@@ -204,27 +248,63 @@ impl<W: Write + Seek> UnpackDest for WriteDest<W> {
     }
 }
 
+//-----------------------------------------
+
 pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
     let output_file = Path::new(matches.value_of("OUTPUT").unwrap());
     let stream = matches.value_of("STREAM").unwrap();
     let create = matches.is_present("CREATE");
-
-    let output = fs::OpenOptions::new()
-        .read(false)
-        .write(true)
-        .create(create)
-        .open(output_file)?;
-
     env::set_current_dir(&archive_dir)?;
 
-    let config = config::read_config(".")?;
-    let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
-
     report.set_title(&format!("Unpacking {} ...", output_file.display()));
-    let dest = WriteDest { output };
-    let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
-    u.unpack(&report)
+    if create {
+        let output = fs::OpenOptions::new()
+            .read(false)
+            .write(true)
+            .create_new(true)
+            .open(output_file)?;
+
+        let config = config::read_config(".")?;
+        let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
+
+        let dest = ThickDest { output };
+        let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
+        u.unpack(&report)
+    } else {
+        // Check the size matches the stream size.
+        let stream_cfg = config::read_stream_config(&stream)?;
+        let stream_size = stream_cfg.size;
+        let output_size = thinp::file_utils::file_size(output_file)?;
+        if output_size != stream_size {
+            return Err(anyhow!("Destination size doesn't not match stream size"));
+        }
+
+        let output = fs::OpenOptions::new()
+            .read(false)
+            .write(true)
+            .open(output_file)?;
+
+        let config = config::read_config(".")?;
+        let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
+
+        report.set_title(&format!("Unpacking {} ...", output_file.display()));
+        if is_thin_device(output_file)? {
+            let mappings = read_thin_mappings(output_file)?;
+            let run_iter = RunIter::new(
+                mappings.provisioned_blocks,
+                (output_size / (mappings.data_block_size as u64 * 512)) as u32,
+            );
+
+            let dest = ThinDest { output };
+            let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
+            u.unpack(&report)
+        } else {
+            let dest = ThickDest { output };
+            let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
+            u.unpack(&report)
+        }
+    }
 }
 
 //-----------------------------------------
@@ -338,6 +418,24 @@ impl VerifyDest {
 }
 
 impl UnpackDest for VerifyDest {
+    fn handle_fill(&mut self, byte: u8, len: u64) -> Result<()> {
+        let mut remaining = len;
+        while remaining > 0 {
+            let actual = self.peek_data(remaining)?;
+            let actual_len = actual.len() as u64;
+
+            for b in actual {
+                if *b != byte {
+                    return Err(self.fail("fill mismatch"));
+                }
+            }
+            self.consume_data(actual_len)?;
+            remaining -= actual_len;
+        }
+        self.total_verified += len;
+        Ok(())
+    }
+
     fn handle_mapped(&mut self, expected: &[u8]) -> Result<()> {
         let mut remaining = expected.len() as u64;
         let mut offset = 0;
