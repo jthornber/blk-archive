@@ -66,7 +66,7 @@ struct SlabOffsets {
 
 impl SlabOffsets {
     fn read_offset_file<P: AsRef<Path>>(p: P) -> Result<Self> {
-        let mut r = OpenOptions::new()
+        let r = OpenOptions::new()
             .read(true)
             .write(false)
             .create(false)
@@ -74,6 +74,7 @@ impl SlabOffsets {
             .context("opening offset file")?;
 
         let len = r.metadata().context("offset metadata")?.len();
+        let mut r = std::io::BufReader::new(r);
         let nr_entries = len / std::mem::size_of::<u64>() as u64;
         let mut offsets = Vec::with_capacity(nr_entries as usize);
         for _ in 0..nr_entries {

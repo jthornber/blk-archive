@@ -1,11 +1,12 @@
 use anyhow::{anyhow, Context, Result};
 use clap::ArgMatches;
-use io::{Seek, Write};
+use io::{Read, Seek, Write};
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io;
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::Arc;
 use thinp::report::*;
@@ -20,6 +21,16 @@ use crate::slab::*;
 use crate::stream;
 use crate::stream::*;
 use crate::thin_metadata::*;
+
+//-----------------------------------------
+
+fn round_up(n: u64, d: u64) -> u64 {
+    ((n + (d - 1)) / d) * d
+}
+
+fn round_down(n: u64, d: u64) -> u64 {
+    (n / d) * d
+}
 
 //-----------------------------------------
 
@@ -224,26 +235,214 @@ impl<W: Write> UnpackDest for ThickDest<W> {
 
 //-----------------------------------------
 
-struct ThinDest<W: Seek + Write> {
-    output: W,
+// defined in include/uapi/linux/fs.h
+const BLK_IOC_CODE: u8 = 0x12;
+const BLKDISCARD_SEQ: u8 = 119;
+nix::ioctl_write_ptr_bad!(
+    ioctl_blkdiscard,
+    nix::request_code_none!(BLK_IOC_CODE, BLKDISCARD_SEQ),
+    [u64; 2]
+);
+
+struct ThinDest {
+    block_size: u64,
+    output: File,
+    pos: u64,
+    provisioned: RunIter,
+    run: Option<(bool, u64)>,
+    discard: Option<(u64, u64)>,
+    writes_avoided: u64,
 }
 
-impl<W: Seek + Write> UnpackDest for ThinDest<W> {
+impl ThinDest {
+    // These 4 low level io functions, update the position.
+    fn seek(&mut self, len: u64) -> Result<()> {
+        self.output.seek(std::io::SeekFrom::Current(len as i64))?;
+        self.pos += len;
+        Ok(())
+    }
+
+    fn write(&mut self, data: &[u8]) -> Result<()> {
+        self.output.write_all(data)?;
+        self.pos += data.len() as u64;
+        Ok(())
+    }
+
+    // We aggregate the discards.
+    fn discard(&mut self, len: u64) -> Result<()> {
+        /*
+        if let Some((pos, dlen)) = self.discard.take() {
+            if pos + dlen == self.pos {
+                self.discard = Some((pos, dlen + len));
+            } else {
+                self.issue_discard(pos, dlen)?;
+                self.discard = Some((pos, dlen));
+            }
+        } else {
+            self.discard = Some((self.pos, len));
+        }
+        */
+        self.pos += len;
+        Ok(())
+    }
+
+    fn fill(&mut self, byte: u8, len: u64) -> Result<()> {
+        write_bytes(&mut self.output, byte, len)?;
+        self.pos += len;
+        Ok(())
+    }
+
+    fn issue_discard(&mut self, begin: u64, len: u64) -> Result<()> {
+        let end = begin + len;
+
+        // trim the range to be block aligned.
+        let begin = round_up(begin, self.block_size);
+        let end = round_down(end, self.block_size);
+
+        if begin < end {
+            unsafe {
+                ioctl_blkdiscard(self.output.as_raw_fd(), &[begin, end - begin])?;
+            }
+        }
+        Ok(())
+    }
+
+    //------------------
+
+    // rewinds after the read
+    fn read(&mut self, len: u64) -> Result<Vec<u8>> {
+        let mut buf = vec![0; len as usize];
+        self.output.read_exact(&mut buf[..])?;
+        self.output
+            .seek(std::io::SeekFrom::Current(-(len as i64)))?;
+        Ok(buf)
+    }
+
+    //------------------
+
+    fn handle_fill_unprovisioned(&mut self, byte: u8, len: u64) -> Result<()> {
+        if byte == 0 {
+            self.seek(len)
+        } else {
+            self.fill(byte, len)
+        }
+    }
+
+    fn handle_fill_provisioned(&mut self, byte: u8, len: u64) -> Result<()> {
+        self.fill(byte, len)
+    }
+
+    fn handle_mapped_unprovisioned(&mut self, data: &[u8]) -> Result<()> {
+        self.write(data)
+    }
+
+    fn handle_mapped_provisioned(&mut self, data: &[u8]) -> Result<()> {
+        let actual = self.read(data.len() as u64)?;
+        // FIXME: add rewind method and don't auto do it in read
+        if actual != data {
+            self.write(data)?;
+        } else {
+            self.writes_avoided += data.len() as u64;
+            self.seek(data.len() as u64)?;
+        }
+        Ok(())
+    }
+
+    fn handle_unmapped_unprovisioned(&mut self, len: u64) -> Result<()> {
+        self.seek(len)
+    }
+
+    fn handle_unmapped_provisioned(&mut self, len: u64) -> Result<()> {
+        self.discard(len)
+    }
+
+    fn ensure_run(&mut self) -> Result<()> {
+        if self.run.is_none() {
+            match self.provisioned.next() {
+                Some((provisioned, run)) => {
+                    self.run = Some((provisioned, (run.end - run.start) as u64 * self.block_size));
+                }
+                None => {
+                    return Err(anyhow!("internal error: out of runs"));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn next_run(&mut self, max_len: u64) -> Result<(bool, u64)> {
+        self.ensure_run()?;
+        let (provisioned, run_len) = self.run.take().unwrap();
+        if run_len <= max_len {
+            Ok((provisioned, run_len))
+        } else {
+            self.run = Some((provisioned, run_len - max_len));
+            Ok((provisioned, max_len))
+        }
+    }
+}
+
+impl UnpackDest for ThinDest {
     fn handle_fill(&mut self, byte: u8, len: u64) -> Result<()> {
-        write_bytes(&mut self.output, byte, len)
+        let mut remaining = len;
+        while remaining > 0 {
+            let (provisioned, c_len) = self.next_run(remaining)?;
+
+            if provisioned {
+                self.handle_fill_provisioned(byte, c_len)?;
+            } else {
+                self.handle_fill_unprovisioned(byte, c_len)?;
+            }
+
+            remaining -= c_len;
+        }
+
+        Ok(())
     }
 
     fn handle_mapped(&mut self, data: &[u8]) -> Result<()> {
-        self.output.write_all(data)?;
+        let mut remaining = data.len() as u64;
+        let mut offset = 0;
+        while remaining > 0 {
+            let (provisioned, c_len) = self.next_run(remaining)?;
+
+            if provisioned {
+                self.handle_mapped_provisioned(&data[offset as usize..(offset + c_len) as usize])?;
+            } else {
+                self.handle_mapped_unprovisioned(
+                    &data[offset as usize..(offset + c_len) as usize],
+                )?;
+            }
+
+            remaining -= c_len;
+            offset += c_len;
+        }
+
         Ok(())
     }
 
     fn handle_unmapped(&mut self, len: u64) -> Result<()> {
-        self.output.seek(std::io::SeekFrom::Current(len as i64))?;
+        let mut remaining = len;
+        while remaining > 0 {
+            let (provisioned, c_len) = self.next_run(remaining)?;
+
+            if provisioned {
+                self.handle_unmapped_provisioned(c_len)?;
+            } else {
+                self.handle_unmapped_unprovisioned(c_len)?;
+            }
+
+            remaining -= c_len;
+        }
+
         Ok(())
     }
 
     fn complete(&mut self) -> Result<()> {
+        if let Some((pos, len)) = self.discard {
+            self.issue_discard(pos, len)?;
+        }
         Ok(())
     }
 }
@@ -281,7 +480,7 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
         }
 
         let output = fs::OpenOptions::new()
-            .read(false)
+            .read(true)
             .write(true)
             .open(output_file)?;
 
@@ -291,12 +490,21 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
         report.set_title(&format!("Unpacking {} ...", output_file.display()));
         if is_thin_device(output_file)? {
             let mappings = read_thin_mappings(output_file)?;
-            let run_iter = RunIter::new(
+            let block_size = mappings.data_block_size as u64 * 512;
+            let provisioned = RunIter::new(
                 mappings.provisioned_blocks,
-                (output_size / (mappings.data_block_size as u64 * 512)) as u32,
+                (output_size / block_size) as u32,
             );
 
-            let dest = ThinDest { output };
+            let dest = ThinDest {
+                block_size,
+                output,
+                pos: 0,
+                provisioned,
+                run: None,
+                writes_avoided: 0,
+                discard: None,
+            };
             let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
             u.unpack(&report)
         } else {
