@@ -32,10 +32,11 @@ pack() {
 
 unpack() {
 	echo Unpacking $1
-	# lvcreate -V100G test-vg/pool -n $1-restored
+	# lvcreate -V10G test-vg/pool -n $1-restored
 	snapshot $1-restored
 	echo $cmd unpack -a $archive --stream `get_id $1` /dev/test-vg/$1-restored
 	time $cmd unpack -a $archive --stream `get_id $1` /dev/test-vg/$1-restored
+	diff -b /dev/test-vg/$1 /dev/test-vg/$1-restored
 }
 
 pack_delta() {
@@ -68,7 +69,7 @@ cycle() {
 pack_deltas() {
 	while (( "$#" > 1 )); do
 		pack_delta $2 $1
-		# verify $2
+		verify $2
 		# remove $1
 		shift 1
 	done
@@ -94,10 +95,10 @@ echo Creating archive ...
 $cmd create -a $archive --block-size 4096
 
 echo Creating thin pool ...
-lvcreate -L 500G --thinpool pool test-vg
+lvcreate -L 100G --thinpool pool test-vg
 
 echo Creating thin dev ...
-lvcreate -V100G test-vg/pool -n kernel-builds
+lvcreate -V10G test-vg/pool -n kernel-builds
 
 echo Running mkfs.ext4 ...
 mkfs.ext4 /dev/test-vg/kernel-builds > /dev/null
@@ -114,7 +115,7 @@ pushd
 revisions="v5.0 v5.1 v5.2 v5.3 v5.4 v5.5 v5.6 v5.7 v5.8"
 
 pack v5.0
-# verify v5.0
+verify v5.0
 pack_deltas $revisions
 unpack_deltas $revisions
 

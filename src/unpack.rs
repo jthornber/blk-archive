@@ -24,16 +24,6 @@ use crate::thin_metadata::*;
 
 //-----------------------------------------
 
-fn round_up(n: u64, d: u64) -> u64 {
-    ((n + (d - 1)) / d) * d
-}
-
-fn round_down(n: u64, d: u64) -> u64 {
-    (n / d) * d
-}
-
-//-----------------------------------------
-
 // Unpack and verify do different things with the data.
 trait UnpackDest {
     fn handle_fill(&mut self, byte: u8, len: u64) -> Result<()>;
@@ -249,16 +239,41 @@ struct ThinDest {
     output: File,
     pos: u64,
     provisioned: RunIter,
+
+    // (provisioned, len bytes)
     run: Option<(bool, u64)>,
-    discard: Option<(u64, u64)>,
     writes_avoided: u64,
 }
 
 impl ThinDest {
-    // These 4 low level io functions, update the position.
-    fn seek(&mut self, len: u64) -> Result<()> {
+    fn issue_discard(&mut self, len: u64) -> Result<()> {
+        let begin = self.pos;
+        let end = begin + len;
+
+        // Discards should always be block aligned
+        assert_eq!(begin % self.block_size, 0);
+        assert_eq!(end % self.block_size, 0);
+
+        unsafe {
+            ioctl_blkdiscard(self.output.as_raw_fd(), &[begin, len])?;
+        }
+
+        Ok(())
+    }
+
+    //------------------
+
+    // These low level io functions update the position.
+    fn forward(&mut self, len: u64) -> Result<()> {
         self.output.seek(std::io::SeekFrom::Current(len as i64))?;
         self.pos += len;
+        Ok(())
+    }
+
+    fn rewind(&mut self, len: u64) -> Result<()> {
+        self.output
+            .seek(std::io::SeekFrom::Current(-(len as i64)))?;
+        self.pos -= len;
         Ok(())
     }
 
@@ -268,21 +283,9 @@ impl ThinDest {
         Ok(())
     }
 
-    // We aggregate the discards.
     fn discard(&mut self, len: u64) -> Result<()> {
-        /*
-        if let Some((pos, dlen)) = self.discard.take() {
-            if pos + dlen == self.pos {
-                self.discard = Some((pos, dlen + len));
-            } else {
-                self.issue_discard(pos, dlen)?;
-                self.discard = Some((pos, dlen));
-            }
-        } else {
-            self.discard = Some((self.pos, len));
-        }
-        */
-        self.pos += len;
+        self.issue_discard(len)?;
+        self.forward(len)?;
         Ok(())
     }
 
@@ -292,29 +295,10 @@ impl ThinDest {
         Ok(())
     }
 
-    fn issue_discard(&mut self, begin: u64, len: u64) -> Result<()> {
-        let end = begin + len;
-
-        // trim the range to be block aligned.
-        let begin = round_up(begin, self.block_size);
-        let end = round_down(end, self.block_size);
-
-        if begin < end {
-            unsafe {
-                ioctl_blkdiscard(self.output.as_raw_fd(), &[begin, end - begin])?;
-            }
-        }
-        Ok(())
-    }
-
-    //------------------
-
-    // rewinds after the read
     fn read(&mut self, len: u64) -> Result<Vec<u8>> {
         let mut buf = vec![0; len as usize];
         self.output.read_exact(&mut buf[..])?;
-        self.output
-            .seek(std::io::SeekFrom::Current(-(len as i64)))?;
+        self.pos += len;
         Ok(buf)
     }
 
@@ -322,7 +306,9 @@ impl ThinDest {
 
     fn handle_fill_unprovisioned(&mut self, byte: u8, len: u64) -> Result<()> {
         if byte == 0 {
-            self.seek(len)
+            // FIXME: what if we fill a partial block, then subsequently trigger a provision and
+            // block zeroing is turned off?
+            self.forward(len)
         } else {
             self.fill(byte, len)
         }
@@ -338,18 +324,18 @@ impl ThinDest {
 
     fn handle_mapped_provisioned(&mut self, data: &[u8]) -> Result<()> {
         let actual = self.read(data.len() as u64)?;
-        // FIXME: add rewind method and don't auto do it in read
-        if actual != data {
-            self.write(data)?;
-        } else {
+        if actual == data {
             self.writes_avoided += data.len() as u64;
-            self.seek(data.len() as u64)?;
+        } else {
+            self.rewind(data.len() as u64)?;
+            self.write(data)?;
         }
+
         Ok(())
     }
 
     fn handle_unmapped_unprovisioned(&mut self, len: u64) -> Result<()> {
-        self.seek(len)
+        self.forward(len)
     }
 
     fn handle_unmapped_provisioned(&mut self, len: u64) -> Result<()> {
@@ -440,9 +426,8 @@ impl UnpackDest for ThinDest {
     }
 
     fn complete(&mut self) -> Result<()> {
-        if let Some((pos, len)) = self.discard {
-            self.issue_discard(pos, len)?;
-        }
+        assert!(self.run.is_none());
+        assert!(self.provisioned.next().is_none());
         Ok(())
     }
 }
@@ -503,7 +488,6 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
                 provisioned,
                 run: None,
                 writes_avoided: 0,
-                discard: None,
             };
             let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
             u.unpack(&report)
