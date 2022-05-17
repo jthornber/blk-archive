@@ -3,9 +3,9 @@ An archive is a collection of files stored under a root directory.  All the tool
 
 To create a new archive use the *create* sub command with the -a switch.  The directory specified must not exist; create will create it and setup files within.
 
-> dm_archive create -a my-archive
+> blk-archive create -a my-archive
 
-Each archive has a *block-size* associated with it.  When deduplicating data dm-archive will chop the input up into blocks and then see if it's seen that block before.  The *block-size* parameter specifies the average block size for these blocks.
+Each archive has a *block-size* associated with it.  When deduplicating data blk-archive will chop the input up into blocks and then see if it's seen that block before.  The *block-size* parameter specifies the average block size for these blocks.
 
 There is an overhead associated with storing every block in the system (~37 bytes).
 
@@ -13,20 +13,20 @@ Smaller block sizes increase the probability of finding duplicate data, but incr
 
 The default block size is 4096, if in doubt leave it as this.  You probably only want to go lower than this if you are intending to store small amounts of data in the system (eg, < 1T).
 
-> dm-archive create -a my-archive --block-size 8092
+> blk-archive create -a my-archive --block-size 8092
 
 The block size will always get rounded up to a power of two.
 
 # Add a large file to an archive
-> dm-archive pack -a my-archive my-file
+> blk-archive pack -a my-archive my-file
 
 The *pack* sub command adds a file to an archive.  The file will be deduplicated then compressed.  Finally the compressed data will be reconstructed to verify the process.
 
-dm-archive is really designed for archiving data on devices.  It will do files
+blk-archive is really designed for archiving data on devices.  It will do files
 
 Various statistics will be printed out at the end of the operation:
 
-> dm-archive pack -a test-achive linux-v5.0.tar
+> blk-archive pack -a test-achive linux-v5.0.tar
 
 ```
 stream id        : 30973e06100eb1d7
@@ -54,7 +54,7 @@ speed            : 125.43M/s
 
 If we pack a similar file into this archive we should see the deduplication in action:
 
-> dm-archive pack -a test-archive linux-v5.1.tar
+> blk-archive pack -a test-archive linux-v5.1.tar
 
 ```
 stream id        : 0acabdfa1dfb98a7
@@ -73,9 +73,9 @@ Note we found 408M of data that was already in the system.  Causing us to write 
 
 To demonstrate the effect of block size on data deduplication let's repeat the above with a block size of just 256 bytes (only recommended for small archives).
 
-> dm-archive create -a test-archive --block-size 256
+> blk-archive create -a test-archive --block-size 256
 
-> dm-archive pack -a test-archive linux-v5.0.tar
+> blk-archive pack -a test-archive linux-v5.0.tar
 
 ```
 stream id        : 25eaa5f7631a1fd5
@@ -94,7 +94,7 @@ We wrote many more hashes, slowed down archiving speed, and achieved worse compr
 
 But we get a pay off when we try and pack similar data:
 
->dm-archive pack -a test-archive linux-v5.1.tar
+>blk-archive pack -a test-archive linux-v5.1.tar
 
 ```
 stream id        : ac72aceac23c8930
@@ -116,7 +116,7 @@ Adding a block device to an archive is identical to adding a file.  Just specify
 
 *The block device must not be in use*.  For instance, you cannot archive a block device that contains a mounted filesystem (later recipes will describe how to get round this using lvm snapshots or thin snapshots).
 
->dm-archive pack -a test-archive /dev/my-vg/my-lv 
+>blk-archive pack -a test-archive /dev/my-vg/my-lv 
 
 # Use lvm old snapshot to archive a live block device
 Get input from ZK
@@ -124,9 +124,9 @@ Get input from ZK
 # Add a thin device to an archive
 Invoking packing of a thin device is identical to packing any other device:
 
-> dm-archive pack -a test-archive /dev/my-vg/my-thin-lv
+> blk-archive pack -a test-archive /dev/my-vg/my-thin-lv
 
-However under the hood dm-archive is aware that this device is a thin device.  It will therefore take a metadata snapshot of the pool, and scan the pool's metadata to ascertain which parts of the thin device have been provisioned.  Only these provisioned regions are read, potentially saving much time.
+However under the hood blk-archive is aware that this device is a thin device.  It will therefore take a metadata snapshot of the pool, and scan the pool's metadata to ascertain which parts of the thin device have been provisioned.  Only these provisioned regions are read, potentially saving much time.
 
 ```
 stream id        : 637daeec766b537d
@@ -154,7 +154,7 @@ The first *lvm* command creates the snapshot, the second activates it.
 
 Now we're going to use the archive from the previous recipe.  Our thin snapshot contains the filesystem with the linux git repo on it.  The only difference from before being it has version v5.1 checked out rather than v5.0.
 
->dm-archive pack -a test-archive /dev/test-vg/v5.1
+>blk-archive pack -a test-archive /dev/test-vg/v5.1
 
 ```
 stream id        : 1cb9b909497af41d
@@ -180,7 +180,7 @@ FIXME: finish
 # List streams in an archive
 You can get a list of the streams that are in an archive using the *list* sub command:
 
->dm-archive list
+>blk-archive list
 
 ```
 cb917ad6b2bd1d7a  863303680 Mar 30 22 12:43 linux-v5.0.tar
@@ -208,21 +208,21 @@ Each line describes a stream (a packed file or device).  There are four fields o
 # Restore to a file
 To restore a stream you need to use the *unpack* sub command, along with the --create switch.
 
->dm-archive unpack -a test-archive --stream c11471f971310751 --create new-file
+>blk-archive unpack -a test-archive --stream c11471f971310751 --create new-file
 
 You specify the stream using it's unique identifier.  The positional argument is the destination.  
 
 # Restore to a block device
 Restoring to a block device, or a pre-existing file for that matter, is just the same as above except you omit the --create switch.
 
->dm-archive unpack -a test-archive --stream c11471f971310751 /dev/test-vg/v5.0-restored
+>blk-archive unpack -a test-archive --stream c11471f971310751 /dev/test-vg/v5.0-restored
 
 The destination must exist, and be the same size as the stream.
 
 # Restore to a thin device
-Invoking a restore to a thin device is identical to any other block device.  However, dm-archive will read the mappings of the thin device and attempt to maximise data sharing within the pool.
+Invoking a restore to a thin device is identical to any other block device.  However, blk-archive will read the mappings of the thin device and attempt to maximise data sharing within the pool.
 - provisioned areas of the thin device that are unprovisioned in the stream will be discarded to unprovisioned them.
-- before writing to a provisioned region dm-archive will check that it doesn't already contain identical data, and omit the write if so.  This avoids breaking sharing.
+- before writing to a provisioned region blk-archive will check that it doesn't already contain identical data, and omit the write if so.  This avoids breaking sharing.
 
 FIXME: come up with some good examples.  This is a killer feature so make sure it's compelling.
 

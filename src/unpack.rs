@@ -435,20 +435,27 @@ impl UnpackDest for ThinDest {
 //-----------------------------------------
 
 pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
-    let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
+    let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize().context("Bad archive dir")?;
     let output_file = Path::new(matches.value_of("OUTPUT").unwrap());
     let stream = matches.value_of("STREAM").unwrap();
     let create = matches.is_present("CREATE");
+
+    let output = if create {
+        fs::OpenOptions::new()
+            .read(false)
+            .write(true)
+            .create_new(true)
+            .open(&output_file).context("Couldn't open output")?
+    } else {
+       fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&output_file).context ("Couldn't open output")?
+    };
     env::set_current_dir(&archive_dir)?;
 
     report.set_title(&format!("Unpacking {} ...", output_file.display()));
     if create {
-        let output = fs::OpenOptions::new()
-            .read(false)
-            .write(true)
-            .create_new(true)
-            .open(output_file)?;
-
         let config = config::read_config(".")?;
         let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
 
@@ -459,22 +466,17 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
         // Check the size matches the stream size.
         let stream_cfg = config::read_stream_config(&stream)?;
         let stream_size = stream_cfg.size;
-        let output_size = thinp::file_utils::file_size(output_file)?;
+        let output_size = thinp::file_utils::file_size(&output_file)?;
         if output_size != stream_size {
             return Err(anyhow!("Destination size doesn't not match stream size"));
         }
-
-        let output = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(output_file)?;
 
         let config = config::read_config(".")?;
         let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
 
         report.set_title(&format!("Unpacking {} ...", output_file.display()));
-        if is_thin_device(output_file)? {
-            let mappings = read_thin_mappings(output_file)?;
+        if is_thin_device(&output_file)? {
+            let mappings = read_thin_mappings(&output_file)?;
             let block_size = mappings.data_block_size as u64 * 512;
             let provisioned = RunIter::new(
                 mappings.provisioned_blocks,
