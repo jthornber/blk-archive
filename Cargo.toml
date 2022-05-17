@@ -1,5 +1,5 @@
 [package]
-name = "dm-archive"
+name = "blk-archive"
 version = "0.1.0"
 edition = "2021"
 
@@ -26,8 +26,8 @@ roaring = "0.9"
 serde = "1.0.136"
 serde_derive = "1.0.136"
 size-display = "0.1.4"
-# thinp = { git = "https://github.com/jthornber/thin-provisioning-tools.git", branch = "main" }
-thinp = { path = "../thinp-for-dm-archive/" }
+thinp = { git = "https://github.com/jthornber/thin-provisioning-tools.git", branch = "main" }
+# thinp = { path = "../thinp-for-dm-archive/" }
 threadpool = "1.0"
 toml = "0.5.8"
 walkdir = "2"

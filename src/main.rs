@@ -5,11 +5,11 @@ use std::process::exit;
 use std::sync::Arc;
 use thinp::report::*;
 
-use dm_archive::create;
-use dm_archive::dump_stream;
-use dm_archive::list;
-use dm_archive::pack;
-use dm_archive::unpack;
+use blk_archive::create;
+use blk_archive::dump_stream;
+use blk_archive::list;
+use blk_archive::pack;
+use blk_archive::unpack;
 
 //-----------------------
 
@@ -22,7 +22,7 @@ fn mk_report() -> Arc<Report> {
 }
 
 fn main_() -> Result<()> {
-    let default_archive = match env::var("DM_ARCHIVE_DIR") {
+    let default_archive = match env::var("BLK_ARCHIVE_DIR") {
         Err(_) => String::new(),
         Ok(s) => s,
     };

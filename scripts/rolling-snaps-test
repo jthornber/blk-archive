@@ -2,7 +2,7 @@
 
 set -e
 archive=test-archive
-cmd=./target/release/dm-archive
+cmd=./target/release/blk-archive
 
 checkout() {
 	echo Checking out $1 ...
@@ -18,8 +18,8 @@ snapshot() {
         lvcreate -s --name $1 test-vg/kernel-builds
         lvchange -kn test-vg/$1
         lvchange -ay test-vg/$1
-        lvchange -an test-vg/$1
-        lvchange -ay test-vg/$1
+        # lvchange -an test-vg/$1
+        # lvchange -ay test-vg/$1
 }
 
 pack() {

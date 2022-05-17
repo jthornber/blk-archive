@@ -2,17 +2,17 @@
 
 set -e
 archive=test-archive
-cmd=./target/release/dm-archive
+cmd=./target/release/blk-archive
 
 pack() {
 	echo Packing $1
-	$cmd pack -a $archive ../dm-archive-tests/linux-$1.tar
+	$cmd pack -a $archive ../blk-archive-tests/linux-$1.tar
 }
 
 unpack() {
 	echo Unpacking $1
 	$cmd unpack -a $archive --stream `get_id $1` --create ./unpacked.bin
-	diff -bq ./unpacked.bin ../dm-archive-tests/linux-$1.tar
+	diff -bq ./unpacked.bin ../blk-archive-tests/linux-$1.tar
 	rm ./unpacked.bin
 }
 
@@ -22,7 +22,7 @@ get_id() {
 
 verify() {
 	echo Verifying $1
-	$cmd verify -a $archive --stream `get_id $1` ../dm-archive-tests/linux-$1.tar
+	$cmd verify -a $archive --stream `get_id $1` ../blk-archive-tests/linux-$1.tar
 }
 
 cycle() {
