@@ -5,7 +5,7 @@ To create a new archive use the *create* sub command with the -a switch.  The di
 
 > blk-archive create -a my-archive
 
-Each archive has a *block-size* associated with it.  When deduplicating data blk-archive will chop the input up into blocks and then see if it's seen that block before.  The *block-size* parameter specifies the average block size for these blocks.
+Each archive has a *block-size* associated with it.  When deduplicating data blk-archive will chop the input up into blocks and then see if it's seen that block before.  The *block-size* parameter specifies the _average_ block size for these blocks.
 
 There is an overhead associated with storing every block in the system (~37 bytes).
 
@@ -176,7 +176,15 @@ Once the pack is complete the snapshot can be deleted:
 >lvremove -y /dev/test-vg/v5.1
 
 # Add a thin snapshot of a dev that is already in the archive
-FIXME: finish
+Packing a new stream to an archive can be greatly sped up if you've already packed a snapshot of the device before.
+
+> blk-archive unpack -a test-archive /dev/test-vg/v5.1 --delta-stream c11471f971310751 --delta-device /dev/test-vg/v5.0
+
+Here we've already packed a snapshot called 'v5.0'.  We need to provide the path to the previously packed device (/dev/test-vg/v5.0).  This prior device must _not_ have been changed since it was packed.  We also provide the id of the stream within the archive.
+
+Once the new snapshot (v5.1) has been packed we can delete the v5.0 snapshot and use the v5.1 snapshot for the next incremental backup.
+
+
 # List streams in an archive
 You can get a list of the streams that are in an archive using the *list* sub command:
 
