@@ -5,7 +5,7 @@ blk-archive is a tool for archiving block devices.
 Archived data is deduplicated, compressed and stored in a directory
 within a file system.
 
-blk-archive is not a complete backup solution.  But in may well make an
+blk-archive is not a complete backup solution.  But it may well make an
 excellent first step in a backup process.  For instance you may wish to
 sync the archive directory to cloud storage, or write it to tape.
 
