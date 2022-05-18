@@ -60,7 +60,17 @@ fn main_() -> Result<()> {
         .subcommand(
             Command::new("create")
                 .about("creates a new archive")
-                .arg(archive_arg.clone())
+                // We don't want to take a default from the env var, so can't use
+                // archive_arg
+                .arg(
+                    Arg::new("ARCHIVE")
+                        .help("Specify archive directory")
+                        .required(true)
+                        .long("archive")
+                        .short('a')
+                        .value_name("ARCHIVE")
+                        .takes_value(true),
+                )
                 .arg(
                     Arg::new("BLOCK_SIZE")
                         .help("Specify the average block size used when deduplicating data")
@@ -133,7 +143,7 @@ fn main_() -> Result<()> {
                         .help("Create a new file rather than unpack to an existing device/file.")
                         .long("create")
                         .value_name("CREATE")
-                        .takes_value(false)
+                        .takes_value(false),
                 )
                 .arg(archive_arg.clone())
                 .arg(stream_arg.clone()),
