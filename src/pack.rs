@@ -272,7 +272,6 @@ impl IoVecHandler for DedupHandler {
     fn handle_data(&mut self, iov: &IoVec) -> Result<()> {
         self.nr_chunks += 1;
         let len = iov_len_(iov);
-        // let (first_byte, len, same) = all_same(iov);
         self.mapped_size += len;
 
         if let Some(first_byte) = all_same(iov) {
@@ -321,22 +320,6 @@ impl IoVecHandler for DedupHandler {
 
         Ok(())
     }
-
-    /*
-    fn handle(&mut self, e: &MapEntry) -> Result<()> {
-        match e {
-            Fill { byte, len } => self.handle_fill(*byte, *len),
-            Unmapped { len } => self.handle_unmapped(*len),
-            Data {
-                slab,
-                offset,
-                nr_entries,
-            } => self.handle_data(*slab, *offset, *nr_entries),
-            Partial { begin, end } => self.handle_partial(*begin, *end),
-            Ref { len } => self.handle_ref(*len),
-        }
-    }
-    */
 
     fn complete(&mut self) -> Result<()> {
         let mut builder = self.mapping_builder.lock().unwrap();
