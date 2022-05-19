@@ -151,6 +151,10 @@ pub struct SlabFile {
 
 impl Drop for SlabFile {
     fn drop(&mut self) {
+        let mut tx = None;
+        std::mem::swap(&mut tx, &mut self.tx);
+        drop(tx);
+
         let mut compressor = None;
         std::mem::swap(&mut compressor, &mut self.compressor);
         if let Some(c) = compressor {
