@@ -464,9 +464,9 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
         u.unpack(&report)
     } else {
         // Check the size matches the stream size.
-        let stream_cfg = config::read_stream_config(&stream)?;
+        let stream_cfg = config::read_stream_config(stream)?;
         let stream_size = stream_cfg.size;
-        let output_size = thinp::file_utils::file_size(&output_file)?;
+        let output_size = thinp::file_utils::file_size(output_file)?;
         if output_size != stream_size {
             return Err(anyhow!("Destination size doesn't not match stream size"));
         }

@@ -18,6 +18,7 @@ struct BuilderEntry {
 }
 
 pub struct IndexBuilder {
+    index: BTreeMap<Hash256, u32>,
     entries: Vec<BuilderEntry>,
     offset: usize,
 }
@@ -25,12 +26,14 @@ pub struct IndexBuilder {
 impl IndexBuilder {
     pub fn with_capacity(n: usize) -> Self {
         Self {
+            index: BTreeMap::new(),
             entries: Vec::with_capacity(n),
             offset: 0,
         }
     }
 
     pub fn insert(&mut self, h: Hash256, len: usize) {
+        self.index.insert(h, self.entries.len() as u32);
         self.entries.push(BuilderEntry {
             h,
             index: self.entries.len(),
@@ -67,15 +70,8 @@ impl IndexBuilder {
         Ok(w)
     }
 
-    // FIXME: slow
-    pub fn lookup(&self, h: &Hash256) -> Option<u16> {
-        for (i, e) in self.entries.iter().enumerate() {
-            if e.h == *h {
-                return Some(i as u16);
-            }
-        }
-
-        None
+    pub fn lookup(&self, h: &Hash256) -> Option<u32> {
+        self.index.get(h).cloned()
     }
 }
 

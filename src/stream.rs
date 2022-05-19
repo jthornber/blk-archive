@@ -662,7 +662,7 @@ impl VMState {
             } else if offset < 0x100000 {
                 instrs.push(Offset20 { offset });
             } else {
-                return Err(anyhow!("offset too large"));
+                return Err(anyhow!("offset too large ({})", offset));
             }
             top.offset = offset;
         }

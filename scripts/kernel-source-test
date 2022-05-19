@@ -6,6 +6,7 @@ cmd=./target/release/blk-archive
 
 pack() {
 	echo Packing $1
+	echo $cmd pack -a $archive ../blk-archive-tests/linux-$1.tar
 	$cmd pack -a $archive ../blk-archive-tests/linux-$1.tar
 }
 
@@ -33,6 +34,7 @@ cycle() {
 
 cargo build --release
 rm -rf $archive
+rm -f unpacked.bin
 echo Creating archive ...
 $cmd create -a $archive --block-size 4096 --data-cache-size-meg 4096 --hash-cache-size-meg 2048
 

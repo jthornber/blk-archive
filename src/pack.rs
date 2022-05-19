@@ -297,8 +297,15 @@ impl IoVecHandler for DedupHandler {
                 }
                 InsertResult::AlreadyPresent(s) => {
                     if s == self.current_slab {
-                        // FIXME: remove this clause
-                        me = self.do_add(h, iov, len)?;
+                        if let Some(offset) = self.current_index.lookup(&h) {
+                            me = MapEntry::Data {
+                                slab: s,
+                                offset,
+                                nr_entries: 1,
+                            };
+                        } else {
+                            me = self.do_add(h, iov, len)?;
+                        }
                     } else {
                         let hi = self.get_hash_index(s)?;
                         if let Some(offset) = hi.lookup(&h) {
