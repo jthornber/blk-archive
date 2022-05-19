@@ -91,3 +91,155 @@ mod run_iter_tests {
 }
 
 //-----------------------------------------
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum DualType {
+    Left,
+    Right,
+    Both,
+    Neither,
+}
+
+pub struct DualIter {
+    len: u32,
+    current: u32,
+    left: RoaringBitmap,
+    right: RoaringBitmap,
+}
+
+impl DualIter {
+    pub fn new(left: RoaringBitmap, right: RoaringBitmap, len: u32) -> Self {
+        Self {
+            len,
+            current: 0,
+            left,
+            right,
+        }
+    }
+}
+
+impl Iterator for DualIter {
+    type Item = (DualType, Range<u32>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        use DualType::*;
+
+        if self.current == self.len {
+            None
+        } else {
+            let l = self.left.contains(self.current);
+            let r = self.right.contains(self.current);
+            let start = self.current;
+            self.current += 1;
+            match (l, r) {
+                (false, false) => {
+                    while self.current < self.len
+                        && !self.left.contains(self.current)
+                        && !self.right.contains(self.current)
+                    {
+                        self.current += 1;
+                    }
+                    Some((Neither, start..self.current))
+                }
+                (false, true) => {
+                    while self.current < self.len
+                        && !self.left.contains(self.current)
+                        && self.right.contains(self.current)
+                    {
+                        self.current += 1;
+                    }
+                    Some((Right, start..self.current))
+                }
+                (true, false) => {
+                    while self.current < self.len
+                        && self.left.contains(self.current)
+                        && !self.right.contains(self.current)
+                    {
+                        self.current += 1;
+                    }
+                    Some((Left, start..self.current))
+                }
+                (true, true) => {
+                    while self.current < self.len
+                        && self.left.contains(self.current)
+                        && self.right.contains(self.current)
+                    {
+                        self.current += 1;
+                    }
+                    Some((Both, start..self.current))
+                }
+            }
+        }
+    }
+}
+
+//-----------------------------------------
+
+#[cfg(test)]
+mod dual_iter_tests {
+    use super::*;
+
+    struct Test {
+        left: Vec<bool>,
+        right: Vec<bool>,
+        expected: Vec<(DualType, Range<u32>)>,
+    }
+
+    fn mk_bits(v: &[bool]) -> RoaringBitmap {
+        let mut bits = RoaringBitmap::new();
+        for (i, b) in v.iter().enumerate() {
+            if *b {
+                bits.insert(i as u32);
+            }
+        }
+        bits
+    }
+
+    #[test]
+    fn test_run_iter() {
+        use DualType::*;
+
+        let tests = vec![
+            Test {
+                left: vec![],
+                right: vec![],
+                expected: vec![],
+            },
+            Test {
+                left: vec![false, false, false],
+                right: vec![false, false, false],
+                expected: vec![(Neither, 0..3)],
+            },
+            Test {
+                left: vec![false, true, true, false, false, false, true],
+                right: vec![false, true, true, false, false, false, true],
+                expected: vec![(Neither, 0..1), (Both, 1..3), (Neither, 3..6), (Both, 6..7)],
+            },
+            Test {
+                left: vec![false, true, false, false, false, false, true, false, false],
+                right: vec![false, false, true, false, false, false, true, false, true],
+                expected: vec![
+                    (Neither, 0..1),
+                    (Left, 1..2),
+                    (Right, 2..3),
+                    (Neither, 3..6),
+                    (Both, 6..7),
+                    (Neither, 7..8),
+                    (Right, 8..9),
+                ],
+            },
+        ];
+
+        for t in tests {
+            assert_eq!(t.left.len(), t.right.len());
+            let left = mk_bits(&t.left[..]);
+            let right = mk_bits(&t.right[..]);
+
+            let it = DualIter::new(left, right, t.left.len() as u32);
+            let actual: Vec<(DualType, Range<u32>)> = it.collect();
+            assert_eq!(actual, t.expected);
+        }
+    }
+}
+
+//-----------------------------------------

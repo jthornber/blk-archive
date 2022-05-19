@@ -653,20 +653,15 @@ fn thin_delta_packer(
     let old_config = config::read_stream_config(delta_id)?;
     let mapped_size = old_config.mapped_size;
 
-    let additions = RunIter::new(
+    let run_iter = DualIter::new(
         mappings.additions,
-        (input_size / (mappings.data_block_size as u64 * 512)) as u32,
-    );
-
-    let removals = RunIter::new(
         mappings.removals,
         (input_size / (mappings.data_block_size as u64 * 512)) as u32,
     );
 
     let input_iter = Box::new(DeltaChunker::new(
         input,
-        additions,
-        removals,
+        run_iter,
         mappings.data_block_size as u64 * 512,
     ));
     let thin_id = Some(mappings.thin_id);

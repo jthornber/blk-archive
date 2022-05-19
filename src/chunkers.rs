@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use io::prelude::*;
 use std::fs::File;
 use std::fs::OpenOptions;
@@ -154,20 +154,18 @@ impl Iterator for ThinChunker {
 
 pub struct DeltaChunker {
     input: File,
-    additions: RunIter,
-    removals: RunIter,
+    deltas: DualIter,
     data_block_size: u64,
 
     max_read_size: usize,
-    current_run: Option<(bool, Range<u64>)>,
+    current_run: Option<(DualType, Range<u64>)>,
 }
 
 impl DeltaChunker {
-    pub fn new(input: File, additions: RunIter, removals: RunIter, data_block_size: u64) -> Self {
+    pub fn new(input: File, deltas: DualIter, data_block_size: u64) -> Self {
         Self {
             input,
-            additions,
-            removals,
+            deltas,
             data_block_size,
 
             max_read_size: 16 * 1024 * 1024,
@@ -176,10 +174,10 @@ impl DeltaChunker {
     }
 
     // FIXME: removals are being ignored
-    fn next_run_bytes(&mut self) -> Option<(bool, Range<u64>)> {
-        self.additions.next().map(|(b, Range { start, end })| {
+    fn next_run_bytes(&mut self) -> Option<(DualType, Range<u64>)> {
+        self.deltas.next().map(|(t, Range { start, end })| {
             (
-                b,
+                t,
                 Range {
                     start: start as u64 * self.data_block_size,
                     end: end as u64 * self.data_block_size,
@@ -193,8 +191,8 @@ impl DeltaChunker {
         std::mem::swap(&mut run, &mut self.current_run);
 
         match run.or_else(|| self.next_run_bytes()) {
-            Some((false, run)) => Ok(Some(Chunk::Ref(run.end - run.start))),
-            Some((true, run)) => {
+            Some((DualType::Left, run)) => {
+                // Addition
                 let run_len = run.end - run.start;
                 if run_len <= self.max_read_size as u64 {
                     let mut buf = vec![0; run_len as usize];
@@ -203,11 +201,21 @@ impl DeltaChunker {
                 } else {
                     let mut buf = vec![0; self.max_read_size];
                     self.input.read_exact_at(&mut buf, run.start)?;
-                    self.current_run = Some((true, (run.start + buf.len() as u64)..run.end));
+                    self.current_run = Some((DualType::Left, (run.start + buf.len() as u64)..run.end));
                     Ok(Some(Chunk::Mapped(buf)))
                 }
             }
-            None => Ok(None),
+            Some((DualType::Right, run)) => {
+                // Removal
+                Ok(Some(Chunk::Unmapped(run.end - run.start)))
+            }
+            Some((DualType::Both, ..)) => {
+                Err(anyhow!("internal error: region can't be both an addition and removal"))
+            }
+            Some((DualType::Neither, run)) => {
+                Ok(Some(Chunk::Ref(run.end - run.start)))
+            }
+            None => Ok(None)
         }
     }
 }
