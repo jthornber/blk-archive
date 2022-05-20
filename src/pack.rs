@@ -520,7 +520,8 @@ impl Packer {
         self.report
             .info(&format!("stream written   : {:.2}", Size(stream_written)));
 
-        let ratio = (self.mapped_size as f64) / ((data_written + hashes_written + stream_written) as f64);
+        let ratio =
+            (self.mapped_size as f64) / ((data_written + hashes_written + stream_written) as f64);
         self.report
             .info(&format!("ratio            : {:.2}", ratio));
         self.report.info(&format!(
