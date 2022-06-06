@@ -498,7 +498,7 @@ pub struct VMState {
 
 impl VMState {
     fn top(&mut self) -> &mut Register {
-        self.stack.get_mut(STACK_SIZE - 1)
+        self.stack.get_mut(0)
     }
 
     fn rot_stack(&mut self, index: usize) {
@@ -523,17 +523,15 @@ impl VMState {
             + (r2.offset as i64 - r1.offset as i64).abs()) as usize
     }
 
-    // Finds the register that would take the fewest bytes to encode
+    // Finds the register that would take the fewest bytes to encode.
+    // This doesn't consider the top of the stack (index 0).
     // FIXME: so slow
     fn nearest_register(&mut self, slab: u32, offset: u32) -> usize {
         let target = Register { slab, offset };
-        let mut index = STACK_SIZE - 1;
+        let mut index = 1;
         let mut min_cost = Self::distance_cost(self.stack.get(index), &target);
 
-        for i_ in 0..(STACK_SIZE - 1) {
-            // 0 1 2 -> 2 1 0
-            let i = (STACK_SIZE - 1) - i_;
-
+        for i in 2..STACK_SIZE {
             let cost = Self::distance_cost(self.stack.get(i), &target);
             if cost < min_cost {
                 min_cost = cost;
@@ -554,7 +552,7 @@ impl VMState {
         }
 
         let index = self.nearest_register(slab, offset);
-        if index == STACK_SIZE - 1 {
+        if index == 0 {
             if self.stack.get(index).slab != slab {
                 instrs.push(Dup { index: index as u8 });
                 self.dup(index);
