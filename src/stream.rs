@@ -492,7 +492,6 @@ const STACK_SIZE: usize = 16;
 #[derive(Default)]
 pub struct VMState {
     fill: u8,
-    //    stack: [Register; STACK_SIZE],
     stack: Stack<Register, generic_array::typenum::U16>,
     partial: Option<(u32, u32)>,
 }
