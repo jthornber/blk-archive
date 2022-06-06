@@ -1,4 +1,5 @@
 use generic_array::{ArrayLength, GenericArray};
+use std::ptr;
 
 //-----------------------------------
 
@@ -35,11 +36,10 @@ impl<T: Default + Copy, N: ArrayLength<T> + ArrayLength<u8>> Stack<T, N> {
     pub fn rot(&mut self, index: usize) {
         let tmp = self.indexes[index];
 
-        // FIXME: use memmove
-        for i in 0..index {
-            let i = index - i;
-            self.indexes[i] = self.indexes[i - 1];
+        unsafe {
+            ptr::copy(self.indexes.as_ptr(), self.indexes[1..].as_mut_ptr(), index);
         }
+
         self.indexes[0] = tmp;
     }
 
@@ -47,11 +47,12 @@ impl<T: Default + Copy, N: ArrayLength<T> + ArrayLength<u8>> Stack<T, N> {
         let last = self.indexes.len() - 1;
         let v = self.values[self.indexes[index] as usize];
 
-        // FIXME: can we use a mem move?
-        let len = self.indexes.len();
-        for i in 1..len {
-            let i = len - i;
-            self.indexes[i] = self.indexes[i - 1];
+        unsafe {
+            ptr::copy(
+                self.indexes.as_ptr(),
+                self.indexes[1..].as_mut_ptr(),
+                self.indexes.len() - 1,
+            );
         }
 
         self.indexes[0] = last as u8;
@@ -74,16 +75,6 @@ mod list_tests {
         }
         assert_stack(&s, 0, 1, 2, 3);
         s
-    }
-
-    fn print_stack(s: &TestStack) {
-        eprintln!(
-            "[{}, {}, {}, {}]",
-            s.get(0),
-            s.get(1),
-            s.get(2),
-            s.get(3)
-        );
     }
 
     fn assert_stack(s: &TestStack, n1: u32, n2: u32, n3: u32, n4: u32) {
