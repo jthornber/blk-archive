@@ -7,6 +7,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use crate::slab::*;
+use crate::stack::*;
 
 //-----------------------------------------
 
@@ -491,31 +492,22 @@ const STACK_SIZE: usize = 16;
 #[derive(Default)]
 pub struct VMState {
     fill: u8,
-    stack: [Register; STACK_SIZE],
+    //    stack: [Register; STACK_SIZE],
+    stack: Stack<Register, generic_array::typenum::U16>,
     partial: Option<(u32, u32)>,
 }
 
 impl VMState {
     fn top(&mut self) -> &mut Register {
-        &mut self.stack[STACK_SIZE - 1]
+        self.stack.get_mut(STACK_SIZE - 1)
     }
 
-    // FIXME: slow
     fn rot_stack(&mut self, index: usize) {
-        let tmp = self.stack[index];
-        for i in index..(STACK_SIZE - 1) {
-            self.stack[i] = self.stack[i + 1];
-        }
-        self.stack[STACK_SIZE - 1] = tmp;
+        self.stack.rot(index)
     }
 
-    // FIXME: slow
     fn dup(&mut self, index: usize) {
-        let tmp = self.stack[index];
-        for i in 0..(STACK_SIZE - 1) {
-            self.stack[i] = self.stack[i + 1];
-        }
-        self.stack[STACK_SIZE - 1] = tmp;
+        self.stack.dup(index)
     }
 
     fn set_partial(&mut self, begin: u32, end: u32) -> Result<()> {
@@ -534,13 +526,16 @@ impl VMState {
 
     // Finds the register that would take the fewest bytes to encode
     // FIXME: so slow
-    // FIXME: consider offset
     fn nearest_register(&mut self, slab: u32, offset: u32) -> usize {
         let target = Register { slab, offset };
         let mut index = STACK_SIZE - 1;
-        let mut min_cost = Self::distance_cost(&self.stack[index], &target);
-        for (i, r) in self.stack.iter().enumerate().rev().skip(1) {
-            let cost = Self::distance_cost(r, &target);
+        let mut min_cost = Self::distance_cost(self.stack.get(index), &target);
+
+        for i_ in 0..(STACK_SIZE - 1) {
+            // 0 1 2 -> 2 1 0
+            let i = (STACK_SIZE - 1) - i_;
+
+            let cost = Self::distance_cost(self.stack.get(i), &target);
             if cost < min_cost {
                 min_cost = cost;
                 index = i;
@@ -561,7 +556,7 @@ impl VMState {
 
         let index = self.nearest_register(slab, offset);
         if index == STACK_SIZE - 1 {
-            if self.stack[index].slab != slab {
+            if self.stack.get(index).slab != slab {
                 instrs.push(Dup { index: index as u8 });
                 self.dup(index);
             }
@@ -1172,7 +1167,7 @@ impl Dumper {
         let mut buf = String::new();
 
         for i in 0..STACK_SIZE {
-            let reg = self.vm_state.stack[STACK_SIZE - i - 1];
+            let reg = self.vm_state.stack.get(STACK_SIZE - i - 1);
             write!(&mut buf, "{}:{} ", reg.slab, reg.offset)?;
         }
 
@@ -1257,5 +1252,3 @@ impl Dumper {
 }
 
 //-----------------------------------------
-
-
