@@ -1164,7 +1164,7 @@ impl Dumper {
         let mut buf = String::new();
 
         for i in 0..STACK_SIZE {
-            let reg = self.vm_state.stack.get(STACK_SIZE - i - 1);
+            let reg = self.vm_state.stack.get(i);
             write!(&mut buf, "{}:{} ", reg.slab, reg.offset)?;
         }
 
