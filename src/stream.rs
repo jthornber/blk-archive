@@ -124,6 +124,9 @@ pub enum MapInstruction {
     SlabDelta4 { delta: i8 },
     SlabDelta12 { delta: i16 },
 
+    // Increments the slab and sets the offset to 0
+    NextSlab,
+
     Offset4 { offset: u8 },
     Offset12 { offset: u16 },
     Offset20 { offset: u32 },
@@ -248,6 +251,9 @@ impl MapInstruction {
                 w.write_u8(pack_tag(TagSlabDelta12, (delta & 0xf) as u8))?;
                 w.write_u8((delta >> 4) as u8)?;
             }
+            NextSlab => {
+                w.write_u8(pack_tag(TagUnmappedPosPartial, 8))?;
+            }
             Offset4 { offset } => {
                 w.write_u8(pack_tag(TagOffset4, *offset))?;
             }
@@ -366,6 +372,7 @@ impl MapInstruction {
                     let (input, end) = le_u32(input)?;
                     (input, Partial { begin, end })
                 }
+                8 => (input, NextSlab {}),
                 _ => {
                     // Bad length for unmapped tag
                     fail(input)?
@@ -509,6 +516,12 @@ impl VMState {
         self.stack.dup(index)
     }
 
+    fn next_slab(&mut self) {
+        let r = self.top();
+        r.slab += 1;
+        r.offset = 0;
+    }
+
     fn set_partial(&mut self, begin: u32, end: u32) -> Result<()> {
         if self.partial.is_some() {
             return Err(anyhow!("nested partials"));
@@ -545,7 +558,11 @@ impl VMState {
         use MapInstruction::*;
 
         let top = self.top();
-        if top.slab == slab && delta_as_i12(top.offset, offset).is_some() {
+        if slab == top.slab + 1 && offset == 0 {
+            instrs.push(NextSlab);
+            self.next_slab();
+            return Ok(());
+        } else if top.slab == slab && delta_as_i12(top.offset, offset).is_some() {
             // We can encode this with a couple of bytes, so no point doing
             // any stack shuffling which would at best take 2 bytes.
             return Ok(());
@@ -801,6 +818,11 @@ impl MappingUnpacker {
                 SlabDelta12 { delta } => {
                     self.vm_state.top().slab += delta as u32;
                 }
+                NextSlab => {
+                    let r = self.vm_state.top();
+                    r.slab += 1;
+                    r.offset = 0;
+                }
                 Offset4 { offset } => {
                     self.vm_state.top().offset = offset as u32;
                 }
@@ -936,6 +958,7 @@ struct Stats {
     slab32: u64,
     slab_delta4: u64,
     slab_delta12: u64,
+    next_slab: u64,
     offset4: u64,
     offset12: u64,
     offset20: u64,
@@ -1027,6 +1050,12 @@ impl Dumper {
                 self.stats.slab_delta12 += 1;
                 self.vm_state.top().slab += *delta as u32;
             }
+            NextSlab => {
+                self.stats.next_slab += 1;
+                let r = self.vm_state.top();
+                r.slab += 1;
+                r.offset = 0;
+            }
             Offset4 { offset } => {
                 self.stats.offset4 += 1;
                 self.vm_state.top().offset = *offset as u32;
@@ -1076,26 +1105,26 @@ impl Dumper {
 
         match instr {
             Rot { index } => {
-                format!("     rot {}", index)
+                format!("   rot {}", index)
             }
             Dup { index } => {
-                format!("     dup {}", index)
+                format!("   dup {}", index)
             }
 
             SetFill { byte } => {
                 format!("set-fill {}", byte)
             }
             Fill8 { len } => {
-                format!("    fill {} ({})", len, self.vm_state.fill)
+                format!("   fill {} ({})", len, self.vm_state.fill)
             }
             Fill16 { len } => {
-                format!("    fill {} ({})", len, self.vm_state.fill)
+                format!("   fill {} ({})", len, self.vm_state.fill)
             }
             Fill32 { len } => {
-                format!("    fill {} ({})", len, self.vm_state.fill)
+                format!("   fill {} ({})", len, self.vm_state.fill)
             }
             Fill64 { len } => {
-                format!("    fill {} ({})", len, self.vm_state.fill)
+                format!("   fill {} ({})", len, self.vm_state.fill)
             }
 
             Unmapped8 { len } => {
@@ -1123,6 +1152,9 @@ impl Dumper {
             SlabDelta12 { delta } => {
                 format!("   s.add {}", delta)
             }
+            NextSlab => {
+                format!("   next")
+            }
             Offset4 { offset } => {
                 format!("   o.set {}", offset)
             }
@@ -1139,22 +1171,23 @@ impl Dumper {
                 format!("   o.add {}", delta)
             }
             Emit4 { len } => {
-                format!("    emit {}", len)
+                format!("   emit {}", len)
             }
             Emit12 { len } => {
-                format!("    emit {}", len)
+                format!("   emit {}", len)
             }
             Emit20 { len } => {
-                format!("    emit {:<10}", len)
+                format!("   emit {:<10}", len)
             }
             Pos32 { pos } => {
-                format!("     pos {:<10}", pos)
+                format!("   pos {:<10}", pos)
             }
             Pos64 { pos } => {
-                format!("     pos {:<10}", pos)
+                format!("   pos {:<10}", pos)
             }
             Partial { begin, end } => {
-                format!("     partial {:<10}..{:<10}", begin, end)
+                let str = format!("{}..{}", begin, end);
+                format!("   part {:<10}", str)
             }
         }
     }
@@ -1188,6 +1221,7 @@ impl Dumper {
                 | Unmapped16 { .. }
                 | Unmapped32 { .. }
                 | Unmapped64 { .. }
+                | Partial { .. }
         )
     }
 
@@ -1226,6 +1260,7 @@ impl Dumper {
             ("slab32", self.stats.slab32),
             ("slab_delta4", self.stats.slab_delta4),
             ("slab_delta12", self.stats.slab_delta12),
+            ("next", self.stats.next_slab),
             ("offset4", self.stats.offset4),
             ("offset12", self.stats.offset12),
             ("offset20", self.stats.offset20),
