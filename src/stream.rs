@@ -528,10 +528,10 @@ impl VMState {
     // FIXME: so slow
     fn nearest_register(&mut self, slab: u32, offset: u32) -> usize {
         let target = Register { slab, offset };
-        let mut index = 1;
+        let mut index = 0;
         let mut min_cost = Self::distance_cost(self.stack.get(index), &target);
 
-        for i in 2..STACK_SIZE {
+        for i in 1..STACK_SIZE {
             let cost = Self::distance_cost(self.stack.get(i), &target);
             if cost < min_cost {
                 min_cost = cost;
@@ -553,7 +553,8 @@ impl VMState {
 
         let index = self.nearest_register(slab, offset);
         if index == 0 {
-            if self.stack.get(index).slab != slab {
+            let reg = self.stack.get(index);
+            if reg.slab != slab && !(reg.slab == slab + 1 && reg.offset == 0) {
                 instrs.push(Dup { index: index as u8 });
                 self.dup(index);
             }
