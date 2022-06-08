@@ -44,8 +44,8 @@ impl<T: Default + Copy, N: ArrayLength<T> + ArrayLength<u8>> Stack<T, N> {
     }
 
     pub fn dup(&mut self, index: usize) {
-        let last = self.indexes.len() - 1;
-        let v = self.values[self.indexes[index] as usize];
+        let last = self.indexes[self.indexes.len() - 1];
+        let v = self.values[self.indexes[index] as usize].clone();
 
         unsafe {
             ptr::copy(
@@ -56,7 +56,7 @@ impl<T: Default + Copy, N: ArrayLength<T> + ArrayLength<u8>> Stack<T, N> {
         }
 
         self.indexes[0] = last as u8;
-        self.values[last] = v;
+        self.values[last as usize] = v;
     }
 }
 
@@ -75,6 +75,10 @@ mod list_tests {
         }
         assert_stack(&s, 0, 1, 2, 3);
         s
+    }
+
+    fn print_stack(s: &TestStack) {
+        eprintln!("[{}, {}, {}, {}]", s.get(0), s.get(1), s.get(2), s.get(3));
     }
 
     fn assert_stack(s: &TestStack, n1: u32, n2: u32, n3: u32, n4: u32) {
@@ -115,5 +119,10 @@ mod list_tests {
 
         s.dup(0);
         assert_stack(&s, 2, 2, 2, 0);
+
+        print_stack(&s);
+        *s.get_mut(0) = 7;
+        print_stack(&s);
+        assert_stack(&s, 7, 2, 2, 0);
     }
 }
