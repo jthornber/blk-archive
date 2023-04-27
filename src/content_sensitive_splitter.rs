@@ -138,7 +138,7 @@ impl ContentSensitiveSplitter {
         let ws = self.window_size as usize;
 
         while offset < data.len() {
-            let end = std::cmp::min(data.len(), offset + ws - remainder);
+            let end = data.len();
             if let Some(boundary) = self.hasher.next_match(&data[offset..end], self.mask_s) {
                 consumes.push(remainder + boundary);
                 offset += boundary;
