@@ -18,7 +18,7 @@ pub struct ContentSensitiveSplitter {
     mask_s: u64,
     mask_l: u64,
 
-    len: u64,
+    unconsumed_len: u64,
     blocks: VecDeque<Vec<u8>>,
 
     leading_c: Cursor,
@@ -37,7 +37,7 @@ impl ContentSensitiveSplitter {
             mask_s: (((window_size as u64) << 1) - 1) << shift,
             mask_l: (((window_size as u64) >> 1) - 1) << shift,
 
-            len: 0,
+            unconsumed_len: 0,
             blocks: VecDeque::new(),
 
             leading_c: Cursor::default(),
@@ -111,7 +111,7 @@ impl ContentSensitiveSplitter {
                 c.block += 1;
             }
         }
-        self.len -= len as u64;
+        self.unconsumed_len -= len as u64;
         r
     }
 
@@ -124,7 +124,7 @@ impl ContentSensitiveSplitter {
             c.offset = 0;
             c.block += 1;
         }
-        self.len = 0;
+        self.unconsumed_len = 0;
         r
     }
 
@@ -133,7 +133,7 @@ impl ContentSensitiveSplitter {
         let mut consumes = Vec::with_capacity(1024); // FIXME: estimate good capacity
 
         let mut offset = 0;
-        let mut remainder = self.len as usize;
+        let mut remainder = self.unconsumed_len as usize;
         let min_size = self.window_size as usize / 4;
         let ws = self.window_size as usize;
 
@@ -184,7 +184,7 @@ impl Splitter for ContentSensitiveSplitter {
             let consumes = self.next_data_(Self::ref_chunk(&blocks, &self.leading_c, len));
             std::mem::swap(&mut self.blocks, &mut blocks);
 
-            self.len += len as u64;
+            self.unconsumed_len += len as u64;
 
             for consume_len in consumes {
                 handler.handle_data(&self.consume(consume_len))?;
