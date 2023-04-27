@@ -813,10 +813,12 @@ impl MappingUnpacker {
                     self.vm_state.top().slab = slab as u32;
                 }
                 SlabDelta4 { delta } => {
-                    self.vm_state.top().slab += delta as u32;
+                    let top = self.vm_state.top();
+                    top.slab = top.slab.wrapping_add(delta as u32);
                 }
                 SlabDelta12 { delta } => {
-                    self.vm_state.top().slab += delta as u32;
+                    let top = self.vm_state.top();
+                    top.slab = top.slab.wrapping_add(delta as u32);
                 }
                 NextSlab => {
                     let r = self.vm_state.top();
@@ -833,10 +835,12 @@ impl MappingUnpacker {
                     self.vm_state.top().offset = offset as u32;
                 }
                 OffsetDelta4 { delta } => {
-                    self.vm_state.top().offset += delta as u32;
+                    let top = self.vm_state.top();
+                    top.offset = top.offset.wrapping_add(delta as u32);
                 }
                 OffsetDelta12 { delta } => {
-                    self.vm_state.top().offset += delta as u32;
+                    let top = self.vm_state.top();
+                    top.offset = top.offset.wrapping_add(delta as u32);
                 }
                 Emit4 { len } => {
                     self.emit_run(&mut entries, len as usize);
