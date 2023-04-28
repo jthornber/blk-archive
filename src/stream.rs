@@ -1048,11 +1048,13 @@ impl Dumper {
             }
             SlabDelta4 { delta } => {
                 self.stats.slab_delta4 += 1;
-                self.vm_state.top().slab += *delta as u32;
+                let top = self.vm_state.top();
+                top.slab = top.slab.wrapping_add(*delta as u32);
             }
             SlabDelta12 { delta } => {
                 self.stats.slab_delta12 += 1;
-                self.vm_state.top().slab += *delta as u32;
+                let top = self.vm_state.top();
+                top.slab = top.slab.wrapping_add(*delta as u32);
             }
             NextSlab => {
                 self.stats.next_slab += 1;
@@ -1074,11 +1076,13 @@ impl Dumper {
             }
             OffsetDelta4 { delta } => {
                 self.stats.offset_delta4 += 1;
-                self.vm_state.top().offset += *delta as u32;
+                let top = self.vm_state.top();
+                top.offset = top.offset.wrapping_add(*delta as u32);
             }
             OffsetDelta12 { delta } => {
                 self.stats.offset_delta12 += 1;
-                self.vm_state.top().offset += *delta as u32;
+                let top = self.vm_state.top();
+                top.offset = top.offset.wrapping_add(*delta as u32);
             }
             Emit4 { len } => {
                 self.stats.emit4 += 1;
