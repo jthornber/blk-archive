@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::{command, Arg, Command};
+use clap::{command, Arg, Command, ArgMatches};
 use std::env;
 use std::process::exit;
 use std::sync::Arc;
@@ -10,11 +10,14 @@ use blk_archive::dump_stream;
 use blk_archive::list;
 use blk_archive::pack;
 use blk_archive::unpack;
+use blk_archive::output::Output;
 
 //-----------------------
 
-fn mk_report() -> Arc<Report> {
-    if atty::is(atty::Stream::Stdout) {
+fn mk_report(matches: &ArgMatches) -> Arc<Report> {
+    if matches.is_present("JSON") {
+        Arc::new(mk_quiet_report())
+    } else if atty::is(atty::Stream::Stdout) {
         Arc::new(mk_progress_bar_report())
     } else {
         Arc::new(mk_simple_report())
@@ -53,7 +56,16 @@ fn main_() -> Result<()> {
         .value_name("STREAM")
         .takes_value(true);
 
+    let json: Arg = Arg::new("JSON")
+        .help("Output JSON")
+        .required(false)
+        .long("json")
+        .short('j')
+        .value_name("JSON")
+        .takes_value(false);
+
     let matches = command!()
+        .arg(json)
         .propagate_version(true)
         .subcommand_required(true)
         .arg_required_else_help(true)
@@ -174,13 +186,14 @@ fn main_() -> Result<()> {
         )
         .get_matches();
 
-    let report = mk_report();
+    let report = mk_report(&matches);
+    let output = Arc::new(Output { report: report.clone(), json: matches.is_present("JSON")});
     match matches.subcommand() {
         Some(("create", sub_matches)) => {
             create::run(sub_matches, report)?;
         }
         Some(("pack", sub_matches)) => {
-            pack::run(sub_matches, report)?;
+            pack::run(sub_matches, output)?;
         }
         Some(("unpack", sub_matches)) => {
             unpack::run_unpack(sub_matches, report)?;
@@ -189,7 +202,7 @@ fn main_() -> Result<()> {
             unpack::run_verify(sub_matches, report)?;
         }
         Some(("list", sub_matches)) => {
-            list::run(sub_matches, report)?;
+            list::run(sub_matches, output)?;
         }
         Some(("dump-stream", sub_matches)) => {
             dump_stream::run(sub_matches, report)?;
