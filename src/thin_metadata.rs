@@ -50,14 +50,24 @@ pub fn is_thin_device<P: AsRef<Path>>(path: P) -> Result<bool> {
     let thin_major = (rdev >> 8) as u32;
     let thin_minor = (rdev & 0xff) as u32;
     let dm_devs = collect_dm_devs(&mut dm)?;
-    let thin_name = dm_devs.get(&(thin_major, thin_minor)).unwrap().clone();
+
+    let dm_name = dm_devs.get(&(thin_major, thin_minor));
+    if dm_name.is_none() {
+        // Not a dm device
+        return Ok(false);
+    }
+
+    let thin_name = dm_name.unwrap().clone();
     let thin_id = DevId::Name(&thin_name);
 
     // Confirm this is a thin device
     let mut dm = DM::new()?;
 
-    let thin_args = get_table(&mut dm, &thin_id, "thin")?;
-    Ok(parse_thin_table(&thin_args).is_ok())
+    match get_table(&mut dm, &thin_id, "thin") {
+        Ok(thin_args) => Ok(parse_thin_table(&thin_args).is_ok()),
+        Err(_e) => Ok(false)
+    }
+
 }
 
 //---------------------------------
