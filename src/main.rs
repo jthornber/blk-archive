@@ -205,7 +205,7 @@ fn main_() -> Result<()> {
             list::run(sub_matches, output)?;
         }
         Some(("dump-stream", sub_matches)) => {
-            dump_stream::run(sub_matches, report)?;
+            dump_stream::run(sub_matches, output)?;
         }
         _ => unreachable!("Exhausted list of subcommands and subcommand_required prevents 'None'"),
     }
