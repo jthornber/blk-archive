@@ -1,13 +1,18 @@
+use serde_json::to_string_pretty;
+use serde_json::json;
 use anyhow::{anyhow, Result};
 use byteorder::{LittleEndian, WriteBytesExt};
 use nom::{combinator::fail, multi::*, number::complete::*, IResult};
 use num_enum::TryFromPrimitive;
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::slab::*;
 use crate::stack::*;
+use crate::output::Output;
 
 //-----------------------------------------
 
@@ -1233,8 +1238,9 @@ impl Dumper {
         )
     }
 
-    pub fn dump(&mut self) -> Result<()> {
+    pub fn dump(&mut self, output: Arc<Output>) -> Result<()> {
         let nr_slabs = self.stream_file.get_nr_slabs();
+        let mut json_stream = Vec::new();
 
         for s in 0..nr_slabs {
             let stream_data = self.stream_file.read(s as u32)?;
@@ -1245,9 +1251,21 @@ impl Dumper {
 
                 if Self::effects_stack(e) {
                     let stack = self.format_stack()?;
-                    println!("{:0>10x}   {:20}{:20}", i, self.pp_instr(e), &stack,);
+                    if output.json {
+                        json_stream.push(json!(
+                            {"entry": i, "instruction": format!("{:?}",e), "stack": &stack}
+                        ));
+                    } else {
+                        println!("{:0>10x}   {:20}{:20}", i, self.pp_instr(e), &stack,);
+                    }
                 } else {
-                    println!("{:0>10x}   {:20}", i, self.pp_instr(e));
+                    if output.json {
+                        json_stream.push(json!(
+                            {"address": i, "instruction": format!("{:?}",e), "stack":""}
+                        ));
+                    } else {
+                         println!("{:0>10x}   {:20}", i, self.pp_instr(e));
+                    }
                 }
             }
         }
@@ -1283,9 +1301,16 @@ impl Dumper {
 
         stats.sort_by(|l, r| r.1.cmp(&l.1));
 
-        println!("\n\nInstruction frequencies:\n");
-        for (instr, count) in stats {
-            println!("    {:>15} {:<10}", instr, count);
+        if output.json {
+            let hm_stats: HashMap<_,_> = stats.into_iter().collect();
+            println!("{}", to_string_pretty(&json!({
+                "instructions": json_stream, "stats": hm_stats
+            })).unwrap());
+        } else {
+            println!("\n\nInstruction frequencies:\n");
+            for (instr, count) in stats {
+                println!("    {:>15} {:<10}", instr, count);
+            }
         }
 
         Ok(())
