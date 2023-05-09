@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::{command, Arg, Command, ArgMatches};
+use clap::{command, Arg, ArgMatches, Command};
 use std::env;
 use std::process::exit;
 use std::sync::Arc;
@@ -8,9 +8,9 @@ use thinp::report::*;
 use blk_archive::create;
 use blk_archive::dump_stream;
 use blk_archive::list;
+use blk_archive::output::Output;
 use blk_archive::pack;
 use blk_archive::unpack;
-use blk_archive::output::Output;
 
 //-----------------------
 
@@ -187,7 +187,11 @@ fn main_() -> Result<()> {
         .get_matches();
 
     let report = mk_report(&matches);
-    let output = Arc::new(Output { report: report.clone(), json: matches.is_present("JSON")});
+    report.set_level(LogLevel::Info);
+    let output = Arc::new(Output {
+        report: report.clone(),
+        json: matches.is_present("JSON"),
+    });
     match matches.subcommand() {
         Some(("create", sub_matches)) => {
             create::run(sub_matches, report)?;

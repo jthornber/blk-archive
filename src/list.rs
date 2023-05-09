@@ -1,5 +1,5 @@
-use serde_json::to_string_pretty;
 use serde_json::json;
+use serde_json::to_string_pretty;
 
 use anyhow::Result;
 use chrono::prelude::*;
@@ -53,7 +53,6 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
         }
 
         println!("{}", to_string_pretty(&j_output).unwrap());
-
     } else {
         // calc size width
         let mut width = 0;
