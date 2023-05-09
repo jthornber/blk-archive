@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use devicemapper::*;
+use libc;
 use nom::IResult;
 use roaring::bitmap::RoaringBitmap;
 use std::collections::*;
@@ -15,6 +16,7 @@ use thinp::pdata::btree_walker::*;
 use thinp::thin::block_time::*;
 use thinp::thin::device_detail::*;
 use thinp::thin::superblock::*;
+use udev::Enumerator;
 
 //---------------------------------
 
@@ -65,9 +67,8 @@ pub fn is_thin_device<P: AsRef<Path>>(path: P) -> Result<bool> {
 
     match get_table(&mut dm, &thin_id, "thin") {
         Ok(thin_args) => Ok(parse_thin_table(&thin_args).is_ok()),
-        Err(_e) => Ok(false)
+        Err(_e) => Ok(false),
     }
-
 }
 
 //---------------------------------
@@ -121,7 +122,7 @@ pub struct ThinInfo {
 }
 
 fn read_info(metadata: &Path, thin_id: u32) -> Result<ThinInfo> {
-    let engine = Arc::new(SyncIoEngine::new_with(metadata, 8, false, false)?);
+    let engine = Arc::new(SyncIoEngine::new_with(metadata, false, false)?);
 
     // Read metadata superblock
     let sb = read_superblock_snap(&*engine)?;
@@ -173,7 +174,7 @@ pub struct DeltaInfo {
 }
 
 fn read_delta_info(metadata: &Path, old_thin_id: u32, new_thin_id: u32) -> Result<DeltaInfo> {
-    let engine = Arc::new(SyncIoEngine::new_with(metadata, 8, false, false)?);
+    let engine = Arc::new(SyncIoEngine::new_with(metadata, false, false)?);
 
     // Read metadata superblock
     let sb = read_superblock_snap(&*engine)?;
@@ -203,8 +204,7 @@ fn read_delta_info(metadata: &Path, old_thin_id: u32, new_thin_id: u32) -> Resul
         btree_to_map(&mut path, engine.clone(), true, *old_root)?;
 
     let new_root = roots.get(&(new_thin_id as u64)).unwrap();
-    let new_mappings: BTreeMap<u64, BlockTime> =
-        btree_to_map(&mut path, engine, true, *new_root)?;
+    let new_mappings: BTreeMap<u64, BlockTime> = btree_to_map(&mut path, engine, true, *new_root)?;
 
     let mut additions = RoaringBitmap::default();
     let mut removals = RoaringBitmap::default();
@@ -319,11 +319,7 @@ fn get_table(dm: &mut DM, dev: &DevId, expected_target_type: &str) -> Result<Str
     Ok(args.to_string())
 }
 
-fn get_thin_details<P: AsRef<Path>>(
-    thin: P,
-    dm_devs: &DevMap,
-    dm: &mut DM,
-) -> Result<ThinDetails> {
+fn get_thin_details<P: AsRef<Path>>(thin: P, dm_devs: &DevMap, dm: &mut DM) -> Result<ThinDetails> {
     let thin = OpenOptions::new()
         .read(true)
         .write(false)
@@ -350,6 +346,23 @@ fn get_thin_details<P: AsRef<Path>>(
     Ok(thin_details)
 }
 
+fn find_device(major: u32, minor: u32) -> Option<PathBuf> {
+    let mut enumerator = Enumerator::new().unwrap();
+
+    for device in enumerator.scan_devices().unwrap() {
+        if let Some(devnum) = device.devnum() {
+            let found_major = unsafe { libc::major(devnum) };
+            let found_minor = unsafe { libc::minor(devnum) };
+
+            if found_major as u32 == major && found_minor as u32 == minor {
+                return device.devnode().map(PathBuf::from);
+            }
+        }
+    }
+
+    None
+}
+
 pub fn read_thin_mappings<P: AsRef<Path>>(thin: P) -> Result<ThinInfo> {
     let mut dm = DM::new()?;
 
@@ -359,7 +372,7 @@ pub fn read_thin_mappings<P: AsRef<Path>>(thin: P) -> Result<ThinInfo> {
 
     let pool_name = dm_devs
         .get(&(thin_details.pool_major, thin_details.pool_minor))
-        .unwrap()
+        .ok_or_else(|| anyhow!("Pool device not found"))?
         .clone();
     let pool_id = DevId::Name(&pool_name);
     let pool_args = get_table(&mut dm, &pool_id, "thin-pool")?;
@@ -367,12 +380,8 @@ pub fn read_thin_mappings<P: AsRef<Path>>(thin: P) -> Result<ThinInfo> {
         parse_pool_table(&pool_args).map_err(|_| anyhow!("couldn't parse pool table"))?;
 
     // Find the metadata dev
-    let metadata_name = dm_devs
-        .get(&(pool_details.metadata_major, pool_details.metadata_minor))
-        .unwrap()
-        .clone();
-    let metadata_name = std::str::from_utf8(metadata_name.as_bytes())?;
-    let metadata_path: PathBuf = ["/dev", "mapper", metadata_name].iter().collect();
+    let metadata_path =
+        find_device(pool_details.metadata_major, pool_details.metadata_minor).ok_or_else(|| anyhow!("Couldn't find pool metadata device"))?;
 
     // Parse thin metadata
     dm.target_msg(&pool_id, None, "reserve_metadata_snap")?;
@@ -402,9 +411,7 @@ fn get_thin_name<P: AsRef<Path>>(thin: P, dm_devs: &DevMap) -> Result<DmNameBuf>
     let rdev = metadata.rdev();
     let thin_major = (rdev >> 8) as u32;
     let thin_minor = (rdev & 0xff) as u32;
-    Ok(
-        dm_devs.get(&(thin_major, thin_minor)).unwrap().clone(),
-    )
+    Ok(dm_devs.get(&(thin_major, thin_minor)).unwrap().clone())
 }
 
 fn get_thin_details_(thin_id: &DevId, dm: &mut DM) -> Result<ThinDetails> {
