@@ -380,8 +380,8 @@ pub fn read_thin_mappings<P: AsRef<Path>>(thin: P) -> Result<ThinInfo> {
         parse_pool_table(&pool_args).map_err(|_| anyhow!("couldn't parse pool table"))?;
 
     // Find the metadata dev
-    let metadata_path =
-        find_device(pool_details.metadata_major, pool_details.metadata_minor).ok_or_else(|| anyhow!("Couldn't find pool metadata device"))?;
+    let metadata_path = find_device(pool_details.metadata_major, pool_details.metadata_minor)
+        .ok_or_else(|| anyhow!("Couldn't find pool metadata device"))?;
 
     // Parse thin metadata
     dm.target_msg(&pool_id, None, "reserve_metadata_snap")?;
@@ -438,7 +438,7 @@ pub fn read_thin_delta<P: AsRef<Path>>(old_thin: P, new_thin: P) -> Result<Delta
 
     let pool_name = dm_devs
         .get(&(old_thin_details.pool_major, old_thin_details.pool_minor))
-        .unwrap()
+        .ok_or_else(|| anyhow!("Pool device not found"))?
         .clone();
     let pool_id = DevId::Name(&pool_name);
     let pool_args = get_table(&mut dm, &pool_id, "thin-pool")?;
@@ -446,12 +446,8 @@ pub fn read_thin_delta<P: AsRef<Path>>(old_thin: P, new_thin: P) -> Result<Delta
         parse_pool_table(&pool_args).map_err(|_| anyhow!("couldn't parse pool table"))?;
 
     // Find the metadata dev
-    let metadata_name = dm_devs
-        .get(&(pool_details.metadata_major, pool_details.metadata_minor))
-        .unwrap()
-        .clone();
-    let metadata_name = std::str::from_utf8(metadata_name.as_bytes())?;
-    let metadata_path: PathBuf = ["/dev", "mapper", metadata_name].iter().collect();
+    let metadata_path = find_device(pool_details.metadata_major, pool_details.metadata_minor)
+        .ok_or_else(|| anyhow!("Couldn't find pool metadata device"))?;
 
     // Parse thin metadata
     dm.target_msg(&pool_id, None, "reserve_metadata_snap")?;
