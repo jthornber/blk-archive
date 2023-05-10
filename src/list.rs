@@ -66,7 +66,7 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
         for (id, time, cfg) in streams {
             let source = cfg.name.unwrap();
             let size = cfg.size;
-            output.report.info(&format!(
+            output.report.to_stdout(&format!(
                 "{} {:width$} {} {}",
                 id,
                 size,
