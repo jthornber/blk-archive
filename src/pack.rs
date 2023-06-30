@@ -717,8 +717,12 @@ fn get_delta_args(matches: &ArgMatches) -> Result<Option<(String, PathBuf)>> {
 pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
     let input_file = Path::new(matches.value_of("INPUT").unwrap());
-    let input_name = input_file.file_name().unwrap();
-    let input_name = input_name.to_str().unwrap().to_string();
+    let input_name = input_file
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     let input_file = Path::new(matches.value_of("INPUT").unwrap()).canonicalize()?;
 
     env::set_current_dir(archive_dir)?;
