@@ -14,6 +14,9 @@ source "$HOME/.cargo/env" || exit 1
 
 cargo build || exit 1
 
+# Run the rust tests
+cargo test || exit 1
+
 export PATH=$PATH:`pwd`/target/debug
 
 if [ ! -d dmtest-python ]; then
@@ -30,10 +33,7 @@ loop2=$(losetup -f --show /block2.img)
 loop3=$(losetup -f --show /block3.img)
 
 
-
-
-# install linux source tree
-
+# Unable to run rolling linux test as we don't have enough disk space in the CI VMs.
 
 # setup the configuration file for dmtest-python
 cd dmtest-python || exit 1
