@@ -8,6 +8,7 @@ use std::iter::*;
 use std::path::Path;
 
 use crate::slab::*;
+use crate::utils::is_pow2;
 
 const ENTRIES_PER_BUCKET: usize = 4;
 const MAX_KICKS: usize = 500;
@@ -122,7 +123,9 @@ impl CuckooFilter {
         }
 
         let scatter = Self::make_scatter(&mut rng);
-        // FIXME: double check nr_buckets is a power of 2
+        if !is_pow2(nr_buckets) {
+            return Err(anyhow!("nr_buckets({nr_buckets}) is not a power of 2"));
+        }
         let mask = nr_buckets - 1;
         let len = bucket_counts.iter().map(|n| *n as usize).sum();
 

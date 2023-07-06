@@ -16,6 +16,12 @@ pub fn round_pow2(i: u32) -> u64 {
     v
 }
 
+
+pub fn is_pow2(v: usize) -> bool {
+    // https://graphics.stanford.edu/~seander/bithacks.html#DetermineIfPowerOf2
+    v != 0 && ((v & (v - 1)) == 0)
+}
+
 #[cfg(test)]
 mod util_tests {
 
@@ -42,5 +48,18 @@ mod util_tests {
         assert!(round_pow2(131072) == 131072);
         assert!(round_pow2(131073) == 262144);
         assert!(round_pow2(4294967295) == 4294967296);
+    }
+
+    #[test]
+    fn test_is_pow2() {
+
+        for i in 0..268435456 {
+            let z = round_pow2(i);
+            if i as u64 == z {
+                assert!(is_pow2(i as usize) == true);
+            } else {
+                assert!(is_pow2(i as usize) == false);
+            }
+        }
     }
 }
