@@ -7,6 +7,9 @@ use std::cmp;
 use std::iter::*;
 use std::path::Path;
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use crate::slab::*;
 use crate::utils::is_pow2;
 
@@ -82,9 +85,14 @@ fn parse_nr(input: &[u8]) -> IResult<&[u8], u32> {
 
 impl CuckooFilter {
     fn make_scatter(rng: &mut ChaCha20Rng) -> Vec<usize> {
-        // FIXME: this needs to be identical every time it's constructed.  Put
-        // a checksum in to make sure.
-        repeat_with(|| rng.gen()).take(u16::MAX as usize + 1).collect()
+        let scatter: Vec<usize> = repeat_with(|| rng.gen()).take(u16::MAX as usize + 1).collect();
+
+        // Ensure that the scatter is identical everytime it's constructed
+        let mut hasher = DefaultHasher::new();
+        Hash::hash_slice(scatter.as_slice(), &mut hasher);
+        assert!(16936493454484885878 == hasher.finish());
+
+        scatter
     }
 
     pub fn with_capacity(mut n: usize) -> Self {
