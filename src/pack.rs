@@ -229,7 +229,7 @@ impl DedupHandler {
     fn add_data_entry(&mut self, iov: &IoVec) -> Result<(u32, u32)> {
         let r = (self.current_slab as u32, self.current_entries as u32);
         for v in iov {
-            self.data_buf.extend(v.iter()); // FIXME: this looks slow
+            self.data_buf.extend_from_slice(v);
             self.data_written += v.len() as u64;
         }
         self.current_entries += 1;
