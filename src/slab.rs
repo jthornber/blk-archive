@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::collections::BTreeMap;
+use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -417,8 +418,9 @@ impl SlabFile {
         assert_eq!(actual_csum, expected_csum);
 
         if self.compressed {
+            let decompress_buff_size_mb :usize =  env::var("BLK_ARCHIVE_DECOMPRESS_BUFF_SIZE_MB").unwrap_or(String::from("4")).parse::<usize>().unwrap_or(4);
             let mut z = zstd::Decoder::new(&buf[..])?;
-            let mut buffer = Vec::with_capacity(4 * 1024 * 1024);  // FIXME: make configurable
+            let mut buffer = Vec::with_capacity(decompress_buff_size_mb * 1024 * 1024);
             z.read_to_end(&mut buffer)?;
             Ok(buffer)
         } else {
