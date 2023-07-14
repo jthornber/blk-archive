@@ -435,7 +435,9 @@ impl UnpackDest for ThinDest {
 //-----------------------------------------
 
 pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
-    let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize().context("Bad archive dir")?;
+    let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap())
+        .canonicalize()
+        .context("Bad archive dir")?;
     let output_file = Path::new(matches.value_of("OUTPUT").unwrap());
     let stream = matches.value_of("STREAM").unwrap();
     let create = matches.is_present("CREATE");
@@ -445,12 +447,14 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
             .read(false)
             .write(true)
             .create_new(true)
-            .open(&output_file).context("Couldn't open output")?
+            .open(&output_file)
+            .context("Couldn't open output")?
     } else {
-       fs::OpenOptions::new()
+        fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .open(&output_file).context ("Couldn't open output")?
+            .open(&output_file)
+            .context("Couldn't open output")?
     };
     env::set_current_dir(&archive_dir)?;
 

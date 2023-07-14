@@ -43,7 +43,8 @@ fn stream_cfg_path(stream_id: &str) -> PathBuf {
 
 pub fn read_stream_config(stream_id: &str) -> Result<StreamConfig> {
     let p = stream_cfg_path(stream_id);
-    let input = fs::read_to_string(&p).with_context(|| format!("couldn't read stream config '{:?}", &p))?;
+    let input =
+        fs::read_to_string(&p).with_context(|| format!("couldn't read stream config '{:?}", &p))?;
     let config: StreamConfig =
         toml::from_str(&input).context("couldn't parse stream config file")?;
     Ok(config)

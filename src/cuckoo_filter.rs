@@ -85,7 +85,9 @@ fn parse_nr(input: &[u8]) -> IResult<&[u8], u32> {
 
 impl CuckooFilter {
     fn make_scatter(rng: &mut ChaCha20Rng) -> Vec<usize> {
-        let scatter: Vec<usize> = repeat_with(|| rng.gen()).take(u16::MAX as usize + 1).collect();
+        let scatter: Vec<usize> = repeat_with(|| rng.gen())
+            .take(u16::MAX as usize + 1)
+            .collect();
 
         // Ensure that the scatter is identical everytime it's constructed
         let mut hasher = DefaultHasher::new();
@@ -291,7 +293,7 @@ mod cuckoo_tests {
         }
 
         // Inserts
-	for v in &values {
+        for v in &values {
             match cf.test_and_set(*v, *v as u32).expect("test_and_set failed") {
                 InsertResult::Inserted => {
                     // Expected

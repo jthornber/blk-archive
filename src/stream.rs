@@ -1,18 +1,18 @@
-use serde_json::to_string_pretty;
-use serde_json::json;
 use anyhow::{anyhow, Result};
 use byteorder::{LittleEndian, WriteBytesExt};
 use nom::{combinator::fail, multi::*, number::complete::*, IResult};
 use num_enum::TryFromPrimitive;
+use serde_json::json;
+use serde_json::to_string_pretty;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::output::Output;
 use crate::slab::*;
 use crate::stack::*;
-use crate::output::Output;
 
 //-----------------------------------------
 
@@ -1264,7 +1264,7 @@ impl Dumper {
                             {"address": i, "instruction": format!("{:?}",e), "stack":""}
                         ));
                     } else {
-                         println!("{:0>10x}   {:20}", i, self.pp_instr(e));
+                        println!("{:0>10x}   {:20}", i, self.pp_instr(e));
                     }
                 }
             }
@@ -1302,10 +1302,14 @@ impl Dumper {
         stats.sort_by(|l, r| r.1.cmp(&l.1));
 
         if output.json {
-            let hm_stats: HashMap<_,_> = stats.into_iter().collect();
-            println!("{}", to_string_pretty(&json!({
-                "instructions": json_stream, "stats": hm_stats
-            })).unwrap());
+            let hm_stats: HashMap<_, _> = stats.into_iter().collect();
+            println!(
+                "{}",
+                to_string_pretty(&json!({
+                    "instructions": json_stream, "stats": hm_stats
+                }))
+                .unwrap()
+            );
         } else {
             println!("\n\nInstruction frequencies:\n");
             for (instr, count) in stats {

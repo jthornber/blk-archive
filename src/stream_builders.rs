@@ -441,7 +441,9 @@ mod stream_tests {
                     .next(&e, len, &mut buf)
                     .expect("builder.next() failed");
             }
-            builder.complete(&mut buf).expect("builder.complete() failed");
+            builder
+                .complete(&mut buf)
+                .expect("builder.complete() failed");
 
             // unpack
             let (actual, _) = unpack(&buf[..]).expect("unpack failed");

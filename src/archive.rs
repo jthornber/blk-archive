@@ -3,8 +3,8 @@ use byteorder::{LittleEndian, WriteBytesExt};
 use io::Write;
 use std::io;
 
-use crate::iovec::*;
 use crate::hash::*;
+use crate::iovec::*;
 
 //-----------------------------------------
 
@@ -90,4 +90,3 @@ impl Slab {
 }
 
 //-----------------------------------------
-

@@ -201,7 +201,8 @@ impl DeltaChunker {
                 } else {
                     let mut buf = vec![0; self.max_read_size];
                     self.input.read_exact_at(&mut buf, run.start)?;
-                    self.current_run = Some((DualType::Left, (run.start + buf.len() as u64)..run.end));
+                    self.current_run =
+                        Some((DualType::Left, (run.start + buf.len() as u64)..run.end));
                     Ok(Some(Chunk::Mapped(buf)))
                 }
             }
@@ -209,13 +210,11 @@ impl DeltaChunker {
                 // Removal
                 Ok(Some(Chunk::Unmapped(run.end - run.start)))
             }
-            Some((DualType::Both, ..)) => {
-                Err(anyhow!("internal error: region can't be both an addition and removal"))
-            }
-            Some((DualType::Neither, run)) => {
-                Ok(Some(Chunk::Ref(run.end - run.start)))
-            }
-            None => Ok(None)
+            Some((DualType::Both, ..)) => Err(anyhow!(
+                "internal error: region can't be both an addition and removal"
+            )),
+            Some((DualType::Neither, run)) => Ok(Some(Chunk::Ref(run.end - run.start))),
+            None => Ok(None),
         }
     }
 }

@@ -4,8 +4,8 @@ use std::env;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::stream::*;
 use crate::output::Output;
+use crate::stream::*;
 
 //-----------------------------------------
 

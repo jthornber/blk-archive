@@ -67,8 +67,11 @@ fn adjust_block_size(n: usize) -> usize {
 }
 
 fn numeric_option<T: std::str::FromStr>(matches: &ArgMatches, name: &str, dflt: T) -> Result<T> {
-    matches.value_of(name).
-    map(|s| s.parse::<T>()).or(Some(Ok(dflt))).unwrap()
+    matches
+        .value_of(name)
+        .map(|s| s.parse::<T>())
+        .or(Some(Ok(dflt)))
+        .unwrap()
         .map_err(|_| anyhow!(format!("could not parse {} argument", name)))
 }
 
