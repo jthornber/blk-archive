@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 
 use crate::iovec::*;
 use crate::splitter::*;
+use crate::utils::round_pow2;
 
 //-----------------------------------------
 
@@ -27,15 +28,15 @@ pub struct ContentSensitiveSplitter {
 
 impl ContentSensitiveSplitter {
     pub fn new(window_size: u32) -> Self {
-        // FIXME: round window size up to a power of 2
+        let rounded_window_size = round_pow2(window_size);
         let shift = 36;
 
         Self {
-            window_size,
+            window_size: rounded_window_size as u32,
 
             hasher: gearhash::Hasher::default(),
-            mask_s: (((window_size as u64) << 1) - 1) << shift,
-            mask_l: (((window_size as u64) >> 1) - 1) << shift,
+            mask_s: (((rounded_window_size) << 1) - 1) << shift,
+            mask_l: (((rounded_window_size) >> 1) - 1) << shift,
 
             unconsumed_len: 0,
             blocks: VecDeque::new(),

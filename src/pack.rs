@@ -15,6 +15,7 @@ use std::io;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::num::NonZeroUsize;
 
 use crate::chunkers::*;
 use crate::config;
@@ -101,14 +102,11 @@ impl DedupHandler {
         // the current slab is not inserted into the self.hashes
         assert!(slab != self.current_slab);
 
-        // FIXME: double lookup
-        if self.hashes.get(&slab).is_none() {
+        self.hashes.try_get_or_insert(slab, || {
             let mut hashes_file = self.hashes_file.lock().unwrap();
             let buf = hashes_file.read(slab)?;
-            self.hashes.put(slab, ByHash::new(buf.to_vec())?); // FIXME: is the to_vec() causing a copy?
-        }
-
-        Ok(self.hashes.get(&slab).unwrap())
+            Ok(ByHash::new(buf.to_vec())?)  // FIXME: is the to_vec() causing a copy?
+        })
     }
 
     fn new(
@@ -119,7 +117,7 @@ impl DedupHandler {
         mapping_builder: Arc<Mutex<dyn Builder>>,
     ) -> Result<Self> {
         let seen = CuckooFilter::read(paths::index_path())?;
-        let hashes = lru::LruCache::new(slab_capacity);
+        let hashes = lru::LruCache::new(NonZeroUsize::new(slab_capacity).unwrap());
         let nr_slabs = data_file.get_nr_slabs() as u32;
 
         {
@@ -231,7 +229,7 @@ impl DedupHandler {
     fn add_data_entry(&mut self, iov: &IoVec) -> Result<(u32, u32)> {
         let r = (self.current_slab as u32, self.current_entries as u32);
         for v in iov {
-            self.data_buf.extend(v.iter()); // FIXME: this looks slow
+            self.data_buf.extend_from_slice(v);
             self.data_written += v.len() as u64;
         }
         self.current_entries += 1;

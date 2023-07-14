@@ -20,5 +20,6 @@ pub mod stack;
 pub mod stream;
 pub mod stream_builders;
 pub mod thin_metadata;
+pub mod utils;
 pub mod unpack;
 pub mod version;

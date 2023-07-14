@@ -1,6 +1,7 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::collections::BTreeMap;
+use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -224,6 +225,33 @@ fn offsets_path<P: AsRef<Path>>(p: P) -> PathBuf {
     offsets_path
 }
 
+fn read_slab_header(data: &mut std::fs::File) -> Result<u32>  {
+    let magic = data
+        .read_u64::<LittleEndian>()
+        .context("couldn't read magic")?;
+    let version = data
+        .read_u32::<LittleEndian>()
+        .context("couldn't read version")?;
+    let flags = data
+        .read_u32::<LittleEndian>()
+        .context("couldn't read flags")?;
+
+    if magic != FILE_MAGIC {
+        return Err(anyhow!("slab file magic is invalid or corrupt, actual {} != {} expected",
+            magic, FILE_MAGIC));
+    }
+
+    if version != FORMAT_VERSION {
+        return Err(anyhow!("slab file version actual {} != {} expected",
+            version, FORMAT_VERSION));
+    }
+
+    if !(flags == 0 || flags == 1) {
+        return Err(anyhow!("slab file flag value unexpected {} != 0 or 1", flags));
+    }
+    Ok(flags)
+}
+
 impl SlabFile {
     fn create<P: AsRef<Path>>(
         data_path: P,
@@ -288,20 +316,7 @@ impl SlabFile {
             .open(data_path)
             .context("open offsets")?;
 
-        let magic = data
-            .read_u64::<LittleEndian>()
-            .context("couldn't read magic")?;
-        let version = data
-            .read_u32::<LittleEndian>()
-            .context("couldn't read version")?;
-        let flags = data
-            .read_u32::<LittleEndian>()
-            .context("couldn't read flags")?;
-
-        assert_eq!(magic, FILE_MAGIC); // FIXME: better error
-        assert_eq!(version, FORMAT_VERSION);
-
-        assert!(flags == 0 || flags == 1);
+        let flags = read_slab_header(&mut data)?;
 
         let compressed = flags == 1;
         let (tx, rx) = sync_channel(queue_depth);
@@ -346,17 +361,7 @@ impl SlabFile {
             .create(false)
             .open(data_path)?;
 
-        let magic = data.read_u64::<LittleEndian>()?;
-        let version = data.read_u32::<LittleEndian>()?;
-        let flags = data
-            .read_u32::<LittleEndian>()
-            .context("couldn't read flags")?;
-
-        assert_eq!(magic, FILE_MAGIC); // FIXME: better error
-        assert_eq!(version, FORMAT_VERSION);
-
-        assert!(flags == 0 || flags == 1);
-
+        let flags = read_slab_header(&mut data)?;
         let compressed = flags == 1;
         let compressor = None;
 
@@ -413,8 +418,9 @@ impl SlabFile {
         assert_eq!(actual_csum, expected_csum);
 
         if self.compressed {
+            let decompress_buff_size_mb :usize =  env::var("BLK_ARCHIVE_DECOMPRESS_BUFF_SIZE_MB").unwrap_or(String::from("4")).parse::<usize>().unwrap_or(4);
             let mut z = zstd::Decoder::new(&buf[..])?;
-            let mut buffer = Vec::with_capacity(4 * 1024 * 1024);  // FIXME: make configurable
+            let mut buffer = Vec::with_capacity(decompress_buff_size_mb * 1024 * 1024);
             z.read_to_end(&mut buffer)?;
             Ok(buffer)
         } else {
