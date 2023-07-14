@@ -94,7 +94,7 @@ fn pos(index: usize) -> usize {
 }
 
 fn get_hash(data: &[u8], i: usize) -> &Hash256 {
-    Hash256::from_slice(&data[pos(i as usize)..pos((i + 1) as usize)])
+    Hash256::from_slice(&data[pos(i)..pos(i + 1)])
 }
 
 fn bsearch(h: &Hash256, data: &[u8], max: usize) -> Option<usize> {
@@ -150,7 +150,7 @@ impl ByHash {
 
     pub fn lookup(&self, h: &Hash256) -> Option<usize> {
         bsearch(h, &self.data[self.hashes_offset..], self.indexes.len())
-            .map(|i| self.indexes[i as usize] as usize)
+            .map(|i| self.indexes[i] as usize)
     }
 
     pub fn len(&self) -> usize {

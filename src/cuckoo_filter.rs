@@ -215,7 +215,7 @@ impl CuckooFilter {
             return Ok(AlreadyPresent(s));
         }
 
-        let index2: usize = ((index1 ^ self.scatter[fingerprint as usize]) as usize) & self.mask;
+        let index2: usize = (index1 ^ self.scatter[fingerprint as usize]) & self.mask;
         if let Some(s) = self.present(fingerprint, index2) {
             return Ok(AlreadyPresent(s));
         }

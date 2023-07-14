@@ -45,7 +45,7 @@ impl<T: Default + Copy, N: ArrayLength<T> + ArrayLength<u8>> Stack<T, N> {
 
     pub fn dup(&mut self, index: usize) {
         let last = self.indexes[self.indexes.len() - 1];
-        let v = self.values[self.indexes[index] as usize].clone();
+        let v = self.values[self.indexes[index] as usize];
 
         unsafe {
             ptr::copy(
@@ -55,7 +55,7 @@ impl<T: Default + Copy, N: ArrayLength<T> + ArrayLength<u8>> Stack<T, N> {
             );
         }
 
-        self.indexes[0] = last as u8;
+        self.indexes[0] = last;
         self.values[last as usize] = v;
     }
 }

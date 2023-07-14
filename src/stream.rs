@@ -48,7 +48,7 @@ const I12_MAX: i64 = 2047;
 
 fn delta_as_i4(lhs: u32, rhs: u32) -> Option<i8> {
     let delta: i64 = (rhs as i64) - (lhs as i64);
-    if delta >= I4_MIN && delta <= I4_MAX {
+    if (I4_MIN..=I4_MAX).contains(&delta) {
         let n = ((delta as u64) & 0xf) as i8;
         Some(n)
     } else {
@@ -74,7 +74,7 @@ fn test_delta_as_i4() {
 
 fn delta_as_i12(lhs: u32, rhs: u32) -> Option<i16> {
     let delta: i64 = (rhs as i64) - (lhs as i64);
-    if delta >= I12_MIN && delta <= I12_MAX {
+    if (I12_MIN..=I12_MAX).contains(&delta) {
         let n = ((delta as u64) & 0xfff) as i16;
         Some(n)
     } else {
@@ -642,13 +642,13 @@ impl VMState {
         let top = self.top();
         if slab != top.slab {
             if let Some(delta) = delta_as_i4(top.slab, slab) {
-                instrs.push(SlabDelta4 { delta: delta as i8 });
+                instrs.push(SlabDelta4 { delta });
             } else if let Some(delta) = delta_as_i12(top.slab, slab) {
                 instrs.push(SlabDelta12 { delta });
             } else if slab <= u16::MAX as u32 {
                 instrs.push(Slab16 { slab: slab as u16 });
-            } else if slab <= u32::MAX as u32 {
-                instrs.push(Slab32 { slab: slab as u32 });
+            } else if slab <= u32::MAX {
+                instrs.push(Slab32 { slab });
             } else {
                 return Err(anyhow!("slab index too large"));
             }
@@ -795,7 +795,7 @@ impl MappingUnpacker {
                     self.emit_fill(self.vm_state.fill, len as u64, &mut entries);
                 }
                 Fill64 { len } => {
-                    self.emit_fill(self.vm_state.fill, len as u64, &mut entries);
+                    self.emit_fill(self.vm_state.fill, len, &mut entries);
                 }
 
                 Unmapped8 { len } => {
@@ -808,14 +808,14 @@ impl MappingUnpacker {
                     self.emit_unmapped(len as u64, &mut entries);
                 }
                 Unmapped64 { len } => {
-                    self.emit_unmapped(len as u64, &mut entries);
+                    self.emit_unmapped(len, &mut entries);
                 }
 
                 Slab16 { slab } => {
                     self.vm_state.top().slab = slab as u32;
                 }
                 Slab32 { slab } => {
-                    self.vm_state.top().slab = slab as u32;
+                    self.vm_state.top().slab = slab;
                 }
                 SlabDelta4 { delta } => {
                     let top = self.vm_state.top();
@@ -837,7 +837,7 @@ impl MappingUnpacker {
                     self.vm_state.top().offset = offset as u32;
                 }
                 Offset20 { offset } => {
-                    self.vm_state.top().offset = offset as u32;
+                    self.vm_state.top().offset = offset;
                 }
                 OffsetDelta4 { delta } => {
                     let top = self.vm_state.top();
@@ -1049,7 +1049,7 @@ impl Dumper {
             }
             Slab32 { slab } => {
                 self.stats.slab32 += 1;
-                self.vm_state.top().slab = *slab as u32;
+                self.vm_state.top().slab = *slab;
             }
             SlabDelta4 { delta } => {
                 self.stats.slab_delta4 += 1;
@@ -1077,7 +1077,7 @@ impl Dumper {
             }
             Offset20 { offset } => {
                 self.stats.offset20 += 1;
-                self.vm_state.top().offset = *offset as u32;
+                self.vm_state.top().offset = *offset;
             }
             OffsetDelta4 { delta } => {
                 self.stats.offset_delta4 += 1;
@@ -1099,7 +1099,7 @@ impl Dumper {
             }
             Emit20 { len } => {
                 self.stats.emit20 += 1;
-                self.vm_state.top().offset += *len as u32;
+                self.vm_state.top().offset += *len;
             }
             Pos32 { .. } => {
                 self.stats.pos32 += 1;
@@ -1165,9 +1165,7 @@ impl Dumper {
             SlabDelta12 { delta } => {
                 format!("   s.add {}", delta)
             }
-            NextSlab => {
-                format!("   next")
-            }
+            NextSlab => "   next".to_string(),
             Offset4 { offset } => {
                 format!("   o.set {}", offset)
             }
@@ -1258,14 +1256,12 @@ impl Dumper {
                     } else {
                         println!("{:0>10x}   {:20}{:20}", i, self.pp_instr(e), &stack,);
                     }
+                } else if output.json {
+                    json_stream.push(json!(
+                        {"address": i, "instruction": format!("{:?}",e), "stack":""}
+                    ));
                 } else {
-                    if output.json {
-                        json_stream.push(json!(
-                            {"address": i, "instruction": format!("{:?}",e), "stack":""}
-                        ));
-                    } else {
-                        println!("{:0>10x}   {:20}", i, self.pp_instr(e));
-                    }
+                    println!("{:0>10x}   {:20}", i, self.pp_instr(e));
                 }
             }
         }

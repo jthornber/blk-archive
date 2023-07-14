@@ -105,7 +105,7 @@ impl DedupHandler {
         self.hashes.try_get_or_insert(slab, || {
             let mut hashes_file = self.hashes_file.lock().unwrap();
             let buf = hashes_file.read(slab)?;
-            Ok(ByHash::new(buf.to_vec())?) // FIXME: is the to_vec() causing a copy?
+            ByHash::new(buf.to_vec()) // FIXME: is the to_vec() causing a copy?
         })
     }
 
@@ -227,7 +227,7 @@ impl DedupHandler {
 
     // Returns the (slab, entry) for the newly added entry
     fn add_data_entry(&mut self, iov: &IoVec) -> Result<(u32, u32)> {
-        let r = (self.current_slab as u32, self.current_entries as u32);
+        let r = (self.current_slab, self.current_entries as u32);
         for v in iov {
             self.data_buf.extend_from_slice(v);
             self.data_written += v.len() as u64;
@@ -604,8 +604,7 @@ fn thin_packer(
     let input_size = thinp::file_utils::file_size(input_file)?;
 
     let mappings = read_thin_mappings(input_file)?;
-    let mapped_size =
-        mappings.provisioned_blocks.len() as u64 * mappings.data_block_size as u64 * 512;
+    let mapped_size = mappings.provisioned_blocks.len() * mappings.data_block_size as u64 * 512;
     let run_iter = RunIter::new(
         mappings.provisioned_blocks,
         (input_size / (mappings.data_block_size as u64 * 512)) as u32,
@@ -721,7 +720,7 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
     let input_name = input_name.to_str().unwrap().to_string();
     let input_file = Path::new(matches.value_of("INPUT").unwrap()).canonicalize()?;
 
-    env::set_current_dir(&archive_dir)?;
+    env::set_current_dir(archive_dir)?;
     let config = config::read_config(".")?;
 
     output
