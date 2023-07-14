@@ -647,10 +647,8 @@ impl VMState {
                 instrs.push(SlabDelta12 { delta });
             } else if slab <= u16::MAX as u32 {
                 instrs.push(Slab16 { slab: slab as u16 });
-            } else if slab <= u32::MAX {
-                instrs.push(Slab32 { slab });
             } else {
-                return Err(anyhow!("slab index too large"));
+                instrs.push(Slab32 { slab });
             }
             top.slab = slab;
         }
