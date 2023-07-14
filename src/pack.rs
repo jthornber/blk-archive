@@ -390,6 +390,7 @@ struct Packer {
 }
 
 impl Packer {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         output: Arc<Output>,
         input_path: PathBuf,
