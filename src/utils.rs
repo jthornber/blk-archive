@@ -1,9 +1,7 @@
-
-
 pub fn round_pow2(i: u32) -> u64 {
     // Round up to the next power of 2
     // https://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2
-    let mut v = i as u64;  // Using u64 to allow us to represent 2**32
+    let mut v = i as u64; // Using u64 to allow us to represent 2**32
     v += (v == 0) as u64;
     v -= 1;
     v |= v >> 1;
@@ -15,7 +13,6 @@ pub fn round_pow2(i: u32) -> u64 {
     v += 1;
     v
 }
-
 
 pub fn is_pow2(v: usize) -> bool {
     // https://graphics.stanford.edu/~seander/bithacks.html#DetermineIfPowerOf2
@@ -52,7 +49,6 @@ mod util_tests {
 
     #[test]
     fn test_is_pow2() {
-
         for i in 0..268435456 {
             let z = round_pow2(i);
             if i as u64 == z {

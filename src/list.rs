@@ -23,7 +23,7 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
 
     env::set_current_dir(&archive_dir)?;
 
-    let paths = fs::read_dir(&Path::new("./streams"))?;
+    let paths = fs::read_dir(Path::new("./streams"))?;
     let stream_ids = paths
         .filter_map(|entry| {
             entry.ok().and_then(|e| {

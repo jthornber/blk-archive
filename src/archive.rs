@@ -3,8 +3,8 @@ use byteorder::{LittleEndian, WriteBytesExt};
 use io::Write;
 use std::io;
 
-use crate::iovec::*;
 use crate::hash::*;
+use crate::iovec::*;
 
 //-----------------------------------------
 
@@ -70,7 +70,7 @@ impl Slab {
         w.write_u64::<LittleEndian>(self.blocks.len() as u64)?;
         for b in &self.blocks {
             w.write_all(&b.h[..])?;
-            w.write_u32::<LittleEndian>(b.offset as u32)?;
+            w.write_u32::<LittleEndian>(b.offset)?;
         }
 
         let compressed = self.packer.complete()?;
@@ -90,4 +90,3 @@ impl Slab {
 }
 
 //-----------------------------------------
-

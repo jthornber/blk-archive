@@ -354,7 +354,7 @@ fn find_device(major: u32, minor: u32) -> Option<PathBuf> {
             let found_major = unsafe { libc::major(devnum) };
             let found_minor = unsafe { libc::minor(devnum) };
 
-            if found_major as u32 == major && found_minor as u32 == minor {
+            if found_major == major && found_minor == minor {
                 return device.devnode().map(PathBuf::from);
             }
         }

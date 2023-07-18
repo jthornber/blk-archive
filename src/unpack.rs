@@ -173,7 +173,7 @@ impl<D: UnpackDest> Unpacker<D> {
                     let slab_fraction = s as f64 / nr_slabs as f64;
                     let percent =
                         ((slab_fraction + (entry_fraction / nr_slabs as f64)) * 100.0) as u8;
-                    report.progress(percent as u8);
+                    report.progress(percent);
                 }
             }
         }
@@ -435,7 +435,9 @@ impl UnpackDest for ThinDest {
 //-----------------------------------------
 
 pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
-    let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize().context("Bad archive dir")?;
+    let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap())
+        .canonicalize()
+        .context("Bad archive dir")?;
     let output_file = Path::new(matches.value_of("OUTPUT").unwrap());
     let stream = matches.value_of("STREAM").unwrap();
     let create = matches.is_present("CREATE");
@@ -445,14 +447,16 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
             .read(false)
             .write(true)
             .create_new(true)
-            .open(&output_file).context("Couldn't open output")?
+            .open(output_file)
+            .context("Couldn't open output")?
     } else {
-       fs::OpenOptions::new()
+        fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .open(&output_file).context ("Couldn't open output")?
+            .open(output_file)
+            .context("Couldn't open output")?
     };
-    env::set_current_dir(&archive_dir)?;
+    env::set_current_dir(archive_dir)?;
 
     report.set_title(&format!("Unpacking {} ...", output_file.display()));
     if create {
@@ -475,8 +479,8 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
         let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
 
         report.set_title(&format!("Unpacking {} ...", output_file.display()));
-        if is_thin_device(&output_file)? {
-            let mappings = read_thin_mappings(&output_file)?;
+        if is_thin_device(output_file)? {
+            let mappings = read_thin_mappings(output_file)?;
             let block_size = mappings.data_block_size as u64 * 512;
             let provisioned = RunIter::new(
                 mappings.provisioned_blocks,
@@ -677,7 +681,7 @@ fn thin_verifier(input_file: &Path) -> Result<VerifyDest> {
         .open(input_file)
         .context("couldn't open input file/dev")?;
     let input_size = thinp::file_utils::file_size(input_file)?;
-    let mappings = read_thin_mappings(&input_file)?;
+    let mappings = read_thin_mappings(input_file)?;
 
     // FIXME: what if input_size is not a multiple of the block size?
     let run_iter = RunIter::new(
@@ -698,7 +702,7 @@ pub fn run_verify(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     let input_file = Path::new(matches.value_of("INPUT").unwrap()).canonicalize()?;
     let stream = matches.value_of("STREAM").unwrap();
 
-    env::set_current_dir(&archive_dir)?;
+    env::set_current_dir(archive_dir)?;
 
     let config = config::read_config(".")?;
     let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;

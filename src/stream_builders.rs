@@ -279,7 +279,7 @@ impl DeltaBuilder {
                 nr_entries,
             } => (
                 Partial {
-                    begin: *begin as u32,
+                    begin: *begin,
                     end: *begin + split_point as u32,
                     slab: *slab,
                     offset: *offset,
@@ -441,7 +441,9 @@ mod stream_tests {
                     .next(&e, len, &mut buf)
                     .expect("builder.next() failed");
             }
-            builder.complete(&mut buf).expect("builder.complete() failed");
+            builder
+                .complete(&mut buf)
+                .expect("builder.complete() failed");
 
             // unpack
             let (actual, _) = unpack(&buf[..]).expect("unpack failed");

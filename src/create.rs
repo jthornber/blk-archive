@@ -67,8 +67,10 @@ fn adjust_block_size(n: usize) -> usize {
 }
 
 fn numeric_option<T: std::str::FromStr>(matches: &ArgMatches, name: &str, dflt: T) -> Result<T> {
-    matches.value_of(name).
-    map(|s| s.parse::<T>()).or(Some(Ok(dflt))).unwrap()
+    matches
+        .value_of(name)
+        .map(|s| s.parse::<T>())
+        .unwrap_or(Ok(dflt))
         .map_err(|_| anyhow!(format!("could not parse {} argument", name)))
 }
 
@@ -90,7 +92,7 @@ pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     create_sub_dir(dir, "streams")?;
     create_sub_dir(dir, "indexes")?;
 
-    std::env::set_current_dir(&dir)?;
+    std::env::set_current_dir(dir)?;
 
     // Create empty data and hash slab files
     let mut data_file = SlabFileBuilder::create(data_path())

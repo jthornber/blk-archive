@@ -5,17 +5,17 @@ use clap::ArgMatches;
 use io::Write;
 use rand::prelude::*;
 use rand_chacha::ChaCha20Rng;
-use serde_json::to_string_pretty;
 use serde_json::json;
+use serde_json::to_string_pretty;
 use size_display::Size;
 use std::boxed::Box;
 use std::env;
 use std::fs::OpenOptions;
 use std::io;
 use std::io::Cursor;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::num::NonZeroUsize;
 
 use crate::chunkers::*;
 use crate::config;
@@ -105,7 +105,7 @@ impl DedupHandler {
         self.hashes.try_get_or_insert(slab, || {
             let mut hashes_file = self.hashes_file.lock().unwrap();
             let buf = hashes_file.read(slab)?;
-            Ok(ByHash::new(buf.to_vec())?)  // FIXME: is the to_vec() causing a copy?
+            ByHash::new(buf.to_vec()) // FIXME: is the to_vec() causing a copy?
         })
     }
 
@@ -227,7 +227,7 @@ impl DedupHandler {
 
     // Returns the (slab, entry) for the newly added entry
     fn add_data_entry(&mut self, iov: &IoVec) -> Result<(u32, u32)> {
-        let r = (self.current_slab as u32, self.current_entries as u32);
+        let r = (self.current_slab, self.current_entries as u32);
         for v in iov {
             self.data_buf.extend_from_slice(v);
             self.data_written += v.len() as u64;
@@ -390,6 +390,7 @@ struct Packer {
 }
 
 impl Packer {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         output: Arc<Output>,
         input_path: PathBuf,
@@ -466,7 +467,8 @@ impl Packer {
                     let len = buffer.len();
                     splitter.next_data(buffer, &mut handler)?;
                     total_read += len as u64;
-                    self.output.report
+                    self.output
+                        .report
                         .progress(((100 * total_read) / self.mapped_size) as u8);
                 }
                 Chunk::Unmapped(len) => {
@@ -494,22 +496,28 @@ impl Packer {
         };
         let stream_written = handler.stream_file.get_file_size();
         let ratio =
-        (self.mapped_size as f64) / ((data_written + hashes_written + stream_written) as f64);
+            (self.mapped_size as f64) / ((data_written + hashes_written + stream_written) as f64);
 
         if self.output.json {
             // Should all the values simply be added to the json too?  We can always add entries, but
             // we can never take any away to maintains backwards compatibility with JSON consumers.
-            let result = json!({"stream_id": stream_id});
+            let result = json!({ "stream_id": stream_id });
             println!("{}", to_string_pretty(&result).unwrap());
         } else {
-            self.output.report.info(&format!("elapsed          : {}", elapsed));
-            self.output.report
+            self.output
+                .report
+                .info(&format!("elapsed          : {}", elapsed));
+            self.output
+                .report
                 .info(&format!("stream id        : {}", stream_id));
-            self.output.report
+            self.output
+                .report
                 .info(&format!("file size        : {:.2}", Size(self.input_size)));
-            self.output.report
+            self.output
+                .report
                 .info(&format!("mapped size      : {:.2}", Size(self.mapped_size)));
-            self.output.report
+            self.output
+                .report
                 .info(&format!("total read       : {:.2}", Size(total_read)));
             self.output.report.info(&format!(
                 "fills size       : {:.2}",
@@ -520,13 +528,17 @@ impl Packer {
                 Size(total_read - handler.data_written - handler.fill_size)
             ));
 
-            self.output.report
+            self.output
+                .report
                 .info(&format!("data written     : {:.2}", Size(data_written)));
-            self.output.report
+            self.output
+                .report
                 .info(&format!("hashes written   : {:.2}", Size(hashes_written)));
-            self.output.report
+            self.output
+                .report
                 .info(&format!("stream written   : {:.2}", Size(stream_written)));
-            self.output.report
+            self.output
+                .report
                 .info(&format!("ratio            : {:.2}", ratio));
             self.output.report.info(&format!(
                 "speed            : {:.2}/s",
@@ -593,8 +605,7 @@ fn thin_packer(
     let input_size = thinp::file_utils::file_size(input_file)?;
 
     let mappings = read_thin_mappings(input_file)?;
-    let mapped_size =
-        mappings.provisioned_blocks.len() as u64 * mappings.data_block_size as u64 * 512;
+    let mapped_size = mappings.provisioned_blocks.len() * mappings.data_block_size as u64 * 512;
     let run_iter = RunIter::new(
         mappings.provisioned_blocks,
         (input_size / (mappings.data_block_size as u64 * 512)) as u32,
@@ -607,7 +618,9 @@ fn thin_packer(
     let thin_id = Some(mappings.thin_id);
     let builder = Arc::new(Mutex::new(MappingBuilder::default()));
 
-    output.report.set_title(&format!("Packing {} ...", input_file.display()));
+    output
+        .report
+        .set_title(&format!("Packing {} ...", input_file.display()));
     Ok(Packer::new(
         output,
         input_file.to_path_buf(),
@@ -666,7 +679,9 @@ fn thin_delta_packer(
     let old_entries = StreamIter::new(old_stream)?;
     let builder = Arc::new(Mutex::new(DeltaBuilder::new(old_entries, hashes_file)));
 
-    output.report.set_title(&format!("Packing {} ...", input_file.display()));
+    output
+        .report
+        .set_title(&format!("Packing {} ...", input_file.display()));
     Ok(Packer::new(
         output,
         input_file.to_path_buf(),
@@ -706,10 +721,12 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
     let input_name = input_name.to_str().unwrap().to_string();
     let input_file = Path::new(matches.value_of("INPUT").unwrap()).canonicalize()?;
 
-    env::set_current_dir(&archive_dir)?;
+    env::set_current_dir(archive_dir)?;
     let config = config::read_config(".")?;
 
-    output.report.set_title(&format!("Building packer {} ...", input_file.display()));
+    output
+        .report
+        .set_title(&format!("Building packer {} ...", input_file.display()));
 
     let hashes_file = Arc::new(Mutex::new(
         SlabFileBuilder::open(hashes_path())
@@ -735,7 +752,9 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
         thick_packer(output.clone(), &input_file, input_name, &config)?
     };
 
-    output.report.set_title(&format!("Packing {} ...", input_file.display()));
+    output
+        .report
+        .set_title(&format!("Packing {} ...", input_file.display()));
     packer.pack(hashes_file)
 }
 

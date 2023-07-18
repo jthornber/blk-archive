@@ -1,6 +1,5 @@
-use thinp::report::*;
 use std::sync::Arc;
-
+use thinp::report::*;
 
 // A structure to encapsulate related output options and output formattting.
 pub struct Output {
