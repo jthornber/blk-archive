@@ -5,6 +5,7 @@ use nom::number::complete::*;
 use nom::IResult;
 use std::collections::BTreeMap;
 use std::io::Write;
+use std::sync::Arc;
 
 use crate::hash::*;
 
@@ -43,11 +44,12 @@ impl IndexBuilder {
         self.offset += len;
     }
 
-    pub fn build(mut self) -> Result<Vec<u8>> {
+    pub fn build(mut self) -> Result<Arc<Vec<u8>>> {
         let mut w = Vec::with_capacity(self.entries.len() * (32 + 10) + 32);
         self.entries.sort_by(|l, r| l.h.partial_cmp(&r.h).unwrap());
 
         assert!(self.entries.len() <= u16::MAX as usize);
+
         w.write_u16::<LittleEndian>(self.entries.len() as u16)?;
         for e in &self.entries {
             assert!(e.index <= u16::MAX as usize);
@@ -67,7 +69,7 @@ impl IndexBuilder {
             w.write_all(&e.h)?;
         }
 
-        Ok(w)
+        Ok(Arc::new(w))
     }
 
     pub fn lookup(&self, h: &Hash256) -> Option<u32> {
@@ -126,7 +128,7 @@ fn bsearch(h: &Hash256, data: &[u8], max: usize) -> Option<usize> {
 
 // Maps Hash256 -> DataIndex
 pub struct ByHash {
-    data: Vec<u8>,
+    data: Arc<Vec<u8>>,
     indexes: Vec<u16>,
 
     // offset into data where the sorted hashes start
@@ -134,7 +136,7 @@ pub struct ByHash {
 }
 
 impl ByHash {
-    pub fn new(data: Vec<u8>) -> Result<Self> {
+    pub fn new(data: Arc<Vec<u8>>) -> Result<Self> {
         let (_input, entries) =
             parse_entries(&data).map_err(|_| anyhow!("couldn't parse hash entries"))?;
         let indexes = entries.iter().map(|(index, _, _)| index).cloned().collect();

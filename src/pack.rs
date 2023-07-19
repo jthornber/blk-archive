@@ -105,7 +105,7 @@ impl DedupHandler {
         self.hashes.try_get_or_insert(slab, || {
             let mut hashes_file = self.hashes_file.lock().unwrap();
             let buf = hashes_file.read(slab)?;
-            ByHash::new(buf.to_vec()) // FIXME: is the to_vec() causing a copy?
+            ByHash::new(buf)
         })
     }
 
@@ -160,7 +160,7 @@ impl DedupHandler {
         let nr_slabs = hashes_file.get_nr_slabs();
         for s in 0..nr_slabs {
             let buf = hashes_file.read(s as u32)?;
-            let hi = ByHash::new(buf.to_vec())?;
+            let hi = ByHash::new(buf)?;
             for i in 0..hi.len() {
                 let h = hi.get(i);
                 let mini_hash = hash_64(&h[..]);
