@@ -176,7 +176,7 @@ pub struct ByIndex {
 }
 
 impl ByIndex {
-    pub fn new(data: Vec<u8>) -> Result<Self> {
+    pub fn new(data: Arc<Vec<u8>>) -> Result<Self> {
         let (_input, entries_) =
             parse_entries(&data).map_err(|_| anyhow!("couldn't parse hash entries"))?;
         let offset = (entries_.len() * 10) + 2;
