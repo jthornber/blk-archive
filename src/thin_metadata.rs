@@ -312,8 +312,10 @@ fn get_table(dm: &mut DM, dev: &DevId, expected_target_type: &str) -> Result<Str
 
     let (_offset, _len, target_type, args) = &table[0];
     if target_type != expected_target_type {
-        // FIXME: better error message
-        return Err(anyhow!("thin has incorrect target type"));
+        return Err(anyhow!(format!(
+            "dm expected table type {}, dm actual table type {}",
+            expected_target_type, target_type
+        )));
     }
 
     Ok(args.to_string())
