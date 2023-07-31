@@ -186,7 +186,7 @@ impl DeltaBuilder {
     fn get_index_(&mut self, slab: u32) -> Result<Arc<ByIndex>> {
         let mut hashes_file = self.hashes_file.lock().unwrap();
         let hashes = hashes_file.read(slab)?;
-        Ok(Arc::new(ByIndex::new(hashes.to_vec())?)) // FIXME: redundant copy?
+        Ok(Arc::new(ByIndex::new(hashes)?))
     }
 
     fn get_index(&mut self, slab: u32) -> Result<Arc<ByIndex>> {

@@ -65,7 +65,7 @@ impl<D: UnpackDest> Unpacker<D> {
 
     fn read_info(&mut self, slab: u32) -> Result<ByIndex> {
         let hashes = self.hashes_file.read(slab)?;
-        ByIndex::new(hashes.to_vec()) // FIXME: redundant copy?
+        ByIndex::new(hashes)
     }
 
     fn get_info(&mut self, slab: u32) -> Result<Arc<ByIndex>> {
