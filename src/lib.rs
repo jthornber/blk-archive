@@ -1,4 +1,3 @@
-pub mod archive;
 pub mod chunkers;
 pub mod config;
 pub mod content_sensitive_splitter;
