@@ -1,14 +1,13 @@
 use anyhow::{anyhow, Result};
+use blake2::{Blake2b, Digest};
 use byteorder::{LittleEndian, WriteBytesExt};
+use generic_array::typenum::U8;
 use nom::IResult;
 use rand::prelude::*;
 use rand_chacha::ChaCha20Rng;
 use std::cmp;
 use std::iter::*;
 use std::path::Path;
-
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 
 use crate::slab::*;
 use crate::utils::is_pow2;
@@ -83,16 +82,28 @@ fn parse_nr(input: &[u8]) -> IResult<&[u8], u32> {
     nom::number::complete::le_u32(input)
 }
 
+pub fn calculate_signature(values: &[usize]) -> u64 {
+    let hash_bytes: Vec<u8> = values
+        .iter()
+        .flat_map(|&v| v.to_le_bytes().to_vec())
+        .collect();
+
+    let mut hasher = Blake2b::<U8>::new();
+    hasher.update(&hash_bytes);
+
+    u64::from_le_bytes(hasher.finalize().into())
+}
+
 impl CuckooFilter {
     fn make_scatter(rng: &mut ChaCha20Rng) -> Vec<usize> {
         let scatter: Vec<usize> = repeat_with(|| rng.gen())
             .take(u16::MAX as usize + 1)
             .collect();
 
-        // Ensure that the scatter is identical everytime it's constructed
-        let mut hasher = DefaultHasher::new();
-        Hash::hash_slice(scatter.as_slice(), &mut hasher);
-        assert!(16936493454484885878 == hasher.finish());
+        // Ensure that the scatter is identical every time it's constructed
+        // We cannot use the DefaultHasher as it's documented to not be consistent across
+        // versions/time
+        assert!(4224213928824907068 == calculate_signature(scatter.as_slice()));
 
         scatter
     }

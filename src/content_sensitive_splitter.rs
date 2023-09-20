@@ -87,7 +87,7 @@ impl ContentSensitiveSplitter {
     }
 
     fn consume(&mut self, len: usize) -> IoVec {
-        let mut c = &mut self.consume_c;
+        let c = &mut self.consume_c;
         let blocks = &self.blocks;
 
         assert!(len != 0);
@@ -117,7 +117,7 @@ impl ContentSensitiveSplitter {
     }
 
     fn consume_all(&mut self) -> IoVec {
-        let mut c = &mut self.consume_c;
+        let c = &mut self.consume_c;
         let mut r = IoVec::new();
         while c.block < self.blocks.len() {
             let b = &self.blocks[c.block];
