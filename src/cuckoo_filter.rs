@@ -37,7 +37,7 @@ pub enum InsertResult {
 }
 
 pub struct CuckooFilter {
-    rng: ChaCha20Rng,
+    rng: Box<dyn RngCore>,
     len: usize,
     scatter: Vec<usize>,
     bucket_counts: Vec<u8>,
@@ -95,7 +95,8 @@ pub fn calculate_signature(values: &[usize]) -> u64 {
 }
 
 impl CuckooFilter {
-    fn make_scatter(rng: &mut ChaCha20Rng) -> Vec<usize> {
+    fn make_scatter() -> (Box<dyn RngCore>, Vec<usize>) {
+        let mut rng = Box::new(ChaCha20Rng::seed_from_u64(1));
         let scatter: Vec<usize> = repeat_with(|| rng.gen())
             .take(u16::MAX as usize + 1)
             .collect();
@@ -105,15 +106,14 @@ impl CuckooFilter {
         // versions/time
         assert!(4224213928824907068 == calculate_signature(scatter.as_slice()));
 
-        scatter
+        (rng, scatter)
     }
 
     pub fn with_capacity(mut n: usize) -> Self {
         n = (n * 5) / 4;
         n /= ENTRIES_PER_BUCKET;
-        let mut rng = ChaCha20Rng::seed_from_u64(1);
         let nr_buckets = cmp::max(n, 4096).next_power_of_two();
-        let scatter = Self::make_scatter(&mut rng);
+        let (rng, scatter) = Self::make_scatter();
         Self {
             rng,
             len: 0,
@@ -129,8 +129,6 @@ impl CuckooFilter {
         let mut file = SlabFileBuilder::open(path).build()?;
         let input = file.read(0)?;
 
-        let mut rng = ChaCha20Rng::seed_from_u64(1);
-
         let (input, nr_buckets) = parse_nr(&input[..]).map_err(|_| anyhow!("couldn't parse nr"))?;
         let nr_buckets = nr_buckets as usize;
         let (input, bucket_counts) =
@@ -143,7 +141,7 @@ impl CuckooFilter {
             return Err(anyhow!("extra bytes at end of index file"));
         }
 
-        let scatter = Self::make_scatter(&mut rng);
+        let (rng, scatter) = Self::make_scatter();
         if !is_pow2(nr_buckets) {
             return Err(anyhow!("nr_buckets({nr_buckets}) is not a power of 2"));
         }
