@@ -124,6 +124,7 @@ impl SlabOffsets {
 
 const FILE_MAGIC: u64 = 0xb927f96a6b611180;
 const SLAB_MAGIC: u64 = 0x20565137a3100a7c;
+const SLAB_HDR_LEN: u64 = 16;
 
 const FORMAT_VERSION: u32 = 0;
 
@@ -401,6 +402,95 @@ impl SlabFile {
             tid: None,
             data_cache: DataCache::new(cache_nr_entries),
         })
+    }
+
+    fn verify_<P: AsRef<Path>>(data_path: P) -> Result<SlabOffsets> {
+        let slab_name = data_path.as_ref().to_path_buf();
+
+        let mut data = OpenOptions::new()
+            .read(true)
+            .write(false)
+            .create(false)
+            .open(data_path)?;
+
+        let mut so = SlabOffsets::default();
+        let _flags = read_slab_header(&mut data)?;
+        let file_size = data.metadata()?.len();
+
+        data.seek(SeekFrom::Start(SLAB_HDR_LEN))?;
+
+        // We don't have any additional data in an empty archive
+        if data.stream_position()? == file_size {
+            return Ok(so);
+        }
+
+        so.offsets.push(SLAB_HDR_LEN);
+        let mut slab_index = 0;
+
+        loop {
+            let magic = data.read_u64::<LittleEndian>()?;
+            let len = data.read_u64::<LittleEndian>()?;
+
+            if magic != SLAB_MAGIC {
+                return Err(anyhow!(
+                    "slab magic incorrect for slab {slab_index} for file {}",
+                    slab_name.to_string_lossy()
+                ));
+            }
+
+            let mut expected_csum: Hash64 = Hash64::default();
+            data.read_exact(&mut expected_csum)?;
+
+            let mut buf = vec![0; len as usize];
+            data.read_exact(&mut buf)?;
+
+            let actual_csum = hash_64(&buf);
+            if actual_csum != expected_csum {
+                return Err(anyhow!(
+                    "slab {slab_index} checksum incorrect for file {}!",
+                    slab_name.to_string_lossy()
+                ));
+            }
+
+            let curr_offset = data.stream_position()?;
+
+            if curr_offset == file_size {
+                break;
+            }
+
+            slab_index += 1;
+            so.offsets.push(curr_offset);
+        }
+
+        Ok(so)
+    }
+
+    pub fn verify<P: AsRef<Path>>(data_path: P) -> Result<usize> {
+        let offsets_path = offsets_path(&data_path);
+
+        let actual_offsets = Self::verify_(data_path)?;
+        let stored_offsets = SlabOffsets::read_offset_file(&offsets_path)?;
+
+        let actual_count = actual_offsets.offsets.len();
+        let stored_count = stored_offsets.offsets.len();
+
+        if actual_count != stored_count {
+            return Err(anyhow!(
+                "Offset file {} has incorrect number of entries {} != {}",
+                offsets_path.to_string_lossy(),
+                actual_count,
+                stored_count
+            ));
+        }
+
+        if actual_offsets.offsets != stored_offsets.offsets {
+            return Err(anyhow!(
+                "Stored offset values do not match calculated for file {}",
+                offsets_path.to_string_lossy()
+            ));
+        }
+
+        Ok(actual_count)
     }
 
     pub fn close(&mut self) -> Result<()> {

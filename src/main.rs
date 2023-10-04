@@ -5,6 +5,7 @@ use std::process::exit;
 use std::sync::Arc;
 use thinp::report::*;
 
+use blk_archive::check;
 use blk_archive::create;
 use blk_archive::dump_stream;
 use blk_archive::list;
@@ -184,6 +185,11 @@ fn main_() -> Result<()> {
                 .about("lists the streams in the archive")
                 .arg(archive_arg.clone()),
         )
+        .subcommand(
+            Command::new("verify-all")
+                .about("verifies the integrity of the archive")
+                .arg(archive_arg.clone()),
+        )
         .get_matches();
 
     let report = mk_report(&matches);
@@ -210,6 +216,9 @@ fn main_() -> Result<()> {
         }
         Some(("dump-stream", sub_matches)) => {
             dump_stream::run(sub_matches, output)?;
+        }
+        Some(("verify-all", sub_matches)) => {
+            check::run(sub_matches, output)?;
         }
         _ => unreachable!("Exhausted list of subcommands and subcommand_required prevents 'None'"),
     }
