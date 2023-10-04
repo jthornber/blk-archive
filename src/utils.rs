@@ -1,3 +1,13 @@
+#[macro_export]
+macro_rules! tpln {
+    () => {
+        print!("\n")
+    };
+    ($($arg:tt)*) => {{
+        println!("{:?}[{}:{}] {}", ::std::thread::current().id(), file!(), line!(), format!($($arg)*));
+    }};
+}
+
 pub fn round_pow2(i: u32) -> u64 {
     // Round up to the next power of 2
     // https://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2
