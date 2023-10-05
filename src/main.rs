@@ -65,6 +65,14 @@ fn main_() -> Result<()> {
         .value_name("JSON")
         .takes_value(false);
 
+    let repair: Arg = Arg::new("REPAIR")
+        .help("repairs an archive")
+        .required(false)
+        .long("repair")
+        .short('r')
+        .value_name("REPAIR")
+        .takes_value(false);
+
     let matches = command!()
         .arg(json)
         .propagate_version(true)
@@ -188,7 +196,8 @@ fn main_() -> Result<()> {
         .subcommand(
             Command::new("verify-all")
                 .about("verifies the integrity of the archive")
-                .arg(archive_arg.clone()),
+                .arg(archive_arg.clone())
+                .arg(repair.clone()),
         )
         .get_matches();
 

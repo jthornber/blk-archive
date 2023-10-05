@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::SystemTime;
 use threadpool::ThreadPool;
 
 use crate::hash::*;
@@ -71,13 +72,24 @@ struct SlabOffsets {
 }
 
 impl SlabOffsets {
-    fn read_offset_file<P: AsRef<Path>>(p: P) -> Result<Self> {
+    fn read_offset_file<P: AsRef<Path>>(p: P, data_mtime: Option<SystemTime>) -> Result<Self> {
         let r = OpenOptions::new()
             .read(true)
             .write(false)
             .create(false)
             .open(p)
             .context("opening offset file")?;
+
+        let mtime = r.metadata()?.modified()?;
+
+        if let Some(file_mtime) = data_mtime {
+            if file_mtime > mtime {
+                return Err(anyhow!(
+                    "Offsets file modification time is older than slab data file \
+                    run blk-archive 'verify-all --repair' to correct!",
+                ));
+            }
+        }
 
         let len = r.metadata().context("offset metadata")?.len();
         let mut r = std::io::BufReader::new(r);
@@ -346,8 +358,10 @@ impl SlabFile {
             (None, tx)
         };
 
-        let offsets = SlabOffsets::read_offset_file(&offsets_path)?;
         let file_size = data.metadata()?.len();
+        let file_mtime = data.metadata()?.modified()?;
+        let offsets = SlabOffsets::read_offset_file(&offsets_path, Some(file_mtime))?;
+
         let shared = Arc::new(Mutex::new(SlabShared {
             data,
             offsets,
@@ -384,8 +398,10 @@ impl SlabFile {
         let compressed = flags == 1;
         let compressor = None;
 
-        let offsets = SlabOffsets::read_offset_file(&offsets_path)?;
         let file_size = data.metadata()?.len();
+        let data_mtime = data.metadata()?.modified()?;
+        let offsets = SlabOffsets::read_offset_file(&offsets_path, Some(data_mtime))?;
+
         let shared = Arc::new(Mutex::new(SlabShared {
             data,
             offsets,
@@ -465,32 +481,44 @@ impl SlabFile {
         Ok(so)
     }
 
-    pub fn verify<P: AsRef<Path>>(data_path: P) -> Result<usize> {
+    pub fn verify<P: AsRef<Path>>(data_path: P, repair: bool) -> Result<usize> {
+        let data_mtime = std::fs::metadata(data_path.as_ref().clone())?.modified()?;
         let offsets_path = offsets_path(&data_path);
 
         let actual_offsets = Self::verify_(data_path)?;
-        let stored_offsets = SlabOffsets::read_offset_file(&offsets_path)?;
+        let stored_offsets = SlabOffsets::read_offset_file(&offsets_path, None)?;
 
         let actual_count = actual_offsets.offsets.len();
         let stored_count = stored_offsets.offsets.len();
+        let offsets_mtime = std::fs::metadata(offsets_path.clone())?.modified()?;
 
-        if actual_count != stored_count {
-            return Err(anyhow!(
+        let mut result = if actual_count != stored_count {
+            Err(anyhow!(
                 "Offset file {} has incorrect number of entries {} != {}",
                 offsets_path.to_string_lossy(),
                 actual_count,
                 stored_count
-            ));
-        }
-
-        if actual_offsets.offsets != stored_offsets.offsets {
-            return Err(anyhow!(
+            ))
+        } else if actual_offsets.offsets != stored_offsets.offsets {
+            Err(anyhow!(
                 "Stored offset values do not match calculated for file {}",
                 offsets_path.to_string_lossy()
-            ));
+            ))
+        } else if data_mtime > offsets_mtime {
+            Err(anyhow!(
+                "Offsets file modification time is older than slab data file \
+                run blk-archive 'verify-all --repair' to correct!",
+            ))
+        } else {
+            Ok(actual_count)
+        };
+
+        if result.is_err() && repair {
+            actual_offsets.write_offset_file(offsets_path)?;
+            result = Ok(actual_count)
         }
 
-        Ok(actual_count)
+        result
     }
 
     pub fn close(&mut self) -> Result<()> {
