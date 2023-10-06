@@ -136,7 +136,8 @@ impl SlabOffsets {
 
 const FILE_MAGIC: u64 = 0xb927f96a6b611180;
 const SLAB_MAGIC: u64 = 0x20565137a3100a7c;
-const SLAB_HDR_LEN: u64 = 16;
+const SLAB_FILE_HDR_LEN: u64 = 16;
+const SLAB_HDR_LEN: u64 = 24;
 
 const FORMAT_VERSION: u32 = 0;
 
@@ -435,21 +436,38 @@ impl SlabFile {
             .create(false)
             .open(data_path)?;
 
-        let mut so = SlabOffsets::default();
-        let _flags = read_slab_header(&mut data)?;
         let file_size = data.metadata()?.len();
 
-        data.seek(SeekFrom::Start(SLAB_HDR_LEN))?;
+        if file_size < SLAB_FILE_HDR_LEN {
+            return Err(anyhow!(
+                "slab file {} isn't large enough to be a slab file, size = {file_size} bytes.",
+                slab_name.to_string_lossy()
+            ));
+        }
+
+        let mut so = SlabOffsets::default();
+        let _flags = read_slab_header(&mut data)?;
 
         // We don't have any additional data in an empty archive
-        if data.stream_position()? == file_size {
+        let mut curr_offset = data.stream_position()?;
+        assert!(curr_offset == SLAB_FILE_HDR_LEN);
+
+        if curr_offset == file_size {
             return Ok(so);
         }
 
-        so.offsets.push(SLAB_HDR_LEN);
+        so.offsets.push(SLAB_FILE_HDR_LEN);
         let mut slab_index = 0;
 
         loop {
+            let remaining = file_size - curr_offset;
+            if remaining < SLAB_HDR_LEN {
+                return Err(anyhow!(
+                    "Slab {slab_index} is incomplete, not enough remaining for header, \
+                    {remaining} remaining bytes."
+                ));
+            }
+
             let magic = data.read_u64::<LittleEndian>()?;
             let len = data.read_u64::<LittleEndian>()?;
 
@@ -463,6 +481,14 @@ impl SlabFile {
             let mut expected_csum: Hash64 = Hash64::default();
             data.read_exact(&mut expected_csum)?;
 
+            if remaining < SLAB_HDR_LEN + len {
+                return Err(anyhow!(
+                    "Slab {slab_index} is incomplete, payload is truncated, \
+                    needing {}, remaining {remaining}",
+                    SLAB_HDR_LEN + len
+                ));
+            }
+
             let mut buf = vec![0; len as usize];
             data.read_exact(&mut buf)?;
 
@@ -474,8 +500,7 @@ impl SlabFile {
                 ));
             }
 
-            let curr_offset = data.stream_position()?;
-
+            curr_offset = data.stream_position()?;
             if curr_offset == file_size {
                 break;
             }
