@@ -228,6 +228,12 @@ fn writer_(shared: Arc<Mutex<SlabShared>>, rx: Receiver<SlabData>) -> Result<()>
     }
 
     assert!(queued.is_empty());
+
+    {
+        let mut shared = shared.lock().unwrap();
+        shared.data.flush()?;
+    }
+
     Ok(())
 }
 
