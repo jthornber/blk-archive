@@ -735,6 +735,8 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
     env::set_current_dir(archive_dir)?;
     let config = config::read_config(".")?;
 
+    CheckPoint::interrupted()?;
+
     output
         .report
         .set_title(&format!("Building packer {} ...", input_file.display()));

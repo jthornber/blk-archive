@@ -181,4 +181,15 @@ impl CheckPoint {
             Ok(Some(cp))
         }
     }
+
+    pub fn interrupted() -> Result<()> {
+        let root = env::current_dir()?;
+        match Self::read(root).context("error while checking for checkpoint file!")? {
+            Some(cp) => Err(anyhow!(
+                "pack operation of {} was interrupted, run verify-all -r to correct",
+                cp.source_path
+            )),
+            None => Ok(()),
+        }
+    }
 }

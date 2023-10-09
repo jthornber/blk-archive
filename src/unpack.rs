@@ -11,6 +11,7 @@ use std::path::Path;
 use std::sync::Arc;
 use thinp::report::*;
 
+use crate::check::*;
 use crate::chunkers::*;
 use crate::config;
 use crate::hash_index::*;
@@ -442,6 +443,9 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     let stream = matches.value_of("STREAM").unwrap();
     let create = matches.is_present("CREATE");
 
+    env::set_current_dir(archive_dir)?;
+    CheckPoint::interrupted()?;
+
     let output = if create {
         fs::OpenOptions::new()
             .read(false)
@@ -456,7 +460,6 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
             .open(output_file)
             .context("Couldn't open output")?
     };
-    env::set_current_dir(archive_dir)?;
 
     report.set_title(&format!("Unpacking {} ...", output_file.display()));
     if create {
