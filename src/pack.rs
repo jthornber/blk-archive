@@ -15,6 +15,7 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::check::*;
 use crate::chunkers::*;
 use crate::config;
 use crate::content_sensitive_splitter::*;
@@ -423,7 +424,22 @@ impl Packer {
             hashes_file.get_file_size()
         };
 
+        let input_name_string = self
+            .input_path
+            .clone()
+            .into_os_string()
+            .into_string()
+            .unwrap();
+
         let (stream_id, mut stream_path) = new_stream_path()?;
+
+        CheckPoint::start(
+            input_name_string.as_str(),
+            stream_path.as_os_str().to_str().unwrap(),
+            data_size,
+            hashes_size,
+        )
+        .write(env::current_dir()?.as_path())?;
 
         std::fs::create_dir(stream_path.clone())?;
         stream_path.push("stream");
@@ -750,7 +766,13 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
     output
         .report
         .set_title(&format!("Packing {} ...", input_file.display()));
-    packer.pack(hashes_file)
+    packer.pack(hashes_file)?;
+    // The packer.pack needs to return before the Drop(s) get called ensuring the output files have
+    // been flushed before we can end our pack check point.  It's entirely possible that the data
+    // is safely written to disk and we exit before we remove the checkpoint file, which at worst
+    // case would cause us to throw away the last pack operation.
+    CheckPoint::end()?;
+    Ok(())
 }
 
 //-----------------------------------------

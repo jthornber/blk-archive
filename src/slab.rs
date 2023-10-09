@@ -427,7 +427,7 @@ impl SlabFile {
         })
     }
 
-    fn verify_<P: AsRef<Path>>(data_path: P) -> Result<SlabOffsets> {
+    fn verify_<P: AsRef<Path>>(data_path: P, check_len: Option<u64>) -> Result<SlabOffsets> {
         let slab_name = data_path.as_ref().to_path_buf();
 
         let mut data = OpenOptions::new()
@@ -436,7 +436,10 @@ impl SlabFile {
             .create(false)
             .open(data_path)?;
 
-        let file_size = data.metadata()?.len();
+        let file_size = match check_len {
+            Some(len) => len,
+            None => data.metadata()?.len(),
+        };
 
         if file_size < SLAB_FILE_HDR_LEN {
             return Err(anyhow!(
@@ -516,7 +519,7 @@ impl SlabFile {
         let data_mtime = std::fs::metadata(data_path.as_ref().clone())?.modified()?;
         let offsets_path = offsets_path(&data_path);
 
-        let actual_offsets = Self::verify_(data_path)?;
+        let actual_offsets = Self::verify_(data_path, None)?;
         let stored_offsets = SlabOffsets::read_offset_file(&offsets_path, None)?;
 
         let actual_count = actual_offsets.offsets.len();
@@ -550,6 +553,28 @@ impl SlabFile {
         }
 
         result
+    }
+
+    pub fn truncate<P: AsRef<Path>>(data_path: P, len: u64, do_truncate: bool) -> Result<()> {
+        if !do_truncate {
+            Self::verify_(data_path, Some(len))?;
+            Ok(())
+        } else {
+            let offsets_file = offsets_path(&data_path);
+            {
+                let mut data = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(false)
+                    .open(data_path.as_ref().clone())?;
+                data.set_len(len)?;
+                data.flush()?;
+            }
+
+            let slab_offsets = Self::verify_(data_path, None)?;
+            slab_offsets.write_offset_file(offsets_file)?;
+            Ok(())
+        }
     }
 
     pub fn close(&mut self) -> Result<()> {
