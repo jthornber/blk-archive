@@ -1,14 +1,18 @@
 use anyhow::{anyhow, Context, Result};
+use byteorder::{LittleEndian, ReadBytesExt};
+use nom::AsBytes;
 use serde_derive::{Deserialize, Serialize};
 use std::env;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Seek, Write};
 use std::os::unix::prelude::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use bytebuffer::ByteBuffer;
 use clap::ArgMatches;
 
+use crate::hash::*;
 use crate::output::Output;
 use crate::paths;
 use crate::slab::*;
@@ -95,23 +99,26 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct CheckPoint {
-    pub source_path: String,
-    pub stream_path: String,
     pub data_start_size: u64,
     pub hash_start_size: u64,
     pub data_curr_size: u64,
     pub hash_curr_size: u64,
     pub input_offset: u64,
-    pub checksum: u64,
+    pub source_path: String,
+    pub stream_path: String,
 }
 
 pub fn checkpoint_path(root: &str) -> PathBuf {
-    [root, "checkpoint.toml"].iter().collect()
+    [root, "checkpoint.bin"].iter().collect()
 }
 
 impl CheckPoint {
+    pub const VERSION: u64 = 0;
+    pub const MAGIC: u64 = 0xD00DDEAD10CCD00D;
+    pub const MIN_SIZE: u64 = 72;
+
     pub fn start(
         source_path: &str,
         stream_path: &str,
@@ -126,7 +133,6 @@ impl CheckPoint {
             data_curr_size: data_start_size,
             hash_curr_size: hash_start_size,
             input_offset: 0,
-            checksum: 0,
         }
     }
 
@@ -137,25 +143,110 @@ impl CheckPoint {
         );
 
         {
-            //TODO: make the checksum mean somthing and check it in the read.  It's important
-            // that the values are correct before we destroy data during a repair.  Maybe this
-            // file shouldn't be in a human readable format?
-            let mut output = fs::OpenOptions::new()
+            let mut output = ByteBuffer::new();
+            output.set_endian(bytebuffer::Endian::LittleEndian);
+
+            let mut cpf = fs::OpenOptions::new()
                 .read(false)
                 .write(true)
                 .custom_flags(libc::O_SYNC)
                 .create_new(true)
                 .open(file_name)
-                .context("Previous operation interrupted, please run verify-all")?;
+                .context("Previous pack operation interrupted, please run verify-all")?;
 
-            let toml = toml::to_string(self).unwrap();
-            output.write_all(toml.as_bytes())?;
+            output.write_u64(Self::MAGIC);
+            output.write_u64(Self::VERSION);
+            output.write_u64(self.data_start_size);
+            output.write_u64(self.hash_start_size);
+            output.write_u64(self.data_curr_size);
+            output.write_u64(self.hash_curr_size);
+            output.write_u64(self.input_offset);
+            output.write_u32(self.source_path.len() as u32);
+            output.write_u32(self.stream_path.len() as u32);
+            output.write_all(self.source_path.as_bytes())?;
+            output.write_all(self.stream_path.as_bytes())?;
+
+            let cs = hash_64(output.as_bytes());
+            output.write_all(cs.as_bytes())?;
+
+            cpf.write_all(output.as_bytes())?;
         }
 
         // Sync containing dentry to ensure checkpoint file exists
         fs::File::open(root)?.sync_all()?;
 
         Ok(())
+    }
+
+    fn read<P: AsRef<Path>>(root: P) -> Result<Option<Self>> {
+        let file_name = checkpoint_path(root.as_ref().to_str().unwrap());
+
+        let cpf = fs::OpenOptions::new()
+            .read(true)
+            .write(false)
+            .create_new(false)
+            .open(file_name);
+
+        if cpf.is_err() {
+            // No checkpoint
+            Ok(None)
+        } else {
+            let mut cpf = cpf?;
+            let len = cpf.metadata()?.len();
+
+            if len < Self::MIN_SIZE {
+                return Err(anyhow!(
+                    "Checkpoint file is too small to be valid, require {} {len} bytes",
+                    Self::MIN_SIZE
+                ));
+            }
+
+            let mut payload = vec![0; (len - 8) as usize];
+            cpf.read_exact(&mut payload)?;
+            let expected_cs = cpf.read_u64::<LittleEndian>()?;
+
+            assert!(cpf.stream_position()? == len);
+
+            let actual_cs = u64::from_le_bytes(hash_64(&payload).into());
+            if actual_cs != expected_cs {
+                return Err(anyhow!("Checkpoint file checksum is invalid!"));
+            }
+
+            let mut input = ByteBuffer::from_bytes(&payload);
+            input.set_endian(bytebuffer::Endian::LittleEndian);
+
+            assert!(input.read_u64()? == Self::MAGIC);
+            assert!(input.read_u64()? == Self::VERSION);
+
+            let data_start_size = input.read_u64()?;
+            let hash_start_size = input.read_u64()?;
+            let data_curr_size = input.read_u64()?;
+            let hash_curr_size = input.read_u64()?;
+            let input_offset = input.read_u64()?;
+
+            let source_len = input.read_u32()?;
+            let stream_len = input.read_u32()?;
+
+            let mut source_binary = vec![0u8; source_len as usize];
+            input.read_exact(&mut source_binary)?;
+            let mut stream_binary = vec![0u8; stream_len as usize];
+            input.read_exact(&mut stream_binary)?;
+
+            let source_path = String::from_utf8(source_binary)?;
+            let stream_path = String::from_utf8(stream_binary)?;
+
+            let cp = CheckPoint {
+                data_start_size,
+                hash_start_size,
+                data_curr_size,
+                hash_curr_size,
+                input_offset,
+                source_path,
+                stream_path,
+            };
+
+            Ok(Some(cp))
+        }
     }
 
     pub fn end() -> Result<()> {
@@ -169,19 +260,6 @@ impl CheckPoint {
         Ok(())
     }
 
-    fn read<P: AsRef<Path>>(root: P) -> Result<Option<Self>> {
-        let file_name = checkpoint_path(root.as_ref().to_str().unwrap());
-        let content = fs::read_to_string(file_name);
-        if content.is_err() {
-            // No checkpoint
-            Ok(None)
-        } else {
-            let cp: CheckPoint =
-                toml::from_str(&content.unwrap()).context("couldn't parse checkpoint file")?;
-            Ok(Some(cp))
-        }
-    }
-
     pub fn interrupted() -> Result<()> {
         let root = env::current_dir()?;
         match Self::read(root).context("error while checking for checkpoint file!")? {
@@ -192,4 +270,91 @@ impl CheckPoint {
             None => Ok(()),
         }
     }
+}
+
+#[test]
+fn check_ranges() {
+    let test_archive = PathBuf::from("/tmp/check_ranges");
+
+    std::fs::create_dir_all(&test_archive).unwrap();
+
+    let mut t = CheckPoint::start("/tmp/testing", "/tmp/testing/stream", u64::MAX, u64::MAX);
+
+    let write_result = t.write(&test_archive);
+    assert!(
+        write_result.is_ok(),
+        "CheckPoint.write failed {:?}",
+        write_result.unwrap()
+    );
+
+    let read_back = CheckPoint::read(&test_archive).unwrap();
+
+    assert!(std::fs::remove_dir_all(&test_archive).is_ok());
+
+    assert!(
+        read_back.is_some(),
+        "CheckPoint::read error {:?}",
+        read_back.unwrap()
+    );
+
+    assert!(read_back.unwrap() == t);
+}
+
+#[test]
+fn check_small() {
+    let test_archive = PathBuf::from("/tmp/check_small");
+
+    std::fs::create_dir_all(&test_archive).unwrap();
+
+    let mut t = CheckPoint::start("", "", u64::MAX, u64::MAX);
+
+    let write_result = t.write(&test_archive);
+    assert!(
+        write_result.is_ok(),
+        "CheckPoint.write failed {:?}",
+        write_result.unwrap()
+    );
+
+    let read_back = CheckPoint::read(&test_archive).unwrap();
+
+    assert!(std::fs::remove_dir_all(&test_archive).is_ok());
+
+    assert!(
+        read_back.is_some(),
+        "CheckPoint::read error {:?}",
+        read_back.unwrap()
+    );
+
+    assert!(read_back.unwrap() == t);
+}
+
+#[test]
+fn check_fields() {
+    let test_archive = PathBuf::from("/tmp/check_fields");
+    std::fs::create_dir_all(&test_archive).unwrap();
+
+    let mut t = CheckPoint::start("source/path", "stream/path/yes", 1024, 384);
+
+    t.data_curr_size = t.data_start_size * 2;
+    t.hash_curr_size = t.hash_start_size * 2;
+    t.input_offset = 1024 * 1024 * 1024;
+
+    let write_result = t.write(&test_archive);
+    assert!(
+        write_result.is_ok(),
+        "CheckPoint.write failed {:?}",
+        write_result.unwrap()
+    );
+
+    let read_back = CheckPoint::read(&test_archive).unwrap();
+
+    assert!(std::fs::remove_dir_all(&test_archive).is_ok());
+
+    assert!(
+        read_back.is_some(),
+        "CheckPoint::read error {:?}",
+        read_back.unwrap()
+    );
+
+    assert!(read_back.unwrap() == t);
 }

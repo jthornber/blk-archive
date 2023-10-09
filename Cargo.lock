@@ -108,6 +108,7 @@ dependencies = [
  "anyhow",
  "atty",
  "blake2",
+ "bytebuffer",
  "byteorder",
  "chrono",
  "clap",
@@ -148,6 +149,15 @@ name = "bumpalo"
 version = "3.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b1ce199063694f33ffb7dd4e0ee620741495c32833cde5aa08f02a0bf96f0c8"
+
+[[package]]
+name = "bytebuffer"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa7bfaf7cd08cacd74cdc6b521c37ac39cbc92692e5ab5c21ed5657a749b577c"
+dependencies = [
+ "byteorder",
+]
 
 [[package]]
 name = "bytemuck"
