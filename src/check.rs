@@ -9,7 +9,7 @@ use std::os::unix::prelude::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use bytebuffer::ByteBuffer;
+use bincode::*;
 use clap::ArgMatches;
 
 use crate::hash::*;
@@ -101,6 +101,8 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct CheckPoint {
+    pub magic: u64,
+    pub version: u32,
     pub data_start_size: u64,
     pub hash_start_size: u64,
     pub data_curr_size: u64,
@@ -115,9 +117,9 @@ pub fn checkpoint_path(root: &str) -> PathBuf {
 }
 
 impl CheckPoint {
-    pub const VERSION: u64 = 0;
+    pub const VERSION: u32 = 0;
     pub const MAGIC: u64 = 0xD00DDEAD10CCD00D;
-    pub const MIN_SIZE: u64 = 72;
+    pub const MIN_SIZE: u64 = 76;
 
     pub fn start(
         source_path: &str,
@@ -126,13 +128,15 @@ impl CheckPoint {
         hash_start_size: u64,
     ) -> Self {
         CheckPoint {
-            source_path: String::from(source_path),
-            stream_path: String::from(stream_path),
+            magic: Self::MAGIC,
+            version: Self::VERSION,
             data_start_size,
             hash_start_size,
             data_curr_size: data_start_size,
             hash_curr_size: hash_start_size,
             input_offset: 0,
+            source_path: String::from(source_path),
+            stream_path: String::from(stream_path),
         }
     }
 
@@ -143,8 +147,11 @@ impl CheckPoint {
         );
 
         {
-            let mut output = ByteBuffer::new();
-            output.set_endian(bytebuffer::Endian::LittleEndian);
+            let ser = bincode::DefaultOptions::new()
+                .with_fixint_encoding()
+                .with_little_endian();
+            let objbytes = ser.serialize(self)?;
+            let checksum = hash_64(&objbytes);
 
             let mut cpf = fs::OpenOptions::new()
                 .read(false)
@@ -154,22 +161,8 @@ impl CheckPoint {
                 .open(file_name)
                 .context("Previous pack operation interrupted, please run verify-all")?;
 
-            output.write_u64(Self::MAGIC);
-            output.write_u64(Self::VERSION);
-            output.write_u64(self.data_start_size);
-            output.write_u64(self.hash_start_size);
-            output.write_u64(self.data_curr_size);
-            output.write_u64(self.hash_curr_size);
-            output.write_u64(self.input_offset);
-            output.write_u32(self.source_path.len() as u32);
-            output.write_u32(self.stream_path.len() as u32);
-            output.write_all(self.source_path.as_bytes())?;
-            output.write_all(self.stream_path.as_bytes())?;
-
-            let cs = hash_64(output.as_bytes());
-            output.write_all(cs.as_bytes())?;
-
-            cpf.write_all(output.as_bytes())?;
+            cpf.write_all(&objbytes)?;
+            cpf.write_all(checksum.as_bytes())?;
         }
 
         // Sync containing dentry to ensure checkpoint file exists
@@ -212,39 +205,25 @@ impl CheckPoint {
                 return Err(anyhow!("Checkpoint file checksum is invalid!"));
             }
 
-            let mut input = ByteBuffer::from_bytes(&payload);
-            input.set_endian(bytebuffer::Endian::LittleEndian);
+            let des = bincode::DefaultOptions::new()
+                .with_fixint_encoding()
+                .with_little_endian();
+            let cp: CheckPoint = des.deserialize(&payload)?;
+            if cp.version != Self::VERSION {
+                return Err(anyhow!(
+                    "Incorrect version {} expected {}",
+                    cp.version,
+                    Self::VERSION
+                ));
+            }
 
-            assert!(input.read_u64()? == Self::MAGIC);
-            assert!(input.read_u64()? == Self::VERSION);
-
-            let data_start_size = input.read_u64()?;
-            let hash_start_size = input.read_u64()?;
-            let data_curr_size = input.read_u64()?;
-            let hash_curr_size = input.read_u64()?;
-            let input_offset = input.read_u64()?;
-
-            let source_len = input.read_u32()?;
-            let stream_len = input.read_u32()?;
-
-            let mut source_binary = vec![0u8; source_len as usize];
-            input.read_exact(&mut source_binary)?;
-            let mut stream_binary = vec![0u8; stream_len as usize];
-            input.read_exact(&mut stream_binary)?;
-
-            let source_path = String::from_utf8(source_binary)?;
-            let stream_path = String::from_utf8(stream_binary)?;
-
-            let cp = CheckPoint {
-                data_start_size,
-                hash_start_size,
-                data_curr_size,
-                hash_curr_size,
-                input_offset,
-                source_path,
-                stream_path,
-            };
-
+            if cp.magic != Self::MAGIC {
+                return Err(anyhow!(
+                    "Magic incorrect {} expected {}",
+                    cp.magic,
+                    Self::MAGIC
+                ));
+            }
             Ok(Some(cp))
         }
     }
