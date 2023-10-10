@@ -41,11 +41,11 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
     output.report.set_title("Verifying archive");
 
     // Load up a check point if we have one.
-    let cp = CheckPoint::read(archive_dir.clone())?;
+    let cp = CheckPoint::read(&archive_dir)?;
 
-    let num_data_slabs = SlabFile::verify(data_path.clone(), repair);
+    let num_data_slabs = SlabFile::verify(&data_path, repair);
     output.report.progress(25);
-    let num_hash_slabs = SlabFile::verify(hashes_path.clone(), repair);
+    let num_hash_slabs = SlabFile::verify(&hashes_path, repair);
     output.report.progress(50);
     if (num_data_slabs.is_err() || num_hash_slabs.is_err())
         || (num_data_slabs.as_ref().unwrap() != num_hash_slabs.as_ref().unwrap())
@@ -75,8 +75,8 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
                 .info("Rolling back archive to previous state...");
 
             // Make sure the truncated size verifies by verifying what part we are keeping first
-            SlabFile::truncate(data_path.clone(), cp.data_start_size, false)?;
-            SlabFile::truncate(hashes_path.clone(), cp.hash_start_size, false)?;
+            SlabFile::truncate(&data_path, cp.data_start_size, false)?;
+            SlabFile::truncate(&hashes_path, cp.hash_start_size, false)?;
 
             // Do the actual truncate which also fixes up the offsets file to match
             SlabFile::truncate(data_path, cp.data_start_size, true)?;
