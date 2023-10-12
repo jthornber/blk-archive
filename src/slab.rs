@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::SystemTime;
 use threadpool::ThreadPool;
 
 use crate::hash::*;
@@ -71,13 +72,24 @@ struct SlabOffsets {
 }
 
 impl SlabOffsets {
-    fn read_offset_file<P: AsRef<Path>>(p: P) -> Result<Self> {
+    fn read_offset_file<P: AsRef<Path>>(p: P, data_mtime: Option<SystemTime>) -> Result<Self> {
         let r = OpenOptions::new()
             .read(true)
             .write(false)
             .create(false)
             .open(p)
             .context("opening offset file")?;
+
+        let mtime = r.metadata()?.modified()?;
+
+        if let Some(file_mtime) = data_mtime {
+            if file_mtime > mtime {
+                return Err(anyhow!(
+                    "Offsets file modification time is older than slab data file \
+                    run blk-archive 'validate --repair all' to correct!",
+                ));
+            }
+        }
 
         let len = r.metadata().context("offset metadata")?.len();
         let mut r = std::io::BufReader::new(r);
@@ -124,6 +136,8 @@ impl SlabOffsets {
 
 const FILE_MAGIC: u64 = 0xb927f96a6b611180;
 const SLAB_MAGIC: u64 = 0x20565137a3100a7c;
+const SLAB_FILE_HDR_LEN: u64 = 16;
+const SLAB_HDR_LEN: u64 = 24;
 
 const FORMAT_VERSION: u32 = 0;
 
@@ -215,6 +229,12 @@ fn writer_(shared: Arc<Mutex<SlabShared>>, rx: Receiver<SlabData>) -> Result<()>
     }
 
     assert!(queued.is_empty());
+
+    {
+        let mut shared = shared.lock().unwrap();
+        shared.data.flush()?;
+    }
+
     Ok(())
 }
 
@@ -345,8 +365,10 @@ impl SlabFile {
             (None, tx)
         };
 
-        let offsets = SlabOffsets::read_offset_file(&offsets_path)?;
         let file_size = data.metadata()?.len();
+        let file_mtime = data.metadata()?.modified()?;
+        let offsets = SlabOffsets::read_offset_file(&offsets_path, Some(file_mtime))?;
+
         let shared = Arc::new(Mutex::new(SlabShared {
             data,
             offsets,
@@ -383,8 +405,10 @@ impl SlabFile {
         let compressed = flags == 1;
         let compressor = None;
 
-        let offsets = SlabOffsets::read_offset_file(&offsets_path)?;
         let file_size = data.metadata()?.len();
+        let data_mtime = data.metadata()?.modified()?;
+        let offsets = SlabOffsets::read_offset_file(&offsets_path, Some(data_mtime))?;
+
         let shared = Arc::new(Mutex::new(SlabShared {
             data,
             offsets,
@@ -401,6 +425,156 @@ impl SlabFile {
             tid: None,
             data_cache: DataCache::new(cache_nr_entries),
         })
+    }
+
+    fn verify_<P: AsRef<Path>>(data_path: P, check_len: Option<u64>) -> Result<SlabOffsets> {
+        let slab_name = data_path.as_ref().to_path_buf();
+
+        let mut data = OpenOptions::new()
+            .read(true)
+            .write(false)
+            .create(false)
+            .open(data_path)?;
+
+        let file_size = match check_len {
+            Some(len) => len,
+            None => data.metadata()?.len(),
+        };
+
+        if file_size < SLAB_FILE_HDR_LEN {
+            return Err(anyhow!(
+                "slab file {} isn't large enough to be a slab file, size = {file_size} bytes.",
+                slab_name.to_string_lossy()
+            ));
+        }
+
+        let mut so = SlabOffsets::default();
+        let _flags = read_slab_header(&mut data)?;
+
+        // We don't have any additional data in an empty archive
+        let mut curr_offset = data.stream_position()?;
+        assert!(curr_offset == SLAB_FILE_HDR_LEN);
+
+        if curr_offset == file_size {
+            return Ok(so);
+        }
+
+        so.offsets.push(SLAB_FILE_HDR_LEN);
+        let mut slab_index = 0;
+
+        loop {
+            let remaining = file_size - curr_offset;
+            if remaining < SLAB_HDR_LEN {
+                return Err(anyhow!(
+                    "Slab {slab_index} is incomplete, not enough remaining for header, \
+                    {remaining} remaining bytes."
+                ));
+            }
+
+            let magic = data.read_u64::<LittleEndian>()?;
+            let len = data.read_u64::<LittleEndian>()?;
+
+            if magic != SLAB_MAGIC {
+                return Err(anyhow!(
+                    "slab magic incorrect for slab {slab_index} for file {}",
+                    slab_name.to_string_lossy()
+                ));
+            }
+
+            let mut expected_csum: Hash64 = Hash64::default();
+            data.read_exact(&mut expected_csum)?;
+
+            if remaining < SLAB_HDR_LEN + len {
+                return Err(anyhow!(
+                    "Slab {slab_index} is incomplete, payload is truncated, \
+                    needing {}, remaining {remaining}",
+                    SLAB_HDR_LEN + len
+                ));
+            }
+
+            let mut buf = vec![0; len as usize];
+            data.read_exact(&mut buf)?;
+
+            let actual_csum = hash_64(&buf);
+            if actual_csum != expected_csum {
+                return Err(anyhow!(
+                    "slab {slab_index} checksum incorrect for file {}!",
+                    slab_name.to_string_lossy()
+                ));
+            }
+
+            curr_offset = data.stream_position()?;
+            if curr_offset == file_size {
+                break;
+            }
+
+            slab_index += 1;
+            so.offsets.push(curr_offset);
+        }
+
+        Ok(so)
+    }
+
+    pub fn verify<P: AsRef<Path>>(data_path: P, repair: bool) -> Result<usize> {
+        let data_mtime = std::fs::metadata(data_path.as_ref().clone())?.modified()?;
+        let offsets_path = offsets_path(&data_path);
+
+        let actual_offsets = Self::verify_(data_path, None)?;
+        let stored_offsets = SlabOffsets::read_offset_file(&offsets_path, None)?;
+
+        let actual_count = actual_offsets.offsets.len();
+        let stored_count = stored_offsets.offsets.len();
+        let offsets_mtime = std::fs::metadata(offsets_path.clone())?.modified()?;
+
+        let mut result = if actual_count != stored_count {
+            Err(anyhow!(
+                "Offset file {} has incorrect number of entries {} != {}",
+                offsets_path.to_string_lossy(),
+                actual_count,
+                stored_count
+            ))
+        } else if actual_offsets.offsets != stored_offsets.offsets {
+            Err(anyhow!(
+                "Stored offset values do not match calculated for file {}",
+                offsets_path.to_string_lossy()
+            ))
+        } else if data_mtime > offsets_mtime {
+            Err(anyhow!(
+                "Offsets file modification time is older than slab data file \
+                run blk-archive 'validate --repair all' to correct!",
+            ))
+        } else {
+            Ok(actual_count)
+        };
+
+        if result.is_err() && repair {
+            actual_offsets.write_offset_file(offsets_path)?;
+            result = Ok(actual_count)
+        }
+
+        result
+    }
+
+    pub fn truncate<P: AsRef<Path>>(data_path: P, len: u64, do_truncate: bool) -> Result<()> {
+        if !do_truncate {
+            Self::verify_(data_path, Some(len))?;
+            Ok(())
+        } else {
+            let offsets_file = offsets_path(&data_path);
+            {
+                let mut data = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(false)
+                    .open(data_path.as_ref().clone())?;
+                data.set_len(len)?;
+                data.flush()?;
+            }
+
+            let slab_offsets = Self::verify_(data_path, None)?;
+            slab_offsets.write_offset_file(offsets_file)?;
+            Ok(())
+        }
     }
 
     pub fn close(&mut self) -> Result<()> {
