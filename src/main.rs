@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::{command, Arg, ArgMatches, Command};
+use clap::{command, Arg, ArgMatches, Command, SubCommand};
 use std::env;
 use std::process::exit;
 use std::sync::Arc;
@@ -66,12 +66,35 @@ fn main_() -> Result<()> {
         .takes_value(false);
 
     let repair: Arg = Arg::new("REPAIR")
-        .help("repairs an archive")
+        .help("Attempts a repair of an archive")
         .required(false)
         .long("repair")
         .short('r')
         .value_name("REPAIR")
         .takes_value(false);
+
+    let validate_operations = SubCommand::with_name("validate")
+        .about("Validate operations")
+        .arg_required_else_help(true)
+        .arg(repair.clone())
+        .subcommand(
+            SubCommand::with_name("all")
+                .help_template(
+                    "Validates the archive and optionally repairs \n\
+                    corruption that may have occurred during interrupted 'pack' operation.\n\
+                    Note: Data for previous interrupted 'pack' operation will be lost. \n\
+                    \nOPTIONS:\n{options}\n USAGE:\n\t{usage}",
+                )
+                .about("Validates an archive")
+                .arg(archive_arg.clone()),
+        )
+        .subcommand(
+            SubCommand::with_name("stream")
+                .help("Validates an individual stream")
+                .about("Validates an individual stream")
+                .arg(stream_arg.clone())
+                .arg(archive_arg.clone()),
+        );
 
     let matches = command!()
         .arg(json)
@@ -193,12 +216,7 @@ fn main_() -> Result<()> {
                 .about("lists the streams in the archive")
                 .arg(archive_arg.clone()),
         )
-        .subcommand(
-            Command::new("verify-all")
-                .about("verifies the integrity of the archive")
-                .arg(archive_arg.clone())
-                .arg(repair.clone()),
-        )
+        .subcommand(validate_operations)
         .get_matches();
 
     let report = mk_report(&matches);
@@ -226,9 +244,17 @@ fn main_() -> Result<()> {
         Some(("dump-stream", sub_matches)) => {
             dump_stream::run(sub_matches, output)?;
         }
-        Some(("verify-all", sub_matches)) => {
-            check::run(sub_matches, output)?;
-        }
+        Some(("validate", sub_matches)) => match sub_matches.subcommand() {
+            Some(("all", args)) => {
+                // Repair is an argument on the validate commands, not the all.
+                // Maybe we can figure out how to make it an option of all instead?
+                check::run(args, output, sub_matches.is_present("REPAIR"))?;
+            }
+            Some(("stream", args)) => {
+                unpack::run_verify(args, report)?;
+            }
+            _ => unreachable!("Exhauted list of validate sub commands"),
+        },
         _ => unreachable!("Exhausted list of subcommands and subcommand_required prevents 'None'"),
     }
 

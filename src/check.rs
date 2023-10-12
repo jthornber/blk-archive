@@ -28,9 +28,8 @@ fn remove_incomplete_stream(cp: &CheckPoint) -> Result<()> {
     Ok(())
 }
 
-pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
+pub fn run(matches: &ArgMatches, output: Arc<Output>, repair: bool) -> Result<()> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
-    let repair = matches.is_present("REPAIR");
 
     env::set_current_dir(archive_dir.clone())?;
 
@@ -159,7 +158,9 @@ impl CheckPoint {
                 .custom_flags(libc::O_SYNC)
                 .create_new(true)
                 .open(file_name)
-                .context("Previous pack operation interrupted, please run verify-all")?;
+                .context(
+                    "Previous pack operation interrupted, please run 'validate --repair all'",
+                )?;
 
             cpf.write_all(&objbytes)?;
             cpf.write_all(checksum.as_bytes())?;
@@ -243,7 +244,7 @@ impl CheckPoint {
         let root = env::current_dir()?;
         match Self::read(root).context("error while checking for checkpoint file!")? {
             Some(cp) => Err(anyhow!(
-                "pack operation of {} was interrupted, run verify-all -r to correct",
+                "pack operation of {} was interrupted, run 'validate --repair all",
                 cp.source_path
             )),
             None => Ok(()),

@@ -86,7 +86,7 @@ impl SlabOffsets {
             if file_mtime > mtime {
                 return Err(anyhow!(
                     "Offsets file modification time is older than slab data file \
-                    run blk-archive 'verify-all --repair' to correct!",
+                    run blk-archive 'validate --repair all' to correct!",
                 ));
             }
         }
@@ -541,7 +541,7 @@ impl SlabFile {
         } else if data_mtime > offsets_mtime {
             Err(anyhow!(
                 "Offsets file modification time is older than slab data file \
-                run blk-archive 'verify-all --repair' to correct!",
+                run blk-archive 'validate --repair all' to correct!",
             ))
         } else {
             Ok(actual_count)
