@@ -19,7 +19,7 @@ pub fn stream_path(stream: &str) -> PathBuf {
 }
 
 pub fn stream_config(stream: &str) -> PathBuf {
-    ["streams", stream, "config.toml"].iter().collect()
+    ["streams", stream, "config.yaml"].iter().collect()
 }
 
 //------------------------------
