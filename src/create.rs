@@ -31,7 +31,7 @@ fn write_config(
 ) -> Result<()> {
     let mut p = PathBuf::new();
     p.push(root);
-    p.push("dm-archive.toml");
+    p.push("dm-archive.yaml");
 
     let mut output = OpenOptions::new()
         .read(false)
@@ -47,7 +47,7 @@ fn write_config(
         data_cache_size_meg,
     };
 
-    write!(output, "{}", &toml::to_string(&config).unwrap())?;
+    write!(output, "{}", &serde_yaml::to_string(&config).unwrap())?;
     Ok(())
 }
 
