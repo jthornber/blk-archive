@@ -1,4 +1,6 @@
 use anyhow::{anyhow, Context, Result};
+use blake2::digest::FixedOutputReset;
+use blake2::{Blake2b512, Digest};
 use clap::ArgMatches;
 use io::{Read, Seek, Write};
 use std::collections::BTreeMap;
@@ -29,7 +31,7 @@ trait UnpackDest {
     fn handle_fill(&mut self, byte: u8, len: u64) -> Result<()>;
     fn handle_mapped(&mut self, data: &[u8]) -> Result<()>;
     fn handle_unmapped(&mut self, len: u64) -> Result<()>;
-    fn complete(&mut self) -> Result<()>;
+    fn complete(&mut self) -> Result<Option<String>>;
 }
 
 struct Unpacker<D: UnpackDest> {
@@ -153,7 +155,7 @@ impl<D: UnpackDest> Unpacker<D> {
         Ok(())
     }
 
-    pub fn unpack(&mut self, report: &Arc<Report>) -> Result<()> {
+    pub fn unpack(&mut self, report: &Arc<Report>) -> Result<Option<String>> {
         report.progress(0);
 
         let nr_slabs = self.stream_file.get_nr_slabs();
@@ -177,10 +179,10 @@ impl<D: UnpackDest> Unpacker<D> {
                 }
             }
         }
-        self.dest.complete()?;
+        let result = self.dest.complete()?;
         report.progress(100);
 
-        Ok(())
+        Ok(result)
     }
 }
 
@@ -188,15 +190,24 @@ impl<D: UnpackDest> Unpacker<D> {
 
 struct ThickDest<W: Write> {
     output: W,
+    digest: Blake2b512,
 }
 
-fn write_bytes<W: Write>(w: &mut W, byte: u8, len: u64) -> Result<()> {
+fn write_bytes<W: Write>(
+    w: &mut W,
+    byte: u8,
+    len: u64,
+    mut digest: Option<&mut Blake2b512>,
+) -> Result<()> {
     let buf_size = std::cmp::min(len, 64 * 1024 * 1024);
     let buf = vec![byte; buf_size as usize];
 
     let mut remaining = len;
     while remaining > 0 {
         let w_len = std::cmp::min(buf_size, remaining);
+        if let Some(ref mut dig) = digest {
+            dig.update(&buf[0..(w_len as usize)]);
+        }
         w.write_all(&buf[0..(w_len as usize)])?;
         remaining -= w_len;
     }
@@ -206,20 +217,60 @@ fn write_bytes<W: Write>(w: &mut W, byte: u8, len: u64) -> Result<()> {
 
 impl<W: Write> UnpackDest for ThickDest<W> {
     fn handle_fill(&mut self, byte: u8, len: u64) -> Result<()> {
-        write_bytes(&mut self.output, byte, len)
+        write_bytes(&mut self.output, byte, len, Some(&mut self.digest))
     }
 
     fn handle_mapped(&mut self, data: &[u8]) -> Result<()> {
+        self.digest.update(data);
         self.output.write_all(data)?;
         Ok(())
     }
 
     fn handle_unmapped(&mut self, len: u64) -> Result<()> {
-        write_bytes(&mut self.output, 0, len)
+        write_bytes(&mut self.output, 0, len, Some(&mut self.digest))
     }
 
-    fn complete(&mut self) -> Result<()> {
+    fn complete(&mut self) -> Result<Option<String>> {
+        Ok(Some(format!("{:02x}", self.digest.finalize_fixed_reset())))
+    }
+}
+
+#[derive(Default)]
+struct ValidateStream {
+    digest: Blake2b512,
+}
+
+impl ValidateStream {
+    fn digest_bytes(&mut self, byte: u8, len: u64) {
+        let buf_size = std::cmp::min(len, 64 * 1024 * 1024);
+        let buf = vec![byte; buf_size as usize];
+        let mut remaining = len;
+        while remaining > 0 {
+            let w_len = std::cmp::min(buf_size, remaining);
+            self.digest.update(&buf[0..(w_len as usize)]);
+            remaining -= w_len;
+        }
+    }
+}
+
+impl UnpackDest for ValidateStream {
+    fn handle_fill(&mut self, byte: u8, len: u64) -> Result<()> {
+        self.digest_bytes(byte, len);
         Ok(())
+    }
+
+    fn handle_mapped(&mut self, data: &[u8]) -> Result<()> {
+        self.digest.update(data);
+        Ok(())
+    }
+
+    fn handle_unmapped(&mut self, len: u64) -> Result<()> {
+        self.digest_bytes(0, len);
+        Ok(())
+    }
+
+    fn complete(&mut self) -> Result<Option<String>> {
+        Ok(Some(format!("{:02x}", self.digest.finalize_fixed_reset())))
     }
 }
 
@@ -290,7 +341,7 @@ impl ThinDest {
     }
 
     fn fill(&mut self, byte: u8, len: u64) -> Result<()> {
-        write_bytes(&mut self.output, byte, len)?;
+        write_bytes(&mut self.output, byte, len, None)?;
         self.pos += len;
         Ok(())
     }
@@ -425,16 +476,27 @@ impl UnpackDest for ThinDest {
         Ok(())
     }
 
-    fn complete(&mut self) -> Result<()> {
+    fn complete(&mut self) -> Result<Option<String>> {
         assert!(self.run.is_none());
         assert!(self.provisioned.next().is_none());
-        Ok(())
+        Ok(None)
     }
 }
 
 //-----------------------------------------
+fn check_digest(stream_id: &str, calculated_digest: &str) -> Result<Option<String>> {
+    let stream_config = config::read_stream_config(stream_id)?;
+    if let Some(stored) = stream_config.source_sig {
+        if stored != calculated_digest {
+            return Err(anyhow!(
+                    "Hash signatures do not match \n{stored} stored \n{calculated_digest} calculated, unpacked data not correct!"
+                ));
+        }
+    }
+    Ok(None)
+}
 
-pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
+pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<Option<String>> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap())
         .canonicalize()
         .context("Bad archive dir")?;
@@ -463,9 +525,14 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
         let config = config::read_config(".")?;
         let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
 
-        let dest = ThickDest { output };
+        let dest = ThickDest {
+            output,
+            digest: Blake2b512::new(),
+        };
         let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
-        u.unpack(&report)
+        let result = u.unpack(&report)?;
+        let calculated = result.unwrap();
+        check_digest(stream, &calculated)
     } else {
         // Check the size matches the stream size.
         let stream_cfg = config::read_stream_config(stream)?;
@@ -498,11 +565,40 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
             let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
             u.unpack(&report)
         } else {
-            let dest = ThickDest { output };
+            let dest = ThickDest {
+                output,
+                digest: Blake2b512::new(),
+            };
             let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
-            u.unpack(&report)
+            let result = u.unpack(&report)?;
+            if let Some(calculated_digest) = result {
+                check_digest(stream, &calculated_digest)
+            } else {
+                Ok(None)
+            }
         }
     }
+}
+
+pub fn run_validate_stream(matches: &ArgMatches, report: Arc<Report>) -> Result<Option<String>> {
+    let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap())
+        .canonicalize()
+        .context("Bad archive dir")?;
+    let stream = matches.value_of("STREAM").unwrap();
+    env::set_current_dir(archive_dir)?;
+
+    report.set_title(&format!("Validating {stream} ..."));
+    let config = config::read_config(".")?;
+    let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
+
+    let dest = ValidateStream {
+        digest: Blake2b512::new(),
+    };
+    let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
+    let result = u.unpack(&report)?;
+
+    let calculated = result.unwrap();
+    check_digest(stream, &calculated)
 }
 
 //-----------------------------------------
@@ -661,11 +757,11 @@ impl UnpackDest for VerifyDest {
         Ok(())
     }
 
-    fn complete(&mut self) -> Result<()> {
+    fn complete(&mut self) -> Result<Option<String>> {
         if self.more_data() {
             return Err(anyhow!("archived stream is too short"));
         }
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -697,7 +793,7 @@ fn thin_verifier(input_file: &Path) -> Result<VerifyDest> {
     Ok(VerifyDest::new(input_it))
 }
 
-pub fn run_verify(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
+pub fn run_verify(matches: &ArgMatches, report: Arc<Report>) -> Result<Option<String>> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
     let input_file = Path::new(matches.value_of("INPUT").unwrap()).canonicalize()?;
     let stream = matches.value_of("STREAM").unwrap();

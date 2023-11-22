@@ -35,6 +35,7 @@ pub struct StreamConfig {
     pub mapped_size: u64,
     pub packed_size: u64,
     pub thin_id: Option<u32>,
+    pub source_sig: Option<String>,
 }
 
 fn stream_cfg_path(stream_id: &str) -> PathBuf {
@@ -88,6 +89,7 @@ mod config_tests {
             mapped_size: u64::MAX,
             packed_size: u64::MAX,
             thin_id: None,
+            source_sig: None,
         };
 
         let ser = serde_yaml::to_string(&config).unwrap();

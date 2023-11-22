@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use blake2::{Blake2b512, Digest};
 use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::prelude::*;
 use clap::ArgMatches;
@@ -389,6 +390,17 @@ struct Packer {
     hash_cache_size_meg: usize,
 }
 
+fn unmapped_digest_add(digest: &mut Blake2b512, len: u64) {
+    let buf = [0; 4096];
+
+    let mut remaining = len;
+    while remaining > 0 {
+        let hash_len = std::cmp::min(buf.len() as u64, remaining);
+        digest.update(&buf[0..hash_len as usize]);
+        remaining -= hash_len;
+    }
+}
+
 impl Packer {
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -426,6 +438,8 @@ impl Packer {
             .build()
             .context("couldn't open data slab file")?;
         let data_size = data_file.get_file_size();
+
+        let mut input_digest = Blake2b512::new();
 
         let hashes_size = {
             let hashes_file = hashes_file.lock().unwrap();
@@ -465,6 +479,7 @@ impl Packer {
             match chunk? {
                 Chunk::Mapped(buffer) => {
                     let len = buffer.len();
+                    input_digest.update(&buffer);
                     splitter.next_data(buffer, &mut handler)?;
                     total_read += len as u64;
                     self.output
@@ -473,6 +488,7 @@ impl Packer {
                 }
                 Chunk::Unmapped(len) => {
                     assert!(len > 0);
+                    unmapped_digest_add(&mut input_digest, len);
                     splitter.next_break(&mut handler)?;
                     handler.handle_gap(len)?;
                 }
@@ -484,6 +500,7 @@ impl Packer {
         }
 
         splitter.complete(&mut handler)?;
+        let input_hash_sig = format!("{:02x}", input_digest.finalize());
         self.output.report.progress(100);
         let end_time: DateTime<Utc> = Utc::now();
         let elapsed = end_time - start_time;
@@ -555,6 +572,7 @@ impl Packer {
             mapped_size: self.mapped_size,
             packed_size: data_written + hashes_written + stream_written,
             thin_id: self.thin_id,
+            source_sig: Some(input_hash_sig),
         };
         config::write_stream_config(&stream_id, &cfg)?;
 
