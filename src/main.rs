@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::{command, Arg, ArgMatches, Command};
+use clap::{command, Arg, ArgMatches, Command, SubCommand};
 use std::env;
 use std::process::exit;
 use std::sync::Arc;
@@ -63,6 +63,17 @@ fn main_() -> Result<()> {
         .short('j')
         .value_name("JSON")
         .takes_value(false);
+
+    let validate_operations = SubCommand::with_name("validate")
+        .about("Validate operations")
+        .arg_required_else_help(true)
+        .subcommand(
+            SubCommand::with_name("stream")
+                .help("Validates an individual stream against stored b2sum digest")
+                .about("Validates an individual stream against stored b2sum digest")
+                .arg(stream_arg.clone())
+                .arg(archive_arg.clone()),
+        );
 
     let matches = command!()
         .arg(json)
@@ -184,6 +195,7 @@ fn main_() -> Result<()> {
                 .about("lists the streams in the archive")
                 .arg(archive_arg.clone()),
         )
+        .subcommand(validate_operations)
         .get_matches();
 
     let report = mk_report(&matches);
@@ -211,6 +223,12 @@ fn main_() -> Result<()> {
         Some(("dump-stream", sub_matches)) => {
             dump_stream::run(sub_matches, output)?;
         }
+        Some(("validate", sub_matches)) => match sub_matches.subcommand() {
+            Some(("stream", args)) => {
+                unpack::run_validate_stream(args, report)?;
+            }
+            _ => unreachable!("Exhausted list of validate sub commands"),
+        },
         _ => unreachable!("Exhausted list of subcommands and subcommand_required prevents 'None'"),
     }
 
