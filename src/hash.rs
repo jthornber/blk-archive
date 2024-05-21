@@ -54,4 +54,15 @@ pub fn hash_32(v: &[u8]) -> Hash32 {
     hasher.finalize()
 }
 
+pub fn hash_256_hash_64_iov(iov: &IoVec) -> (Hash256, u64) {
+    let h = hash_256_iov(iov);
+    let mini_hash = hash_64(&h[..]);
+    (h, u64::from_le_bytes(mini_hash.into()))
+}
+pub fn hash_256_hash_64(v: &[u8]) -> (Hash256, u64) {
+    let h = hash_256(v);
+    let mini_hash = hash_64(&h[..]);
+    (h, u64::from_le_bytes(mini_hash.into()))
+}
+
 //-----------------------------------------

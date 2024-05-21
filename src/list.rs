@@ -9,6 +9,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::check::*;
 use crate::config;
 use crate::output::Output;
 
@@ -22,6 +23,7 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
     let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
 
     env::set_current_dir(&archive_dir)?;
+    CheckPoint::interrupted()?;
 
     let paths = fs::read_dir(Path::new("./streams"))?;
     let stream_ids = paths

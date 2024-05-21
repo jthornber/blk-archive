@@ -4,6 +4,7 @@ use std::env;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::check::*;
 use crate::output::Output;
 use crate::stream::*;
 
@@ -14,6 +15,7 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
     let stream = matches.value_of("STREAM").unwrap();
 
     env::set_current_dir(archive_dir)?;
+    CheckPoint::interrupted()?;
 
     let mut d = Dumper::new(stream)?;
     d.dump(output)
