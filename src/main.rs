@@ -25,10 +25,7 @@ fn mk_report(matches: &ArgMatches) -> Arc<Report> {
 }
 
 fn main_() -> Result<()> {
-    let default_archive = match env::var("BLK_ARCHIVE_DIR") {
-        Err(_) => String::new(),
-        Ok(s) => s,
-    };
+    let default_archive = env::var("BLK_ARCHIVE_DIR").unwrap_or_else(|_| String::new());
 
     let archive_arg = if default_archive.is_empty() {
         Arg::new("ARCHIVE")
