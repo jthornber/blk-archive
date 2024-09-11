@@ -163,9 +163,7 @@ impl DedupHandler {
             let hi = ByHash::new(buf)?;
             for i in 0..hi.len() {
                 let h = hi.get(i);
-                let mini_hash = hash_64(&h[..]);
-                let mut c = Cursor::new(&mini_hash);
-                let mini_hash = c.read_u64::<LittleEndian>()?;
+                let mini_hash = hash_le_u64(&h);
                 seen.test_and_set(mini_hash, s as u32)?;
             }
         }
@@ -286,9 +284,7 @@ impl IoVecHandler for DedupHandler {
             self.maybe_complete_stream()?;
         } else {
             let h = hash_256_iov(iov);
-            let mini_hash = hash_64(&h);
-            let mut c = Cursor::new(&mini_hash);
-            let mini_hash = c.read_u64::<LittleEndian>()?;
+            let mini_hash = hash_le_u64(&h);
 
             let me: MapEntry;
             match self.seen.test_and_set(mini_hash, self.current_slab)? {
