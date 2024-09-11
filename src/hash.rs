@@ -1,4 +1,6 @@
 use blake2::{Blake2b, Digest};
+use byteorder::{LittleEndian, ReadBytesExt};
+use std::io::Cursor;
 
 use crate::iovec::*;
 
@@ -52,6 +54,12 @@ pub fn hash_32(v: &[u8]) -> Hash32 {
     let mut hasher = Blake2b32::new();
     hasher.update(v);
     hasher.finalize()
+}
+
+pub fn hash_le_u64(h: &[u8]) -> u64 {
+    let mini_hash = hash_64(&h);
+    let mut c = Cursor::new(&mini_hash);
+    c.read_u64::<LittleEndian>().unwrap()
 }
 
 //-----------------------------------------
