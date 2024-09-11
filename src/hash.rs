@@ -1,4 +1,5 @@
 use blake2::{Blake2b, Digest};
+use std::convert::TryInto;
 
 use crate::iovec::*;
 
@@ -54,4 +55,34 @@ pub fn hash_32(v: &[u8]) -> Hash32 {
     hasher.finalize()
 }
 
+pub fn hash_le_u64(h: &[u8]) -> u64 {
+    let mini_hash = hash_64(h);
+    u64::from_le_bytes(
+        mini_hash[..8]
+            .try_into()
+            .expect("hash_64 must return at least 8 bytes"),
+    )
+}
+
 //-----------------------------------------
+#[cfg(test)]
+mod hash_tests {
+
+    use super::*;
+    use byteorder::{LittleEndian, ReadBytesExt};
+    use std::io::Cursor;
+
+    #[test]
+    fn test_hash_le_u64_impl() {
+        let h = vec![0, 1, 2, 3, 4, 5, 6, 7];
+
+        // What we previously had
+        let mini_hash = hash_64(&h);
+        let mut c = Cursor::new(&mini_hash);
+        let previous = c.read_u64::<LittleEndian>().unwrap();
+
+        // What we are replacing it with
+        let current = hash_le_u64(&h);
+        assert_eq!(previous, current);
+    }
+}
