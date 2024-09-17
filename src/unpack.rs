@@ -14,7 +14,7 @@ use thinp::report::*;
 use crate::chunkers::*;
 use crate::config;
 use crate::hash_index::*;
-use crate::pack::SLAB_SIZE_TARGET;
+use crate::db::SLAB_SIZE_TARGET;
 use crate::paths::*;
 use crate::run_iter::*;
 use crate::slab::*;

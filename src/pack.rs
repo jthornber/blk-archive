@@ -1,8 +1,6 @@
 use anyhow::{anyhow, Context, Result};
-use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::prelude::*;
 use clap::ArgMatches;
-use io::Write;
 use rand::prelude::*;
 use rand_chacha::ChaCha20Rng;
 use serde_json::json;
@@ -11,21 +9,15 @@ use size_display::Size;
 use std::boxed::Box;
 use std::env;
 use std::fs::OpenOptions;
-use std::io;
-use std::io::Cursor;
-use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::chunkers::*;
 use crate::config;
 use crate::content_sensitive_splitter::*;
-use crate::cuckoo_filter::*;
 use crate::hash::*;
-use crate::hash_index::*;
 use crate::iovec::*;
 use crate::output::Output;
-use crate::paths;
 use crate::paths::*;
 use crate::run_iter::*;
 use crate::slab::*;
@@ -33,6 +25,7 @@ use crate::splitter::*;
 use crate::stream::*;
 use crate::stream_builders::*;
 use crate::thin_metadata::*;
+use crate::db::*;
 
 //-----------------------------------------
 
@@ -70,24 +63,10 @@ fn all_same(iov: &IoVec) -> Option<u8> {
 
 //-----------------------------------------
 
-pub const SLAB_SIZE_TARGET: usize = 4 * 1024 * 1024;
-
 struct DedupHandler {
     nr_chunks: usize,
 
-    seen: CuckooFilter,
-    hashes: lru::LruCache<u32, ByHash>,
-
-    data_file: SlabFile,
-    hashes_file: Arc<Mutex<SlabFile>>,
     stream_file: SlabFile,
-
-    current_slab: u32,
-    current_entries: usize,
-    current_index: IndexBuilder,
-
-    data_buf: Vec<u8>,
-    hashes_buf: Vec<u8>,
     stream_buf: Vec<u8>,
 
     mapping_builder: Arc<Mutex<dyn Builder>>,
@@ -95,127 +74,33 @@ struct DedupHandler {
     data_written: u64,
     mapped_size: u64,
     fill_size: u64,
+    db: Db,
 }
 
 impl DedupHandler {
-    fn get_hash_index(&mut self, slab: u32) -> Result<&ByHash> {
-        // the current slab is not inserted into the self.hashes
-        assert!(slab != self.current_slab);
-
-        self.hashes.try_get_or_insert(slab, || {
-            let mut hashes_file = self.hashes_file.lock().unwrap();
-            let buf = hashes_file.read(slab)?;
-            ByHash::new(buf)
-        })
-    }
 
     fn new(
-        data_file: SlabFile,
-        hashes_file: Arc<Mutex<SlabFile>>,
         stream_file: SlabFile,
-        slab_capacity: usize,
         mapping_builder: Arc<Mutex<dyn Builder>>,
+        db: Db,
     ) -> Result<Self> {
-        let seen = CuckooFilter::read(paths::index_path())?;
-        let hashes = lru::LruCache::new(NonZeroUsize::new(slab_capacity).unwrap());
-        let nr_slabs = data_file.get_nr_slabs() as u32;
 
-        {
-            let hashes_file = hashes_file.lock().unwrap();
-            assert_eq!(data_file.get_nr_slabs(), hashes_file.get_nr_slabs());
-        }
 
         Ok(Self {
             nr_chunks: 0,
-
-            seen,
-            hashes,
-
-            data_file,
-            hashes_file,
             stream_file,
-
-            current_slab: nr_slabs,
-            current_entries: 0,
-            current_index: IndexBuilder::with_capacity(1024), // FIXME: estimate
-
-            data_buf: Vec::new(),
-            hashes_buf: Vec::new(),
             stream_buf: Vec::new(),
-
             mapping_builder,
-
             // Stats
             data_written: 0,
             mapped_size: 0,
             fill_size: 0,
+            db,
         })
     }
 
-    fn rebuild_index(&mut self, new_capacity: usize) -> Result<()> {
-        let mut seen = CuckooFilter::with_capacity(new_capacity);
-
-        // Scan the hashes file.
-        let mut hashes_file = self.hashes_file.lock().unwrap();
-        let nr_slabs = hashes_file.get_nr_slabs();
-        for s in 0..nr_slabs {
-            let buf = hashes_file.read(s as u32)?;
-            let hi = ByHash::new(buf)?;
-            for i in 0..hi.len() {
-                let h = hi.get(i);
-                let mini_hash = hash_le_u64(&h);
-                seen.test_and_set(mini_hash, s as u32)?;
-            }
-        }
-
-        std::mem::swap(&mut seen, &mut self.seen);
-
-        Ok(())
-    }
-
-    fn ensure_extra_capacity(&mut self, blocks: usize) -> Result<()> {
-        if self.seen.capacity() < self.seen.len() + blocks {
-            self.rebuild_index(self.seen.len() + blocks)?;
-            eprintln!("resized index to {}", self.seen.capacity());
-        }
-
-        Ok(())
-    }
-
-    fn complete_slab_(slab: &mut SlabFile, buf: &mut Vec<u8>) -> Result<()> {
-        slab.write_slab(buf)?;
-        buf.clear();
-        Ok(())
-    }
-
-    fn complete_slab(slab: &mut SlabFile, buf: &mut Vec<u8>, threshold: usize) -> Result<bool> {
-        if buf.len() > threshold {
-            Self::complete_slab_(slab, buf)?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
-    fn maybe_complete_data(&mut self, target: usize) -> Result<()> {
-        if Self::complete_slab(&mut self.data_file, &mut self.data_buf, target)? {
-            let mut builder = IndexBuilder::with_capacity(1024); // FIXME: estimate properly
-            std::mem::swap(&mut builder, &mut self.current_index);
-            let buffer = builder.build()?;
-            self.hashes_buf.write_all(&buffer[..])?;
-            let index = ByHash::new(buffer)?;
-            self.hashes.put(self.current_slab, index);
-
-            let mut hashes_file = self.hashes_file.lock().unwrap();
-            Self::complete_slab_(&mut hashes_file, &mut self.hashes_buf)?;
-            self.current_slab += 1;
-            self.current_entries = 0;
-        }
-        Ok(())
-    }
-
     fn maybe_complete_stream(&mut self) -> Result<()> {
-        Self::complete_slab(
+        complete_slab(
             &mut self.stream_file,
             &mut self.stream_buf,
             SLAB_SIZE_TARGET,
@@ -223,32 +108,9 @@ impl DedupHandler {
         Ok(())
     }
 
-    // Returns the (slab, entry) for the newly added entry
-    fn add_data_entry(&mut self, iov: &IoVec) -> Result<(u32, u32)> {
-        let r = (self.current_slab, self.current_entries as u32);
-        for v in iov {
-            self.data_buf.extend_from_slice(v);
-            self.data_written += v.len() as u64;
-        }
-        self.current_entries += 1;
-        Ok(r)
-    }
-
     fn add_stream_entry(&mut self, e: &MapEntry, len: u64) -> Result<()> {
         let mut builder = self.mapping_builder.lock().unwrap();
         builder.next(e, len, &mut self.stream_buf)
-    }
-
-    fn do_add(&mut self, h: Hash256, iov: &IoVec, len: u64) -> Result<MapEntry> {
-        let (slab, offset) = self.add_data_entry(iov)?;
-        let me = MapEntry::Data {
-            slab,
-            offset,
-            nr_entries: 1,
-        };
-        self.current_index.insert(h, len as usize);
-        self.maybe_complete_data(SLAB_SIZE_TARGET)?;
-        Ok(me)
     }
 
     fn handle_gap(&mut self, len: u64) -> Result<()> {
@@ -263,6 +125,16 @@ impl DedupHandler {
         self.maybe_complete_stream()?;
 
         Ok(())
+    }
+
+    fn db_sizes(&mut self) -> (u64, u64) {
+        self.db.file_sizes()
+    }
+
+    // TODO: Is there a better way to handle this and what are the ramifications with
+    // client server with multiple clients and one server?
+    fn ensure_extra_capacity(&mut self, blocks: usize) -> Result<()> {
+        self.db.ensure_extra_capacity(blocks)
     }
 }
 
@@ -284,39 +156,26 @@ impl IoVecHandler for DedupHandler {
             self.maybe_complete_stream()?;
         } else {
             let h = hash_256_iov(iov);
-            let mini_hash = hash_le_u64(&h);
 
             let me: MapEntry;
-            match self.seen.test_and_set(mini_hash, self.current_slab)? {
-                InsertResult::Inserted => {
-                    me = self.do_add(h, iov, len)?;
-                }
-                InsertResult::AlreadyPresent(s) => {
-                    if s == self.current_slab {
-                        if let Some(offset) = self.current_index.lookup(&h) {
-                            me = MapEntry::Data {
-                                slab: s,
-                                offset,
-                                nr_entries: 1,
-                            };
-                        } else {
-                            me = self.do_add(h, iov, len)?;
-                        }
-                    } else {
-                        let hi = self.get_hash_index(s)?;
-                        if let Some(offset) = hi.lookup(&h) {
-                            me = MapEntry::Data {
-                                slab: s,
-                                offset: offset as u32,
-                                nr_entries: 1,
-                            };
-                        } else {
-                            me = self.do_add(h, iov, len)?;
-                        }
-                    }
-                }
-            }
+            // RPC call do we have this hash (batched)
+            // The significance of the current slab is where we currently are is where the next
+            // inserted data will go.
 
+            if let Some(location) = self.db.is_known(&h)? {
+                me = MapEntry::Data {
+                    slab: location.0,
+                    offset: location.1,
+                    nr_entries: 1,
+                };
+            } else {
+                let inserted = self.db.add_data_entry(h, iov, len)?;
+                me = MapEntry::Data {
+                    slab: inserted.0,
+                    offset: inserted.1,
+                    nr_entries: 1,
+                };
+            }
             self.add_stream_entry(&me, len)?;
             self.maybe_complete_stream()?;
         }
@@ -329,15 +188,8 @@ impl IoVecHandler for DedupHandler {
         builder.complete(&mut self.stream_buf)?;
         drop(builder);
 
-        self.maybe_complete_data(0)?;
-        Self::complete_slab(&mut self.stream_file, &mut self.stream_buf, 0)?;
-
-        let mut hashes_file = self.hashes_file.lock().unwrap();
-        hashes_file.close()?;
-        self.data_file.close()?;
+        complete_slab(&mut self.stream_file, &mut self.stream_buf, 0)?;
         self.stream_file.close()?;
-
-        self.seen.write(paths::index_path())?;
 
         Ok(())
     }
@@ -444,13 +296,15 @@ impl Packer {
             / std::mem::size_of::<Hash256>())
             / hashes_per_slab;
 
+        let db = Db::new(data_file, slab_capacity)?;
+
         let mut handler = DedupHandler::new(
-            data_file,
-            hashes_file,
             stream_file,
-            slab_capacity,
             self.mapping_builder.clone(),
+            db,
         )?;
+
+        // TODO handle this
         handler.ensure_extra_capacity(self.mapped_size as usize / self.block_size)?;
 
         self.output.report.progress(0);
@@ -484,12 +338,12 @@ impl Packer {
         let end_time: DateTime<Utc> = Utc::now();
         let elapsed = end_time - start_time;
         let elapsed = elapsed.num_milliseconds() as f64 / 1000.0;
-        let data_written = handler.data_file.get_file_size() - data_size;
 
-        let hashes_written = {
-            let hashes_file = handler.hashes_file.lock().unwrap();
-            hashes_file.get_file_size() - hashes_size
-        };
+        let db_sizes = handler.db_sizes();
+
+        let data_written = db_sizes.0 - data_size;
+        let hashes_written = db_sizes.1 - hashes_size;
+
         let stream_written = handler.stream_file.get_file_size();
         let ratio =
             (self.mapped_size as f64) / ((data_written + hashes_written + stream_written) as f64);
