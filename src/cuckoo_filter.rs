@@ -30,7 +30,7 @@ impl Default for Bucket {
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub enum InsertResult {
     AlreadyPresent(u32),
     Inserted,
@@ -262,6 +262,23 @@ impl CuckooFilter {
         }
 
         Err(anyhow!("cuckoo table full"))
+    }
+
+    pub fn test(&mut self, h: u64) -> Result<InsertResult> {
+        use InsertResult::*;
+
+        let fingerprint: u16 = (h & 0xffff) as u16;
+        let index1: usize = ((h >> 16) as usize) & self.mask;
+
+        if let Some(s) = self.present(fingerprint, index1) {
+            return Ok(AlreadyPresent(s));
+        }
+
+        let index2: usize = (index1 ^ self.scatter[fingerprint as usize]) & self.mask;
+        if let Some(s) = self.present(fingerprint, index2) {
+            return Ok(AlreadyPresent(s));
+        }
+        Ok(Inserted)
     }
 
     pub fn test_and_set(&mut self, h: u64, slab: u32) -> Result<InsertResult> {
