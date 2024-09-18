@@ -32,7 +32,7 @@ impl Default for Bucket {
 
 #[derive(PartialEq, Eq)]
 pub enum InsertResult {
-    AlreadyPresent(u32),
+    PossiblyPresent(u32),
     Inserted,
 }
 
@@ -223,12 +223,12 @@ impl CuckooFilter {
         let index1: usize = ((h >> 16) as usize) & self.mask;
 
         if let Some(s) = self.present(fingerprint, index1) {
-            return Ok(AlreadyPresent(s));
+            return Ok(PossiblyPresent(s));
         }
 
         let index2: usize = (index1 ^ self.scatter[fingerprint as usize]) & self.mask;
         if let Some(s) = self.present(fingerprint, index2) {
-            return Ok(AlreadyPresent(s));
+            return Ok(PossiblyPresent(s));
         }
 
         if self.insert(fingerprint, slab, index1) {
@@ -309,9 +309,9 @@ mod cuckoo_tests {
                 InsertResult::Inserted => {
                     // Expected
                 }
-                InsertResult::AlreadyPresent(n) => {
+                InsertResult::PossiblyPresent(n) => {
                     // Can happen due to false positives
-                    eprintln!("already present {}", n);
+                    eprintln!("possibly present {}", n);
                 }
             }
         }
@@ -324,7 +324,7 @@ mod cuckoo_tests {
                 InsertResult::Inserted => {
                     assert!(false);
                 }
-                InsertResult::AlreadyPresent(slab) => {
+                InsertResult::PossiblyPresent(slab) => {
                     if slab == *v as u32 {
                         hits += 1;
                     } else {

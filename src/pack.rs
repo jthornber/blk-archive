@@ -289,7 +289,7 @@ impl IoVecHandler for DedupHandler {
                 InsertResult::Inserted => {
                     me = self.do_add(h, iov, len)?;
                 }
-                InsertResult::AlreadyPresent(s) => {
+                InsertResult::PossiblyPresent(s) => {
                     if s == self.current_slab {
                         if let Some(offset) = self.current_index.lookup(&h) {
                             me = MapEntry::Data {
