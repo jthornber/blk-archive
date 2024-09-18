@@ -143,10 +143,8 @@ impl Db {
             return Ok(location);
         }
 
-        // Add entry to cuckoo filter, not checking return value as we could get an "AlreadyPresent"
-        // when its not really present.  Cuckoo filters have the following behavior which is
-        // "possibly in set" or "definitely not in set"
-        //
+        // Add entry to cuckoo filter, not checking return value as we could get indication that
+        // it's "PossiblyPresent" when our logical expectation is "Inserted".
         self.seen.test_and_set(hash_le_u64(&h), self.current_slab)?;
 
         let r = (self.current_slab, self.current_entries as u32);
@@ -164,8 +162,7 @@ impl Db {
     pub fn is_known(&mut self, h: &Hash256) -> Result<Option<(u32, u32)>> {
         let mini_hash = hash_le_u64(&h);
         let rc = match self.seen.test(mini_hash)? {
-            // This is a possibly in set
-            InsertResult::AlreadyPresent(s) => {
+            InsertResult::PossiblyPresent(s) => {
                 if self.current_slab == s {
                     if let Some(offset) = self.current_index.lookup(&h) {
                         Some((self.current_slab, offset))
