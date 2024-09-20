@@ -11,10 +11,13 @@ use std::env;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use crate::chunkers::*;
 use crate::config;
 use crate::content_sensitive_splitter::*;
+use crate::db::*;
 use crate::hash::*;
 use crate::iovec::*;
 use crate::output::Output;
@@ -24,8 +27,8 @@ use crate::slab::*;
 use crate::splitter::*;
 use crate::stream::*;
 use crate::stream_builders::*;
+use crate::stream_orderer::*;
 use crate::thin_metadata::*;
-use crate::db::*;
 
 //-----------------------------------------
 
@@ -75,16 +78,16 @@ struct DedupHandler {
     mapped_size: u64,
     fill_size: u64,
     db: Db,
+    so: Arc<Mutex<StreamOrder>>,
 }
 
 impl DedupHandler {
-
     fn new(
         stream_file: SlabFile,
         mapping_builder: Arc<Mutex<dyn Builder>>,
         db: Db,
     ) -> Result<Self> {
-
+        let so = Arc::new(Mutex::new(StreamOrder::new()?));
 
         Ok(Self {
             nr_chunks: 0,
@@ -96,7 +99,32 @@ impl DedupHandler {
             mapped_size: 0,
             fill_size: 0,
             db,
+            so,
         })
+    }
+
+    fn process_stream_entry(&mut self, e: &MapEntry, len: u64) -> Result<()> {
+        let mut builder = self.mapping_builder.lock().unwrap();
+        builder.next(e, len, &mut self.stream_buf)
+    }
+
+    fn process_stream(&mut self) -> Result<bool> {
+        let mut me: MapEntry;
+        let mut len: u64;
+
+        loop {
+            {
+                let mut se = self.so.lock().unwrap();
+                if let Some(entry) = se.remove() {
+                    me = entry.e;
+                    len = entry.len;
+                } else {
+                    return Ok(se.is_complete());
+                }
+            }
+            self.process_stream_entry(&me, len)?;
+            self.maybe_complete_stream()?
+        }
     }
 
     fn maybe_complete_stream(&mut self) -> Result<()> {
@@ -108,23 +136,22 @@ impl DedupHandler {
         Ok(())
     }
 
-    fn add_stream_entry(&mut self, e: &MapEntry, len: u64) -> Result<()> {
-        let mut builder = self.mapping_builder.lock().unwrap();
-        builder.next(e, len, &mut self.stream_buf)
+    fn enqueue_entry(&mut self, e: MapEntry, len: u64) -> Result<()> {
+        {
+            let mut so = self.so.lock().unwrap();
+            let id = so.entry_start();
+            so.entry_complete(id, e, len)?;
+        }
+        self.process_stream()?;
+        Ok(())
     }
 
     fn handle_gap(&mut self, len: u64) -> Result<()> {
-        self.add_stream_entry(&MapEntry::Unmapped { len }, len)?;
-        self.maybe_complete_stream()?;
-
-        Ok(())
+        self.enqueue_entry(MapEntry::Unmapped { len }, len)
     }
 
     fn handle_ref(&mut self, len: u64) -> Result<()> {
-        self.add_stream_entry(&MapEntry::Ref { len }, len)?;
-        self.maybe_complete_stream()?;
-
-        Ok(())
+        self.enqueue_entry(MapEntry::Ref { len }, len)
     }
 
     fn db_sizes(&mut self) -> (u64, u64) {
@@ -146,14 +173,13 @@ impl IoVecHandler for DedupHandler {
 
         if let Some(first_byte) = all_same(iov) {
             self.fill_size += len;
-            self.add_stream_entry(
-                &MapEntry::Fill {
+            self.enqueue_entry(
+                MapEntry::Fill {
                     byte: first_byte,
                     len,
                 },
                 len,
             )?;
-            self.maybe_complete_stream()?;
         } else {
             let h = hash_256_iov(iov);
 
@@ -176,14 +202,24 @@ impl IoVecHandler for DedupHandler {
                     nr_entries: 1,
                 };
             }
-            self.add_stream_entry(&me, len)?;
-            self.maybe_complete_stream()?;
+            self.enqueue_entry(me, len)?;
         }
 
         Ok(())
     }
 
     fn complete(&mut self) -> Result<()> {
+        // We need to process everything that is outstanding which could be
+        // quite a bit
+        // TODO: Make this handle errors where we hang forever
+        loop {
+            if !self.process_stream()? {
+                thread::sleep(Duration::from_millis(20));
+            } else {
+                break;
+            }
+        }
+
         let mut builder = self.mapping_builder.lock().unwrap();
         builder.complete(&mut self.stream_buf)?;
         drop(builder);
@@ -298,11 +334,7 @@ impl Packer {
 
         let db = Db::new(data_file, slab_capacity)?;
 
-        let mut handler = DedupHandler::new(
-            stream_file,
-            self.mapping_builder.clone(),
-            db,
-        )?;
+        let mut handler = DedupHandler::new(stream_file, self.mapping_builder.clone(), db)?;
 
         // TODO handle this
         handler.ensure_extra_capacity(self.mapped_size as usize / self.block_size)?;
