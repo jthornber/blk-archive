@@ -13,8 +13,8 @@ use thinp::report::*;
 
 use crate::chunkers::*;
 use crate::config;
-use crate::hash_index::*;
 use crate::db::SLAB_SIZE_TARGET;
+use crate::hash_index::*;
 use crate::paths::*;
 use crate::run_iter::*;
 use crate::slab::*;
@@ -435,12 +435,12 @@ impl UnpackDest for ThinDest {
 //-----------------------------------------
 
 pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
-    let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap())
+    let archive_dir = Path::new(matches.get_one::<String>("ARCHIVE").unwrap())
         .canonicalize()
         .context("Bad archive dir")?;
-    let output_file = Path::new(matches.value_of("OUTPUT").unwrap());
-    let stream = matches.value_of("STREAM").unwrap();
-    let create = matches.is_present("CREATE");
+    let output_file = Path::new(matches.get_one::<String>("OUTPUT").unwrap());
+    let stream = matches.get_one::<String>("STREAM").unwrap();
+    let create = matches.contains_id("CREATE");
 
     let output = if create {
         fs::OpenOptions::new()
@@ -698,9 +698,9 @@ fn thin_verifier(input_file: &Path) -> Result<VerifyDest> {
 }
 
 pub fn run_verify(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
-    let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
-    let input_file = Path::new(matches.value_of("INPUT").unwrap()).canonicalize()?;
-    let stream = matches.value_of("STREAM").unwrap();
+    let archive_dir = Path::new(matches.get_one::<String>("ARCHIVE").unwrap()).canonicalize()?;
+    let input_file = Path::new(matches.get_one::<String>("INPUT").unwrap()).canonicalize()?;
+    let stream = matches.get_one::<String>("STREAM").unwrap();
 
     env::set_current_dir(archive_dir)?;
 

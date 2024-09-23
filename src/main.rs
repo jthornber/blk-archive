@@ -1,4 +1,5 @@
 use anyhow::Result;
+use clap::ArgAction;
 use clap::{command, Arg, ArgMatches, Command};
 use std::env;
 use std::process::exit;
@@ -15,7 +16,7 @@ use blk_archive::unpack;
 //-----------------------
 
 fn mk_report(matches: &ArgMatches) -> Arc<Report> {
-    if matches.is_present("JSON") {
+    if matches.get_flag("JSON") {
         Arc::new(mk_quiet_report())
     } else if atty::is(atty::Stream::Stdout) {
         Arc::new(mk_progress_bar_report())
@@ -25,41 +26,27 @@ fn mk_report(matches: &ArgMatches) -> Arc<Report> {
 }
 
 fn main_() -> Result<()> {
-    let default_archive = env::var("BLK_ARCHIVE_DIR").unwrap_or_else(|_| String::new());
-
-    let archive_arg = if default_archive.is_empty() {
-        Arg::new("ARCHIVE")
-            .help("Specify archive directory")
-            .required(true)
-            .long("archive")
-            .short('a')
-            .value_name("ARCHIVE")
-            .takes_value(true)
-    } else {
-        Arg::new("ARCHIVE")
-            .help("Specify archive directory")
-            .default_value(&default_archive)
-            .long("archive")
-            .short('a')
-            .value_name("ARCHIVE")
-            .takes_value(true)
-    };
+    let archive_arg = Arg::new("ARCHIVE")
+        .help("Specify archive directory")
+        .required(true)
+        .long("archive")
+        .short('a')
+        .value_name("ARCHIVE")
+        .env("BLK_ARCHIVE_DIR");
 
     let stream_arg = Arg::new("STREAM")
         .help("Specify an archived stream to unpack")
         .required(true)
         .long("stream")
         .short('s')
-        .value_name("STREAM")
-        .takes_value(true);
+        .value_name("STREAM");
 
     let json: Arg = Arg::new("JSON")
         .help("Output JSON")
         .required(false)
         .long("json")
         .short('j')
-        .value_name("JSON")
-        .takes_value(false);
+        .action(ArgAction::SetTrue);
 
     let matches = command!()
         .arg(json)
@@ -77,32 +64,28 @@ fn main_() -> Result<()> {
                         .required(true)
                         .long("archive")
                         .short('a')
-                        .value_name("ARCHIVE")
-                        .takes_value(true),
+                        .value_name("ARCHIVE"),
                 )
                 .arg(
                     Arg::new("BLOCK_SIZE")
                         .help("Specify the average block size used when deduplicating data")
                         .required(false)
                         .long("block-size")
-                        .value_name("BLOCK_SIZE")
-                        .takes_value(true),
+                        .value_name("BLOCK_SIZE"),
                 )
                 .arg(
                     Arg::new("HASH_CACHE_SIZE_MEG")
                         .help("Specify how much memory is used for caching hash entries")
                         .required(false)
                         .long("hash-cache-size-meg")
-                        .value_name("HASH_CACHE_SIZE_MEG")
-                        .takes_value(true),
+                        .value_name("HASH_CACHE_SIZE_MEG"),
                 )
                 .arg(
                     Arg::new("DATA_CACHE_SIZE_MEG")
                         .help("Specify how much memory is used for caching data")
                         .required(false)
                         .long("data-cache-size-meg")
-                        .value_name("DATA_CACHE_SIZE_MEG")
-                        .takes_value(true),
+                        .value_name("DATA_CACHE_SIZE_MEG"),
                 ),
         )
         .subcommand(
@@ -112,8 +95,7 @@ fn main_() -> Result<()> {
                     Arg::new("INPUT")
                         .help("Specify a device or file to archive")
                         .required(true)
-                        .value_name("INPUT")
-                        .takes_value(true),
+                        .value_name("INPUT"),
                 )
                 .arg(archive_arg.clone())
                 .arg(
@@ -123,8 +105,7 @@ fn main_() -> Result<()> {
                         )
                         .required(false)
                         .long("delta-stream")
-                        .value_name("DELTA_STREAM")
-                        .takes_value(true),
+                        .value_name("DELTA_STREAM"),
                 )
                 .arg(
                     Arg::new("DELTA_DEVICE")
@@ -133,8 +114,7 @@ fn main_() -> Result<()> {
                         )
                         .required(false)
                         .long("delta-device")
-                        .value_name("DELTA_DEVICE")
-                        .takes_value(true),
+                        .value_name("DELTA_DEVICE"),
                 ),
         )
         .subcommand(
@@ -144,15 +124,13 @@ fn main_() -> Result<()> {
                     Arg::new("OUTPUT")
                         .help("Specify a device or file as the destination")
                         .required(true)
-                        .value_name("OUTPUT")
-                        .takes_value(true),
+                        .value_name("OUTPUT"),
                 )
                 .arg(
                     Arg::new("CREATE")
                         .help("Create a new file rather than unpack to an existing device/file.")
                         .long("create")
-                        .value_name("CREATE")
-                        .takes_value(false),
+                        .value_name("CREATE"),
                 )
                 .arg(archive_arg.clone())
                 .arg(stream_arg.clone()),
@@ -164,8 +142,7 @@ fn main_() -> Result<()> {
                     Arg::new("INPUT")
                         .help("Specify a device or file containing the correct version of the data")
                         .required(true)
-                        .value_name("INPUT")
-                        .takes_value(true),
+                        .value_name("INPUT"),
                 )
                 .arg(archive_arg.clone())
                 .arg(stream_arg.clone()),
@@ -187,7 +164,7 @@ fn main_() -> Result<()> {
     report.set_level(LogLevel::Info);
     let output = Arc::new(Output {
         report: report.clone(),
-        json: matches.is_present("JSON"),
+        json: matches.get_flag("JSON"),
     });
     match matches.subcommand() {
         Some(("create", sub_matches)) => {

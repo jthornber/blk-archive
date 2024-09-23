@@ -581,8 +581,8 @@ fn thin_delta_packer(
 // Looks up both --delta-stream and --delta-device
 fn get_delta_args(matches: &ArgMatches) -> Result<Option<(String, PathBuf)>> {
     match (
-        matches.value_of("DELTA_STREAM"),
-        matches.value_of("DELTA_DEVICE"),
+        matches.get_one::<String>("DELTA_STREAM"),
+        matches.get_one::<String>("DELTA_DEVICE"),
     ) {
         (None, None) => Ok(None),
         (Some(stream), Some(device)) => {
@@ -597,15 +597,15 @@ fn get_delta_args(matches: &ArgMatches) -> Result<Option<(String, PathBuf)>> {
 }
 
 pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
-    let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
-    let input_file = Path::new(matches.value_of("INPUT").unwrap());
+    let archive_dir = Path::new(matches.get_one::<String>("ARCHIVE").unwrap()).canonicalize()?;
+    let input_file = Path::new(matches.get_one::<String>("INPUT").unwrap());
     let input_name = input_file
         .file_name()
         .unwrap()
         .to_str()
         .unwrap()
         .to_string();
-    let input_file = Path::new(matches.value_of("INPUT").unwrap()).canonicalize()?;
+    let input_file = Path::new(matches.get_one::<String>("INPUT").unwrap()).canonicalize()?;
 
     env::set_current_dir(archive_dir)?;
     let config = config::read_config(".")?;
