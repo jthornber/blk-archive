@@ -68,14 +68,14 @@ fn adjust_block_size(n: usize) -> usize {
 
 fn numeric_option<T: std::str::FromStr>(matches: &ArgMatches, name: &str, dflt: T) -> Result<T> {
     matches
-        .value_of(name)
+        .get_one::<String>(name)
         .map(|s| s.parse::<T>())
         .unwrap_or(Ok(dflt))
         .map_err(|_| anyhow!(format!("could not parse {} argument", name)))
 }
 
 pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
-    let dir = Path::new(matches.value_of("ARCHIVE").unwrap());
+    let dir = Path::new(matches.get_one::<String>("ARCHIVE").unwrap());
 
     let mut block_size = numeric_option::<usize>(matches, "BLOCK_SIZE", 4096)?;
     let new_block_size = adjust_block_size(block_size);
