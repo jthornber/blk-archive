@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::ArgAction;
 use clap::{command, Arg, ArgMatches, Command};
 use std::env;
+use std::path::Path;
 use std::process::exit;
 use std::sync::Arc;
 use thinp::report::*;
@@ -12,6 +13,8 @@ use blk_archive::list;
 use blk_archive::output::Output;
 use blk_archive::pack;
 use blk_archive::unpack;
+
+use blk_archive::server;
 
 //-----------------------
 
@@ -48,8 +51,16 @@ fn main_() -> Result<()> {
         .short('j')
         .action(ArgAction::SetTrue);
 
+    let client = Arg::new("CLIENT")
+        .help("Run in client mode")
+        .required(false)
+        .long("client")
+        .short('c')
+        .value_name("CLIENT");
+
     let matches = command!()
         .arg(json)
+        .arg(client)
         .propagate_version(true)
         .subcommand_required(true)
         .arg_required_else_help(true)
@@ -118,6 +129,16 @@ fn main_() -> Result<()> {
                 ),
         )
         .subcommand(
+            Command::new("send")
+                .about("packs a stream into a remote archive")
+                .arg(
+                    Arg::new("INPUT")
+                        .help("Specify a device or file to archive")
+                        .required(true)
+                        .value_name("INPUT"),
+                ),
+        )
+        .subcommand(
             Command::new("unpack")
                 .about("unpacks a stream from the archive")
                 .arg(
@@ -158,6 +179,11 @@ fn main_() -> Result<()> {
                 .about("lists the streams in the archive")
                 .arg(archive_arg.clone()),
         )
+        .subcommand(
+            Command::new("server")
+                .about("run in daemon mode")
+                .arg(archive_arg.clone()),
+        )
         .get_matches();
 
     let report = mk_report(&matches);
@@ -166,12 +192,24 @@ fn main_() -> Result<()> {
         report: report.clone(),
         json: matches.get_flag("JSON"),
     });
+
+    let client_connect = {
+        if matches.contains_id("CLIENT") {
+            Some(matches.get_one::<String>("CLIENT").unwrap().clone())
+        } else {
+            None
+        }
+    };
+
     match matches.subcommand() {
         Some(("create", sub_matches)) => {
             create::run(sub_matches, report)?;
         }
+        Some(("send", sub_matches)) => {
+            pack::run(sub_matches, output, client_connect)?;
+        }
         Some(("pack", sub_matches)) => {
-            pack::run(sub_matches, output)?;
+            pack::run(sub_matches, output, client_connect)?;
         }
         Some(("unpack", sub_matches)) => {
             unpack::run_unpack(sub_matches, report)?;
@@ -184,6 +222,12 @@ fn main_() -> Result<()> {
         }
         Some(("dump-stream", sub_matches)) => {
             dump_stream::run(sub_matches, output)?;
+        }
+        Some(("server", sub_matches)) => {
+            let archive_dir =
+                Path::new(sub_matches.get_one::<String>("ARCHIVE").unwrap()).canonicalize()?;
+            let mut s = server::Server::new(&archive_dir, false)?;
+            s.run()?;
         }
         _ => unreachable!("Exhausted list of subcommands and subcommand_required prevents 'None'"),
     }

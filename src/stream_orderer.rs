@@ -4,11 +4,13 @@ use std::collections::BTreeMap;
 
 // Creates order out of the unordered stream of map entries
 
+#[derive(Debug)]
 pub struct Sentry {
     pub e: MapEntry,
     pub len: u64,
 }
 
+#[derive(Debug)]
 pub struct StreamOrder {
     seq_id: u64,
     next: u64,
@@ -36,13 +38,13 @@ impl StreamOrder {
     }
 
     pub fn remove(&mut self) -> Option<Sentry> {
-        self.ready.remove(&self.next).map(|entry| {
+        self.ready.remove(&self.next).inspect(|_| {
             self.next += 1;
-            entry
         })
     }
 
     pub fn is_complete(&self) -> bool {
+        //println!{"{:?}", self};
         self.ready.is_empty() && (self.seq_id == self.next)
     }
 }

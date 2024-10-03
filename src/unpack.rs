@@ -26,6 +26,7 @@ use crate::thin_metadata::*;
 
 // Unpack and verify do different things with the data.
 trait UnpackDest {
+    #[allow(dead_code)]
     fn handle_fill(&mut self, byte: u8, len: u64) -> Result<()>;
     fn handle_mapped(&mut self, data: &[u8]) -> Result<()>;
     fn handle_unmapped(&mut self, len: u64) -> Result<()>;
@@ -304,6 +305,8 @@ impl ThinDest {
 
     //------------------
 
+    //Why is this dead code?
+    #[allow(dead_code)]
     fn handle_fill_unprovisioned(&mut self, byte: u8, len: u64) -> Result<()> {
         if byte == 0 {
             // FIXME: what if we fill a partial block, then subsequently trigger a provision and
@@ -314,6 +317,8 @@ impl ThinDest {
         }
     }
 
+    //Why is this dead code?
+    #[allow(dead_code)]
     fn handle_fill_provisioned(&mut self, byte: u8, len: u64) -> Result<()> {
         self.fill(byte, len)
     }

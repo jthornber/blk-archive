@@ -5,16 +5,18 @@ use rand::prelude::*;
 use rand_chacha::ChaCha20Rng;
 use serde_json::json;
 use serde_json::to_string_pretty;
-use size_display::Size;
+//use size_display::Size;
 use std::boxed::Box;
 use std::env;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::chunkers::*;
+use crate::client::*;
 use crate::config;
 use crate::content_sensitive_splitter::*;
 use crate::db::*;
@@ -74,20 +76,28 @@ struct DedupHandler {
 
     mapping_builder: Arc<Mutex<dyn Builder>>,
 
-    data_written: u64,
+    _data_written: u64,
     mapped_size: u64,
     fill_size: u64,
-    db: Db,
     so: Arc<Mutex<StreamOrder>>,
+    rq: Arc<Mutex<ClientRequests>>,
+    worker: Option<JoinHandle<std::result::Result<(), anyhow::Error>>>,
 }
 
 impl DedupHandler {
     fn new(
         stream_file: SlabFile,
         mapping_builder: Arc<Mutex<dyn Builder>>,
-        db: Db,
+        c: Option<String>,
     ) -> Result<Self> {
         let so = Arc::new(Mutex::new(StreamOrder::new()?));
+        let mut client = Client::new(c, so.clone())?;
+        let rq = client.get_request_queue();
+
+        // Start a thread to handle client communication
+        let h = thread::Builder::new()
+            .name("client socket handler".to_string())
+            .spawn(move || client.run())?;
 
         Ok(Self {
             nr_chunks: 0,
@@ -95,11 +105,12 @@ impl DedupHandler {
             stream_buf: Vec::new(),
             mapping_builder,
             // Stats
-            data_written: 0,
+            _data_written: 0,
             mapped_size: 0,
             fill_size: 0,
-            db,
             so,
+            rq,
+            worker: Some(h),
         })
     }
 
@@ -136,6 +147,11 @@ impl DedupHandler {
         Ok(())
     }
 
+    fn get_next_stream_id(&self) -> u64 {
+        let mut so = self.so.lock().unwrap();
+        so.entry_start()
+    }
+
     fn enqueue_entry(&mut self, e: MapEntry, len: u64) -> Result<()> {
         {
             let mut so = self.so.lock().unwrap();
@@ -155,14 +171,16 @@ impl DedupHandler {
     }
 
     fn db_sizes(&mut self) -> (u64, u64) {
-        self.db.file_sizes()
+        // TODO fix me
+        //self.db.file_sizes()
+        (1, 1)
     }
 
     // TODO: Is there a better way to handle this and what are the ramifications with
     // client server with multiple clients and one server?
-    fn ensure_extra_capacity(&mut self, blocks: usize) -> Result<()> {
-        self.db.ensure_extra_capacity(blocks)
-    }
+    //fn ensure_extra_capacity(&mut self, blocks: usize) -> Result<()> {
+    //    self.c.ensure_extra_capacity(blocks)
+    //}
 }
 
 impl IoVecHandler for DedupHandler {
@@ -182,28 +200,17 @@ impl IoVecHandler for DedupHandler {
             )?;
         } else {
             let h = hash_256_iov(iov);
-
-            let me: MapEntry;
-            // RPC call do we have this hash (batched)
-            // The significance of the current slab is where we currently are is where the next
-            // inserted data will go.
-
-            if let Some(location) = self.db.is_known(&h)? {
-                me = MapEntry::Data {
-                    slab: location.0,
-                    offset: location.1,
-                    nr_entries: 1,
-                };
-            } else {
-                let inserted = self.db.add_data_entry(h, iov, len)?;
-                me = MapEntry::Data {
-                    slab: inserted.0,
-                    offset: inserted.1,
-                    nr_entries: 1,
-                };
-            }
-            self.enqueue_entry(me, len)?;
+            let data = Data {
+                id: self.get_next_stream_id(),
+                h: hash256_to_bytes(&h),
+                len,
+                d: Some(io_vec_to_vec(iov)),
+            };
+            let mut req = self.rq.lock().unwrap();
+            req.handle_data(data);
         }
+
+        self.process_stream()?;
 
         Ok(())
     }
@@ -211,13 +218,20 @@ impl IoVecHandler for DedupHandler {
     fn complete(&mut self) -> Result<()> {
         // We need to process everything that is outstanding which could be
         // quite a bit
-        // TODO: Make this handle errors where we hang forever
+        // TODO: Make this handle errors, like if we end up hanging forever
+        println!("IoVecHandler::complete, waiting for stream order to complete!");
         loop {
-            if !self.process_stream()? {
-                thread::sleep(Duration::from_millis(20));
+            let running = !self.rq.lock().unwrap().dead_thread;
+
+            if !self.process_stream()? && running {
+                thread::sleep(Duration::from_millis(3));
             } else {
                 break;
             }
+        }
+
+        if !(self.process_stream()?) {
+            eprintln!("Operation did not complete, stream is incomplete, handle this!");
         }
 
         let mut builder = self.mapping_builder.lock().unwrap();
@@ -227,6 +241,14 @@ impl IoVecHandler for DedupHandler {
         complete_slab(&mut self.stream_file, &mut self.stream_buf, 0)?;
         self.stream_file.close()?;
 
+        self.rq.lock().unwrap().handle_data(END);
+
+        let worker = self.worker.take();
+
+        if let Some(worker) = worker {
+            let rc = worker.join();
+            println!("client worker thread ended with {:?}", rc);
+        }
         Ok(())
     }
 }
@@ -270,7 +292,6 @@ struct Packer {
     mapped_size: u64,
     block_size: usize,
     thin_id: Option<u32>,
-    hash_cache_size_meg: usize,
 }
 
 impl Packer {
@@ -285,7 +306,6 @@ impl Packer {
         mapped_size: u64,
         block_size: usize,
         thin_id: Option<u32>,
-        hash_cache_size_meg: usize,
     ) -> Self {
         Self {
             output,
@@ -297,24 +317,11 @@ impl Packer {
             mapped_size,
             block_size,
             thin_id,
-            hash_cache_size_meg,
         }
     }
 
-    fn pack(mut self, hashes_file: Arc<Mutex<SlabFile>>) -> Result<()> {
+    fn pack(mut self, client_connect: Option<String>) -> Result<()> {
         let mut splitter = ContentSensitiveSplitter::new(self.block_size as u32);
-
-        let data_file = SlabFileBuilder::open(data_path())
-            .write(true)
-            .queue_depth(128)
-            .build()
-            .context("couldn't open data slab file")?;
-        let data_size = data_file.get_file_size();
-
-        let hashes_size = {
-            let hashes_file = hashes_file.lock().unwrap();
-            hashes_file.get_file_size()
-        };
 
         let (stream_id, mut stream_path) = new_stream_path()?;
 
@@ -327,17 +334,11 @@ impl Packer {
             .build()
             .context("couldn't open stream slab file")?;
 
-        let hashes_per_slab = std::cmp::max(SLAB_SIZE_TARGET / self.block_size, 1);
-        let slab_capacity = ((self.hash_cache_size_meg * 1024 * 1024)
-            / std::mem::size_of::<Hash256>())
-            / hashes_per_slab;
-
-        let db = Db::new(data_file, slab_capacity)?;
-
-        let mut handler = DedupHandler::new(stream_file, self.mapping_builder.clone(), db)?;
+        let mut handler =
+            DedupHandler::new(stream_file, self.mapping_builder.clone(), client_connect)?;
 
         // TODO handle this
-        handler.ensure_extra_capacity(self.mapped_size as usize / self.block_size)?;
+        //handler.ensure_extra_capacity(self.mapped_size as usize / self.block_size)?;
 
         self.output.report.progress(0);
         let start_time: DateTime<Utc> = Utc::now();
@@ -369,16 +370,18 @@ impl Packer {
         self.output.report.progress(100);
         let end_time: DateTime<Utc> = Utc::now();
         let elapsed = end_time - start_time;
-        let elapsed = elapsed.num_milliseconds() as f64 / 1000.0;
+        let _elapsed = elapsed.num_milliseconds() as f64 / 1000.0;
 
-        let db_sizes = handler.db_sizes();
+        let _db_sizes = handler.db_sizes();
 
-        let data_written = db_sizes.0 - data_size;
-        let hashes_written = db_sizes.1 - hashes_size;
+        // TODO fix stats!
+
+        //let data_written = db_sizes.0 - data_size;
+        //let hashes_written = db_sizes.1 - hashes_size;
 
         let stream_written = handler.stream_file.get_file_size();
-        let ratio =
-            (self.mapped_size as f64) / ((data_written + hashes_written + stream_written) as f64);
+        //let ratio =
+        //    (self.mapped_size as f64) / ((data_written + hashes_written + stream_written) as f64);
 
         if self.output.json {
             // Should all the values simply be added to the json too?  We can always add entries, but
@@ -386,6 +389,7 @@ impl Packer {
             let result = json!({ "stream_id": stream_id });
             println!("{}", to_string_pretty(&result).unwrap());
         } else {
+            /*
             self.output
                 .report
                 .info(&format!("elapsed          : {}", elapsed));
@@ -426,6 +430,7 @@ impl Packer {
                 "speed            : {:.2}/s",
                 Size((total_read as f64 / elapsed) as u64)
             ));
+            */
         }
 
         // write the stream config
@@ -435,7 +440,7 @@ impl Packer {
             pack_time: config::now(),
             size: self.input_size,
             mapped_size: self.mapped_size,
-            packed_size: data_written + hashes_written + stream_written,
+            packed_size: stream_written, //data_written + hashes_written + stream_written,
             thin_id: self.thin_id,
         };
         config::write_stream_config(&stream_id, &cfg)?;
@@ -446,12 +451,7 @@ impl Packer {
 
 //-----------------------------------------
 
-fn thick_packer(
-    output: Arc<Output>,
-    input_file: &Path,
-    input_name: String,
-    config: &config::Config,
-) -> Result<Packer> {
+fn thick_packer(output: Arc<Output>, input_file: &Path, input_name: String) -> Result<Packer> {
     let input_size = thinp::file_utils::file_size(input_file)?;
 
     let mapped_size = input_size;
@@ -467,18 +467,12 @@ fn thick_packer(
         input_size,
         builder,
         mapped_size,
-        config.block_size,
+        4096,
         thin_id,
-        config.hash_cache_size_meg,
     ))
 }
 
-fn thin_packer(
-    output: Arc<Output>,
-    input_file: &Path,
-    input_name: String,
-    config: &config::Config,
-) -> Result<Packer> {
+fn thin_packer(output: Arc<Output>, input_file: &Path, input_name: String) -> Result<Packer> {
     let input = OpenOptions::new()
         .read(true)
         .write(false)
@@ -511,24 +505,24 @@ fn thin_packer(
         input_size,
         builder,
         mapped_size,
-        config.block_size,
+        4096,
         thin_id,
-        config.hash_cache_size_meg,
     ))
 }
 
 // FIXME: slow
+#[allow(dead_code)]
 fn open_thin_stream(stream_id: &str) -> Result<SlabFile> {
     SlabFileBuilder::open(stream_path(stream_id))
         .build()
         .context("couldn't open old stream file")
 }
 
+#[allow(dead_code)]
 fn thin_delta_packer(
     output: Arc<Output>,
     input_file: &Path,
     input_name: String,
-    config: &config::Config,
     delta_device: &Path,
     delta_id: &str,
     hashes_file: Arc<Mutex<SlabFile>>,
@@ -572,13 +566,13 @@ fn thin_delta_packer(
         input_size,
         builder,
         mapped_size,
-        config.block_size,
+        4096,
         thin_id,
-        config.hash_cache_size_meg,
     ))
 }
 
 // Looks up both --delta-stream and --delta-device
+#[allow(dead_code)]
 fn get_delta_args(matches: &ArgMatches) -> Result<Option<(String, PathBuf)>> {
     match (
         matches.get_one::<String>("DELTA_STREAM"),
@@ -596,8 +590,13 @@ fn get_delta_args(matches: &ArgMatches) -> Result<Option<(String, PathBuf)>> {
     }
 }
 
-pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
+pub fn run(matches: &ArgMatches, output: Arc<Output>, client: Option<String>) -> Result<()> {
+    // TODO we need to remove this and move it to the server side.  Replace with creating a temp.
+    // directory and stream file and when successfully done, we'll then transfer that to the server
+    // which may or may not be the same machine
     let archive_dir = Path::new(matches.get_one::<String>("ARCHIVE").unwrap()).canonicalize()?;
+    env::set_current_dir(archive_dir)?;
+
     let input_file = Path::new(matches.get_one::<String>("INPUT").unwrap());
     let input_name = input_file
         .file_name()
@@ -607,41 +606,30 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
         .to_string();
     let input_file = Path::new(matches.get_one::<String>("INPUT").unwrap()).canonicalize()?;
 
-    env::set_current_dir(archive_dir)?;
-    let config = config::read_config(".")?;
-
     output
         .report
         .set_title(&format!("Building packer {} ...", input_file.display()));
 
-    let hashes_file = Arc::new(Mutex::new(
-        SlabFileBuilder::open(hashes_path())
-            .write(true)
-            .queue_depth(16)
-            .build()
-            .context("couldn't open hashes slab file")?,
-    ));
-
-    let packer = if let Some((delta_stream, delta_device)) = get_delta_args(matches)? {
-        thin_delta_packer(
-            output.clone(),
-            &input_file,
-            input_name,
-            &config,
-            &delta_device,
-            &delta_stream,
-            hashes_file.clone(),
-        )?
-    } else if is_thin_device(&input_file)? {
-        thin_packer(output.clone(), &input_file, input_name, &config)?
+    // TODO figure out how to make delta work in a remote send/receive environment
+    /*let packer = if let Some((delta_stream, delta_device)) = get_delta_args(matches)? {
+    thin_delta_packer(
+        output.clone(),
+        &input_file,
+        input_name,
+        &delta_device,
+        &delta_stream,
+        hashes_file.clone(),
+    )? */
+    let packer = if is_thin_device(&input_file)? {
+        thin_packer(output.clone(), &input_file, input_name)?
     } else {
-        thick_packer(output.clone(), &input_file, input_name, &config)?
+        thick_packer(output.clone(), &input_file, input_name)?
     };
 
     output
         .report
         .set_title(&format!("Packing {} ...", input_file.display()));
-    packer.pack(hashes_file)
+    packer.pack(client)
 }
 
 //-----------------------------------------

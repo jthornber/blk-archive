@@ -62,7 +62,7 @@ impl Db {
             assert_eq!(data_file.get_nr_slabs(), hashes_file.get_nr_slabs());
         }
 
-        Ok(Self {
+        let mut s = Self {
             seen,
             hashes,
             data_file,
@@ -72,7 +72,12 @@ impl Db {
             current_entries: 0,
             data_buf: Vec::new(),
             hashes_buf: Vec::new(),
-        })
+        };
+
+        // TODO make this more dynamic as needed that will work in multi-client env.
+        s.rebuild_index(262144)?;
+
+        Ok(s)
     }
 
     pub fn ensure_extra_capacity(&mut self, blocks: usize) -> Result<()> {
@@ -108,7 +113,7 @@ impl Db {
             let hi = ByHash::new(buf)?;
             for i in 0..hi.len() {
                 let h = hi.get(i);
-                let mini_hash = hash_le_u64(&h);
+                let mini_hash = hash_le_u64(h);
                 seen.test_and_set(mini_hash, s as u32)?;
             }
         }
@@ -160,22 +165,18 @@ impl Db {
     // Have we seen this hash before, if we have we will return the slab and offset
     // Note: This function does not modify any state
     pub fn is_known(&mut self, h: &Hash256) -> Result<Option<(u32, u32)>> {
-        let mini_hash = hash_le_u64(&h);
+        let mini_hash = hash_le_u64(h);
         let rc = match self.seen.test(mini_hash)? {
             InsertResult::PossiblyPresent(s) => {
                 if self.current_slab == s {
-                    if let Some(offset) = self.current_index.lookup(&h) {
+                    if let Some(offset) = self.current_index.lookup(h) {
                         Some((self.current_slab, offset))
                     } else {
                         None
                     }
                 } else {
                     let hi = self.get_hash_index(s)?;
-                    if let Some(offset) = hi.lookup(&h) {
-                        Some((s, offset as u32))
-                    } else {
-                        None
-                    }
+                    hi.lookup(h).map(|offset| (s, offset as u32))
                 }
             }
             _ => None,
@@ -192,10 +193,8 @@ impl Db {
 
         (self.data_file.get_file_size(), hashes_written)
     }
-}
 
-impl Drop for Db {
-    fn drop(&mut self) {
+    fn sync_and_close(&mut self) {
         eprintln!("closing db!");
         self.maybe_complete_data(0)
             .expect("db.drop: maybe_complete_data error!");
@@ -209,5 +208,11 @@ impl Drop for Db {
         self.seen
             .write(paths::index_path())
             .expect("db.drop: seen.write() error!");
+    }
+}
+
+impl Drop for Db {
+    fn drop(&mut self) {
+        self.sync_and_close();
     }
 }
