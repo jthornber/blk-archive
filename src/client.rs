@@ -2,24 +2,21 @@ use anyhow::Result;
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
 use std::io::Write;
-use std::net::TcpStream;
-use std::os::fd::AsRawFd;
 use std::sync::{Arc, Mutex};
 
 use crate::ipc;
+use crate::ipc::*;
 use crate::stream::*;
 use crate::stream_orderer::*;
 use crate::wire;
 
-#[derive(Debug)]
 pub struct Client {
-    s: TcpStream,
+    s: Box<dyn ReadAndWrite>,
     inflight: HashMap<u64, Data>, // Items waiting to complete
     so: Arc<Mutex<StreamOrder>>,
     req_q: Arc<Mutex<ClientRequests>>,
 }
 
-#[derive(Debug)]
 pub struct ClientRequests {
     requests: VecDeque<Data>,
     pub dead_thread: bool,
@@ -71,19 +68,8 @@ impl ClientRequests {
 }
 
 impl Client {
-    pub fn new(server: Option<String>, so: Arc<Mutex<StreamOrder>>) -> Result<Self> {
-        let c = if let Some(server_str) = server {
-            server_str
-        } else {
-            String::from("127.0.0.1:9876")
-        };
-
-        let s = TcpStream::connect(c)?;
-
-        s.set_nonblocking(true)
-            .expect("set_nonblocking call failed");
-        s.set_nodelay(true)
-            .expect("unable to disable nagle, do we want to disable this?");
+    pub fn new(server: String, so: Arc<Mutex<StreamOrder>>) -> Result<Self> {
+        let s = create_connected_socket(server)?;
 
         Ok(Self {
             s,
@@ -201,7 +187,7 @@ impl Client {
 
         loop {
             let mut events = [epoll::Event::new(epoll::Events::empty(), 0); 10];
-            let rdy = epoll::wait(event_fd, 5, &mut events)?;
+            let rdy = epoll::wait(event_fd, 2, &mut events)?;
             let mut end = false;
 
             for i in 0..rdy {
@@ -247,13 +233,7 @@ impl Client {
                 if events[i].events & epoll::Events::EPOLLOUT.bits()
                     == epoll::Events::EPOLLOUT.bits()
                 {
-                    // During our processing we were told we would block, so we enabled pollout.
-
-                    //println!("We got the go ahead to write! {}", wb.len());
-
                     if !wire::write_buffer(&mut self.s, &mut wb)? && wb.is_empty() {
-                        //println!("We should have written all the bytes!");
-                        // We were able to write everything, so flip off pollout
                         event = ipc::read_event(event.data as i32);
                         epoll::ctl(
                             event_fd,
@@ -261,8 +241,6 @@ impl Client {
                             event.data as i32,
                             event,
                         )?;
-                    } else {
-                        //println!("Unable to write, or unable to write them all, remaining {}", wb.len());
                     }
                 }
             }

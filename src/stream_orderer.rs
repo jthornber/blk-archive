@@ -43,6 +43,21 @@ impl StreamOrder {
         })
     }
 
+    pub fn drain(&mut self) -> (Vec<Sentry>, bool) {
+        let mut rc = Vec::new();
+
+        println!("number of entries in stream = {}", self.ready.len());
+
+        loop {
+            if let Some(e) = self.remove() {
+                rc.push(e);
+            } else {
+                break;
+            }
+        }
+        (rc, self.is_complete())
+    }
+
     pub fn is_complete(&self) -> bool {
         //println!{"{:?}", self};
         self.ready.is_empty() && (self.seq_id == self.next)

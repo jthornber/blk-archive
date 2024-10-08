@@ -13,39 +13,48 @@ use nix::sys::signalfd::{SfdFlags, SignalFd};
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::env;
-use std::net::TcpListener;
-use std::net::TcpStream;
 use std::os::fd::AsRawFd;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tempfile::TempDir;
 
 use crate::iovec::*;
 use crate::ipc;
+use crate::ipc::*;
 
 pub struct Server {
     db: Db,
-    listener: TcpListener,
+    listener: Box<dyn ipc::Listening>,
     signalfd: SignalFd,
+    pub exit: Arc<AtomicBool>,
+    ipc_dir: Option<TempDir>,
 }
 
-#[derive(Debug)]
 struct Client {
-    c: TcpStream,
+    c: Box<dyn ReadAndWrite>,
     buff: VecDeque<u8>,
+    wb: VecDeque<u8>,
 }
 
 impl Client {
-    fn new(c: TcpStream) -> Self {
+    fn new(c: Box<dyn ReadAndWrite>) -> Self {
         Self {
             c,
             buff: VecDeque::new(),
+            wb: VecDeque::new(),
         }
     }
 }
 
 impl Server {
-    pub fn new(archive_path: &Path, one_system: bool) -> Result<Self> {
-        let archive_dir = archive_path.canonicalize()?;
-        env::set_current_dir(&archive_dir)?;
+    pub fn new(archive_path: Option<&Path>, one_system: bool) -> Result<(Self, Option<String>)> {
+        // If we don't have an archive_dir, we'll assume caller already set the current working
+        // directory
+        if let Some(archive_dir) = archive_path {
+            let archive_dir = archive_dir.canonicalize()?;
+            env::set_current_dir(&archive_dir)?;
+        }
 
         let sfd = {
             let mut mask = SigSet::empty();
@@ -69,24 +78,39 @@ impl Server {
 
         let db = Db::new(data_file, slab_capacity)?;
 
-        let listener = if one_system {
-            TcpListener::bind("127.0.0.1:9876")?
+        let ipc_dir = if one_system {
+            Some(ipc::create_unix_ipc_dir()?)
         } else {
-            TcpListener::bind("0.0.0.0:9876")?
+            None
         };
 
-        listener.set_nonblocking(true)?;
+        let server_addr = if let Some(d) = &ipc_dir {
+            let f = d.path().join("ipc_socket");
+            f.into_os_string().into_string().unwrap()
+        } else {
+            "0.0.0.0:9876".to_string()
+        };
 
-        Ok(Self {
-            db,
-            listener,
-            signalfd: sfd,
-        })
+        let listener = create_listening_socket(&server_addr)?;
+
+        let c_path = if one_system { Some(server_addr) } else { None };
+
+        Ok((
+            Self {
+                db,
+                listener,
+                signalfd: sfd,
+                exit: Arc::new(AtomicBool::new(false)),
+                ipc_dir,
+            },
+            c_path,
+        ))
     }
 
-    fn process_read(&mut self, c: &mut Client) -> Result<bool> {
+    fn process_read(&mut self, c: &mut Client) -> Result<wire::IORequest> {
         let mut found_it: Vec<(u64, (u32, u32))> = Vec::new();
         let mut data_needed: Vec<u64> = Vec::new();
+        let mut rc = wire::IORequest::Ok;
 
         //println!("process_read entry!");
 
@@ -114,7 +138,9 @@ impl Server {
                         //println!("packing data from client {} {:?} {}", id, hash, data.len());
                         let new_entry =
                             self.db.add_data_entry(*hash256, &iov, data.len() as u64)?;
-                        wire::write_rpc_panic(&mut c.c, wire::Rpc::PackResp(id, new_entry));
+                        if wire::write(&mut c.c, wire::Rpc::PackResp(id, new_entry), &mut c.wb)? {
+                            rc = wire::IORequest::WouldBlock;
+                        }
                     }
                     _ => {
                         eprint!("What are we not handling! {:?}", p);
@@ -123,20 +149,24 @@ impl Server {
             }
         } else {
             // No more data to read, did we process anything?
-            println!("Nothing to read ... why?");
+            //println!("Server, nothing to read, why?");
         }
 
         if !found_it.is_empty() {
             //println!("We are writing back found for {}", found_it.len());
-            wire::write_rpc_panic(&mut c.c, wire::Rpc::HaveDataRespYes(found_it));
+            if wire::write(&mut c.c, wire::Rpc::HaveDataRespYes(found_it), &mut c.wb)? {
+                rc = wire::IORequest::WouldBlock;
+            }
         }
 
         if !data_needed.is_empty() {
             //println!("We are writing back data needed for {}", data_needed.len());
-            wire::write_rpc_panic(&mut c.c, wire::Rpc::HaveDataRespNo(data_needed));
+            if wire::write(&mut c.c, wire::Rpc::HaveDataRespNo(data_needed), &mut c.wb)? {
+                rc = wire::IORequest::WouldBlock;
+            }
         }
 
-        Ok(false)
+        Ok(rc)
     }
 
     pub fn run(&mut self) -> Result<()> {
@@ -171,7 +201,7 @@ impl Server {
 
         loop {
             let mut events = [epoll::Event::new(epoll::Events::empty(), 0); 10];
-            let rdy = epoll::wait(event_fd, -1, &mut events)?;
+            let rdy = epoll::wait(event_fd, 2, &mut events)?;
             let mut end = false;
 
             for i in 0..rdy {
@@ -180,9 +210,7 @@ impl Server {
                 {
                     let (new_client, addr) = self.listener.accept()?;
                     println!("We accepted a connection from {}", addr);
-                    new_client.set_nonblocking(true)?;
                     let fd = new_client.as_raw_fd();
-                    new_client.set_nodelay(true).unwrap();
 
                     event = ipc::read_event(fd);
                     epoll::ctl(event_fd, epoll::ControlOptions::EPOLL_CTL_ADD, fd, event)?;
@@ -212,6 +240,12 @@ impl Server {
                     )?;
 
                     clients.remove(&fd_to_remove.clone());
+
+                    /*
+                    if self.ipc_dir.is_some() {
+                        end = true;
+                        break;
+                    }*/
                 } else if events[i].events & epoll::Events::EPOLLIN.bits()
                     == epoll::Events::EPOLLIN.bits()
                     && events[i].data != listen_fd as u64
@@ -225,32 +259,42 @@ impl Server {
                             println!("Client ended in error: {}", e);
                             clients.remove(&fd);
                         }
-                        Ok(rc) => {
-                            if rc {
-                                println!("Client completed cleanly");
-                                clients.remove(&fd);
+                        Ok(r) => {
+                            if r == wire::IORequest::WouldBlock {
+                                event.events |= epoll::Events::EPOLLOUT.bits();
+                                event.data = fd as u64;
+                                epoll::ctl(
+                                    event_fd,
+                                    epoll::ControlOptions::EPOLL_CTL_MOD,
+                                    fd,
+                                    event,
+                                )?;
                             }
                         }
                     }
                 }
 
-                /*
-                if events[i].events & epoll::Events::EPOLLOUT.bits() == epoll::Events::EPOLLOUT.bits() {
+                if events[i].events & epoll::Events::EPOLLOUT.bits()
+                    == epoll::Events::EPOLLOUT.bits()
+                {
                     // We only get here if we got an would block on a write before
                     let fd: i32 = events[i].data as i32;
                     let c = clients.get_mut(&fd).unwrap();
-                    c.write_all(&data_read[0..amt_read]).unwrap();
-                    amt_read = 0;
 
-                    // We will remove the epollout
-                    event = read_event(fd);
-                    event.data = fd as u64;
-                    epoll::ctl(event_fd, epoll::ControlOptions::EPOLL_CTL_MOD, fd, event)?;
+                    if !wire::write_buffer(&mut c.c, &mut c.wb)? && c.wb.is_empty() {
+                        // Buffer is empty, we'll turn off pollout
+                        event = ipc::read_event(fd);
+                        epoll::ctl(event_fd, epoll::ControlOptions::EPOLL_CTL_MOD, fd, event)?;
+                    }
                 }
-                */
             }
 
             if end {
+                break;
+            }
+
+            if self.exit.load(Ordering::Relaxed) {
+                eprintln!("Server asked to exit!");
                 break;
             }
         }
