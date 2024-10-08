@@ -226,8 +226,8 @@ fn main_() -> Result<()> {
         Some(("server", sub_matches)) => {
             let archive_dir =
                 Path::new(sub_matches.get_one::<String>("ARCHIVE").unwrap()).canonicalize()?;
-            let mut s = server::Server::new(&archive_dir, false)?;
-            s.run()?;
+            let mut s = server::Server::new(Some(&archive_dir), false)?;
+            s.0.run()?;
         }
         _ => unreachable!("Exhausted list of subcommands and subcommand_required prevents 'None'"),
     }

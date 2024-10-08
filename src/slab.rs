@@ -304,7 +304,7 @@ impl SlabFile {
 
         let tid = {
             let shared = shared.clone();
-            thread::spawn(move || writer(shared, rx))
+            thread::Builder::new().name("SlabFile::create (writer)".to_string()).spawn(move || writer(shared, rx))?
         };
 
         Ok(Self {
@@ -354,7 +354,7 @@ impl SlabFile {
 
         let tid = {
             let shared = shared.clone();
-            thread::spawn(move || writer(shared, rx))
+            thread::Builder::new().name("SlabFile::open_for_write (writer)".to_string()).spawn(move || writer(shared, rx))?
         };
 
         Ok(Self {

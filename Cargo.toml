@@ -29,6 +29,7 @@ roaring = "0.9"
 serde = "1.0.136"
 serde_derive = "1.0.136"
 size-display = "0.1.4"
+tempfile = "3"
 thinp = { git = "https://github.com/jthornber/thin-provisioning-tools.git", branch = "main" }
 # thinp = { path = "../thinp-for-dm-archive/" }
 threadpool = "1.0"

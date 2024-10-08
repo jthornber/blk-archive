@@ -25,12 +25,14 @@ use crate::iovec::*;
 use crate::output::Output;
 use crate::paths::*;
 use crate::run_iter::*;
+use crate::server;
 use crate::slab::*;
 use crate::splitter::*;
 use crate::stream::*;
 use crate::stream_builders::*;
 use crate::stream_orderer::*;
 use crate::thin_metadata::*;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 //-----------------------------------------
 
@@ -81,17 +83,45 @@ struct DedupHandler {
     fill_size: u64,
     so: Arc<Mutex<StreamOrder>>,
     rq: Arc<Mutex<ClientRequests>>,
-    worker: Option<JoinHandle<std::result::Result<(), anyhow::Error>>>,
+    client_worker: Option<JoinHandle<std::result::Result<(), anyhow::Error>>>,
+    server_worker: Option<JoinHandle<std::result::Result<(), anyhow::Error>>>,
+    server_run: Option<Arc<AtomicBool>>,
 }
 
 impl DedupHandler {
     fn new(
         stream_file: SlabFile,
         mapping_builder: Arc<Mutex<dyn Builder>>,
-        c: Option<String>,
+        server_addr: Option<String>,
     ) -> Result<Self> {
         let so = Arc::new(Mutex::new(StreamOrder::new()?));
-        let mut client = Client::new(c, so.clone())?;
+        let server_run: Option<Arc<AtomicBool>>;
+
+        let s_conn;
+
+        let mut server: server::Server;
+        let server_worker = if let Some(c) = server_addr {
+            s_conn = c;
+            server_run = None;
+            None
+        } else {
+            let s_create = server::Server::new(None, true)?;
+            server = s_create.0;
+            s_conn = s_create
+                .1
+                .context("If we have no archive path we SHALL get a connection path")
+                .unwrap();
+
+            server_run = Some(server.exit.clone());
+
+            let h = thread::Builder::new()
+                .name("Server socket handler".to_string())
+                .spawn(move || server.run())?;
+            Some(h)
+        };
+
+        println!("Client is connecting to server using {}", s_conn);
+        let mut client = Client::new(s_conn, so.clone())?;
         let rq = client.get_request_queue();
 
         // Start a thread to handle client communication
@@ -110,7 +140,9 @@ impl DedupHandler {
             fill_size: 0,
             so,
             rq,
-            worker: Some(h),
+            client_worker: Some(h),
+            server_worker,
+            server_run,
         })
     }
 
@@ -123,19 +155,15 @@ impl DedupHandler {
         let mut me: MapEntry;
         let mut len: u64;
 
-        loop {
-            {
-                let mut se = self.so.lock().unwrap();
-                if let Some(entry) = se.remove() {
-                    me = entry.e;
-                    len = entry.len;
-                } else {
-                    return Ok(se.is_complete());
-                }
-            }
+        let rc = self.so.lock().unwrap().drain();
+
+        for e in rc.0 {
+            me = e.e;
+            len = e.len;
             self.process_stream_entry(&me, len)?;
             self.maybe_complete_stream()?
         }
+        Ok(rc.1)
     }
 
     fn maybe_complete_stream(&mut self) -> Result<()> {
@@ -158,7 +186,7 @@ impl DedupHandler {
             let id = so.entry_start();
             so.entry_complete(id, e, len)?;
         }
-        self.process_stream()?;
+        //self.process_stream()?;
         Ok(())
     }
 
@@ -210,7 +238,7 @@ impl IoVecHandler for DedupHandler {
             req.handle_data(data);
         }
 
-        self.process_stream()?;
+        //self.process_stream()?;
 
         Ok(())
     }
@@ -224,7 +252,7 @@ impl IoVecHandler for DedupHandler {
             let running = !self.rq.lock().unwrap().dead_thread;
 
             if !self.process_stream()? && running {
-                thread::sleep(Duration::from_millis(3));
+                thread::sleep(Duration::from_millis(100));
             } else {
                 break;
             }
@@ -243,12 +271,28 @@ impl IoVecHandler for DedupHandler {
 
         self.rq.lock().unwrap().handle_data(END);
 
-        let worker = self.worker.take();
+        let worker = self.client_worker.take();
 
         if let Some(worker) = worker {
             let rc = worker.join();
             println!("client worker thread ended with {:?}", rc);
         }
+
+        if let Some(server_exit) = self.server_worker.take() {
+            println!("We have an embedded server!");
+
+            // Tell server to exit
+            {
+                let exit = self.server_run.as_mut().unwrap();
+                exit.store(true, Ordering::Relaxed);
+                println!("set exit value to true!");
+            }
+
+            println!("Waiting on server to exit!");
+            let rc = server_exit.join();
+            println!("Server worker thread ended with {:?}", rc);
+        }
+
         Ok(())
     }
 }
@@ -320,7 +364,7 @@ impl Packer {
         }
     }
 
-    fn pack(mut self, client_connect: Option<String>) -> Result<()> {
+    fn pack(mut self, server_addr: Option<String>) -> Result<()> {
         let mut splitter = ContentSensitiveSplitter::new(self.block_size as u32);
 
         let (stream_id, mut stream_path) = new_stream_path()?;
@@ -335,7 +379,7 @@ impl Packer {
             .context("couldn't open stream slab file")?;
 
         let mut handler =
-            DedupHandler::new(stream_file, self.mapping_builder.clone(), client_connect)?;
+            DedupHandler::new(stream_file, self.mapping_builder.clone(), server_addr)?;
 
         // TODO handle this
         //handler.ensure_extra_capacity(self.mapped_size as usize / self.block_size)?;

@@ -6,6 +6,8 @@ use std::io::Read;
 use std::io::Write;
 use std::net::TcpStream;
 
+use crate::ipc::*;
+
 const CONFIG: config::Configuration<config::BigEndian, config::Fixint> = config::standard()
     .with_fixed_int_encoding()
     .with_big_endian(); // We can certainly remove this to get little endian as most of the arches
@@ -106,7 +108,7 @@ fn _read_into_rpc(b: &mut VecDeque<u8>) -> Result<Option<Vec<Rpc>>, io::Error> {
 }
 
 pub fn read_using_buffer(
-    s: &mut TcpStream,
+    s: &mut Box<dyn ReadAndWrite>,
     b: &mut VecDeque<u8>,
 ) -> Result<Option<Vec<Rpc>>, io::Error> {
     let mut buffer = [0; 1024 * 1024];
@@ -135,18 +137,21 @@ pub fn read_using_buffer(
     _read_into_rpc(b)
 }
 
-pub fn write_rpc_panic(s: &mut TcpStream, rpc: Rpc) {
+pub fn write_rpc_panic(s: &mut Box<dyn ReadAndWrite>, rpc: Rpc) {
     let bytes = rpc_to_bytes(&rpc);
     s.write_all(&bytes).unwrap();
 }
 
-pub fn write(s: &mut TcpStream, rpc: Rpc, wb: &mut VecDeque<u8>) -> Result<bool> {
+pub fn write(s: &mut Box<dyn ReadAndWrite>, rpc: Rpc, wb: &mut VecDeque<u8>) -> Result<bool> {
     let bytes = rpc_to_bytes(&rpc);
     wb.extend(bytes);
     write_buffer(s, wb)
 }
 
-pub fn write_buffer(s: &mut TcpStream, write_buffer: &mut VecDeque<u8>) -> Result<bool> {
+pub fn write_buffer(
+    s: &mut Box<dyn ReadAndWrite>,
+    write_buffer: &mut VecDeque<u8>,
+) -> Result<bool> {
     let amt_written = s.write(write_buffer.make_contiguous());
     let rc = match amt_written {
         Err(r) => match r.kind() {
