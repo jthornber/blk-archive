@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 
+use crate::config::*;
 use crate::cuckoo_filter::*;
 use crate::hash::*;
 use crate::hash_index::*;
@@ -44,9 +45,24 @@ pub fn complete_slab(slab: &mut SlabFile, buf: &mut Vec<u8>, threshold: usize) -
 }
 
 impl Db {
-    pub fn new(data_file: SlabFile, slab_capacity: usize) -> Result<Self> {
+    pub fn new() -> Result<Self> {
         let seen = CuckooFilter::read(paths::index_path())?;
+
+        let config = read_config(".")?;
+
+        let hashes_per_slab = std::cmp::max(SLAB_SIZE_TARGET / config.block_size, 1);
+        let slab_capacity = ((config.hash_cache_size_meg * 1024 * 1024)
+            / std::mem::size_of::<Hash256>())
+            / hashes_per_slab;
+
         let hashes = lru::LruCache::new(NonZeroUsize::new(slab_capacity).unwrap());
+
+        let data_file = SlabFileBuilder::open(data_path())
+            .write(true)
+            .queue_depth(128)
+            .build()
+            .context("couldn't open data slab file")?;
+
         let nr_slabs = data_file.get_nr_slabs() as u32;
 
         let hashes_file = Arc::new(Mutex::new(

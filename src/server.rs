@@ -1,11 +1,7 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 
-use crate::config::*;
 use crate::db::*;
 use crate::hash::bytes_to_hash256;
-use crate::hash::Hash256;
-use crate::paths::*;
-use crate::slab::*;
 use crate::wire;
 use nix::sys::signal;
 use nix::sys::signal::SigSet;
@@ -63,20 +59,7 @@ impl Server {
             SignalFd::with_flags(&mask, SfdFlags::SFD_NONBLOCK)?
         };
 
-        let data_file = SlabFileBuilder::open(data_path())
-            .write(true)
-            .queue_depth(128)
-            .build()
-            .context("couldn't open data slab file")?;
-
-        let config = read_config(".")?;
-
-        let hashes_per_slab = std::cmp::max(SLAB_SIZE_TARGET / config.block_size, 1);
-        let slab_capacity = ((config.hash_cache_size_meg * 1024 * 1024)
-            / std::mem::size_of::<Hash256>())
-            / hashes_per_slab;
-
-        let db = Db::new(data_file, slab_capacity)?;
+        let db = Db::new()?;
 
         let ipc_dir = if one_system {
             Some(ipc::create_unix_ipc_dir()?)
@@ -240,12 +223,6 @@ impl Server {
                     )?;
 
                     clients.remove(&fd_to_remove.clone());
-
-                    /*
-                    if self.ipc_dir.is_some() {
-                        end = true;
-                        break;
-                    }*/
                 } else if events[i].events & epoll::Events::EPOLLIN.bits()
                     == epoll::Events::EPOLLIN.bits()
                     && events[i].data != listen_fd as u64
