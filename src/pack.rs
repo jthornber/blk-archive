@@ -25,14 +25,12 @@ use crate::iovec::*;
 use crate::output::Output;
 use crate::paths::*;
 use crate::run_iter::*;
-use crate::server;
 use crate::slab::*;
 use crate::splitter::*;
 use crate::stream::*;
 use crate::stream_builders::*;
 use crate::stream_orderer::*;
 use crate::thin_metadata::*;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 //-----------------------------------------
 
@@ -70,6 +68,14 @@ fn all_same(iov: &IoVec) -> Option<u8> {
 
 //-----------------------------------------
 
+enum Tp {
+    Local(Db),
+    Remote(
+        Arc<Mutex<ClientRequests>>,
+        Option<JoinHandle<std::result::Result<(), anyhow::Error>>>,
+    ),
+}
+
 struct DedupHandler {
     nr_chunks: usize,
 
@@ -82,10 +88,7 @@ struct DedupHandler {
     mapped_size: u64,
     fill_size: u64,
     so: Arc<Mutex<StreamOrder>>,
-    rq: Arc<Mutex<ClientRequests>>,
-    client_worker: Option<JoinHandle<std::result::Result<(), anyhow::Error>>>,
-    server_worker: Option<JoinHandle<std::result::Result<(), anyhow::Error>>>,
-    server_run: Option<Arc<AtomicBool>>,
+    transport: Tp,
 }
 
 impl DedupHandler {
@@ -95,39 +98,19 @@ impl DedupHandler {
         server_addr: Option<String>,
     ) -> Result<Self> {
         let so = Arc::new(Mutex::new(StreamOrder::new()?));
-        let server_run: Option<Arc<AtomicBool>>;
 
-        let s_conn;
-
-        let mut server: server::Server;
-        let server_worker = if let Some(c) = server_addr {
-            s_conn = c;
-            server_run = None;
-            None
-        } else {
-            let s_create = server::Server::new(None, true)?;
-            server = s_create.0;
-            s_conn = s_create
-                .1
-                .context("If we have no archive path we SHALL get a connection path")
-                .unwrap();
-
-            server_run = Some(server.exit.clone());
-
+        let tp: Tp = if let Some(s_conn) = server_addr {
+            println!("Client is connecting to server using {}", s_conn);
+            let mut client = Client::new(s_conn, so.clone())?;
+            let rq = client.get_request_queue();
+            // Start a thread to handle client communication
             let h = thread::Builder::new()
-                .name("Server socket handler".to_string())
-                .spawn(move || server.run())?;
-            Some(h)
+                .name("client socket handler".to_string())
+                .spawn(move || client.run())?;
+            Tp::Remote(rq, Some(h))
+        } else {
+            Tp::Local(Db::new()?)
         };
-
-        println!("Client is connecting to server using {}", s_conn);
-        let mut client = Client::new(s_conn, so.clone())?;
-        let rq = client.get_request_queue();
-
-        // Start a thread to handle client communication
-        let h = thread::Builder::new()
-            .name("client socket handler".to_string())
-            .spawn(move || client.run())?;
 
         Ok(Self {
             nr_chunks: 0,
@@ -139,10 +122,7 @@ impl DedupHandler {
             mapped_size: 0,
             fill_size: 0,
             so,
-            rq,
-            client_worker: Some(h),
-            server_worker,
-            server_run,
+            transport: tp,
         })
     }
 
@@ -227,18 +207,35 @@ impl IoVecHandler for DedupHandler {
                 len,
             )?;
         } else {
-            let h = hash_256_iov(iov);
-            let data = Data {
-                id: self.get_next_stream_id(),
-                h: hash256_to_bytes(&h),
-                len,
-                d: Some(io_vec_to_vec(iov)),
-            };
-            let mut req = self.rq.lock().unwrap();
-            req.handle_data(data);
+            match self.transport {
+                Tp::Local(ref mut db) => {
+                    let len = iov_len_(iov);
+                    let h = hash_256_iov(iov);
+                    let (slab, offset) = db.add_data_entry(h, iov, len)?;
+                    self.enqueue_entry(
+                        MapEntry::Data {
+                            slab,
+                            offset,
+                            nr_entries: 1,
+                        },
+                        len,
+                    )?;
+                }
+                Tp::Remote(ref rq, _) => {
+                    let h = hash_256_iov(iov);
+                    let data = Data {
+                        id: self.get_next_stream_id(),
+                        h: hash256_to_bytes(&h),
+                        len,
+                        d: Some(io_vec_to_vec(iov)),
+                    };
+                    let mut req = rq.lock().unwrap();
+                    req.handle_data(data);
+                }
+            }
         }
 
-        //self.process_stream()?;
+        self.process_stream()?;
 
         Ok(())
     }
@@ -248,18 +245,13 @@ impl IoVecHandler for DedupHandler {
         // quite a bit
         // TODO: Make this handle errors, like if we end up hanging forever
         println!("IoVecHandler::complete, waiting for stream order to complete!");
-        loop {
-            let running = !self.rq.lock().unwrap().dead_thread;
 
-            if !self.process_stream()? && running {
+        loop {
+            if !self.process_stream()? {
                 thread::sleep(Duration::from_millis(100));
             } else {
                 break;
             }
-        }
-
-        if !(self.process_stream()?) {
-            eprintln!("Operation did not complete, stream is incomplete, handle this!");
         }
 
         let mut builder = self.mapping_builder.lock().unwrap();
@@ -269,28 +261,16 @@ impl IoVecHandler for DedupHandler {
         complete_slab(&mut self.stream_file, &mut self.stream_buf, 0)?;
         self.stream_file.close()?;
 
-        self.rq.lock().unwrap().handle_data(END);
+        match self.transport {
+            Tp::Local(ref _db) => {}
+            Tp::Remote(ref mut rq, ref mut handle) => {
+                rq.lock().unwrap().handle_data(END);
 
-        let worker = self.client_worker.take();
-
-        if let Some(worker) = worker {
-            let rc = worker.join();
-            println!("client worker thread ended with {:?}", rc);
-        }
-
-        if let Some(server_exit) = self.server_worker.take() {
-            println!("We have an embedded server!");
-
-            // Tell server to exit
-            {
-                let exit = self.server_run.as_mut().unwrap();
-                exit.store(true, Ordering::Relaxed);
-                println!("set exit value to true!");
+                if let Some(worker) = handle.take() {
+                    let rc = worker.join();
+                    println!("client worker thread ended with {:?}", rc);
+                }
             }
-
-            println!("Waiting on server to exit!");
-            let rc = server_exit.join();
-            println!("Server worker thread ended with {:?}", rc);
         }
 
         Ok(())

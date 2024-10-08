@@ -232,16 +232,16 @@ impl Client {
 
                 if events[i].events & epoll::Events::EPOLLOUT.bits()
                     == epoll::Events::EPOLLOUT.bits()
+                    && !wire::write_buffer(&mut self.s, &mut wb)?
+                    && wb.is_empty()
                 {
-                    if !wire::write_buffer(&mut self.s, &mut wb)? && wb.is_empty() {
-                        event = ipc::read_event(event.data as i32);
-                        epoll::ctl(
-                            event_fd,
-                            epoll::ControlOptions::EPOLL_CTL_MOD,
-                            event.data as i32,
-                            event,
-                        )?;
-                    }
+                    event = ipc::read_event(event.data as i32);
+                    epoll::ctl(
+                        event_fd,
+                        epoll::ControlOptions::EPOLL_CTL_MOD,
+                        event.data as i32,
+                        event,
+                    )?;
                 }
             }
 
