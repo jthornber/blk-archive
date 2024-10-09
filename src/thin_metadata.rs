@@ -222,7 +222,7 @@ fn read_delta_info(metadata: &Path, old_thin_id: u32, new_thin_id: u32) -> Resul
     }
 
     for k in new_mappings.keys() {
-        if old_mappings.get(k).is_none() {
+        if !old_mappings.contains_key(k) {
             additions.insert(*k as u32);
         }
     }
