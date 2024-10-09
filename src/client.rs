@@ -190,10 +190,10 @@ impl Client {
             let rdy = epoll::wait(event_fd, 2, &mut events)?;
             let mut end = false;
 
-            for i in 0..rdy {
-                if events[i].events & epoll::Events::EPOLLERR.bits()
+            for item_rdy in events.iter().take(rdy) {
+                if item_rdy.events & epoll::Events::EPOLLERR.bits()
                     == epoll::Events::EPOLLERR.bits()
-                    || events[i].events & epoll::Events::EPOLLHUP.bits()
+                    || item_rdy.events & epoll::Events::EPOLLHUP.bits()
                         == epoll::Events::EPOLLHUP.bits()
                 {
                     epoll::ctl(
@@ -207,7 +207,7 @@ impl Client {
                     break;
                 }
 
-                if events[i].events & epoll::Events::EPOLLIN.bits() == epoll::Events::EPOLLIN.bits()
+                if item_rdy.events & epoll::Events::EPOLLIN.bits() == epoll::Events::EPOLLIN.bits()
                 {
                     let read_result = self.process_read(&mut read_buffer, &mut wb);
                     match read_result {
@@ -230,7 +230,7 @@ impl Client {
                     }
                 }
 
-                if events[i].events & epoll::Events::EPOLLOUT.bits()
+                if item_rdy.events & epoll::Events::EPOLLOUT.bits()
                     == epoll::Events::EPOLLOUT.bits()
                     && !wire::write_buffer(&mut self.s, &mut wb)?
                     && wb.is_empty()

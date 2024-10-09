@@ -56,6 +56,7 @@ pub fn write_stream_config(stream_id: &str, cfg: &StreamConfig) -> Result<()> {
         .read(false)
         .write(true)
         .create(true)
+        .truncate(true)
         .open(p)?;
     let toml = toml::to_string(cfg).unwrap();
     output.write_all(toml.as_bytes())?;

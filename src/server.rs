@@ -24,7 +24,7 @@ pub struct Server {
     listener: Box<dyn ipc::Listening>,
     signalfd: SignalFd,
     pub exit: Arc<AtomicBool>,
-    ipc_dir: Option<TempDir>,
+    _ipc_dir: Option<TempDir>,
 }
 
 struct Client {
@@ -84,7 +84,7 @@ impl Server {
                 listener,
                 signalfd: sfd,
                 exit: Arc::new(AtomicBool::new(false)),
-                ipc_dir,
+                _ipc_dir: ipc_dir,
             },
             c_path,
         ))
@@ -116,8 +116,7 @@ impl Server {
                     }
                     wire::Rpc::PackReq(id, hash, data) => {
                         let hash256 = bytes_to_hash256(&hash);
-                        let mut iov = IoVec::new();
-                        iov.push(&data[..]);
+                        let iov: IoVec = vec![&data[..]];
                         //println!("packing data from client {} {:?} {}", id, hash, data.len());
                         let new_entry =
                             self.db.add_data_entry(*hash256, &iov, data.len() as u64)?;
@@ -187,9 +186,9 @@ impl Server {
             let rdy = epoll::wait(event_fd, 2, &mut events)?;
             let mut end = false;
 
-            for i in 0..rdy {
-                if events[i].events == epoll::Events::EPOLLIN.bits()
-                    && events[i].data == listen_fd as u64
+            for item_rdy in events.iter().take(rdy) {
+                if item_rdy.events == epoll::Events::EPOLLIN.bits()
+                    && item_rdy.data == listen_fd as u64
                 {
                     let (new_client, addr) = self.listener.accept()?;
                     println!("We accepted a connection from {}", addr);
@@ -201,19 +200,19 @@ impl Server {
                 }
 
                 //if events[i].events == epoll::Events::EPOLLIN.bits() && events[i].data == sfd_fd as u64
-                if events[i].data == sfd_fd as u64 {
+                if item_rdy.data == sfd_fd as u64 {
                     eprintln!("SIGINT, exiting!");
                     end = true;
                     break;
                 }
 
-                if events[i].events & epoll::Events::EPOLLERR.bits()
+                if item_rdy.events & epoll::Events::EPOLLERR.bits()
                     == epoll::Events::EPOLLERR.bits()
-                    || events[i].events & epoll::Events::EPOLLHUP.bits()
+                    || item_rdy.events & epoll::Events::EPOLLHUP.bits()
                         == epoll::Events::EPOLLHUP.bits()
                 {
                     println!("We lost a client!");
-                    let fd_to_remove = events[i].data as i32;
+                    let fd_to_remove = item_rdy.data as i32;
                     event.data = fd_to_remove as u64;
                     epoll::ctl(
                         event_fd,
@@ -223,11 +222,11 @@ impl Server {
                     )?;
 
                     clients.remove(&fd_to_remove.clone());
-                } else if events[i].events & epoll::Events::EPOLLIN.bits()
+                } else if item_rdy.events & epoll::Events::EPOLLIN.bits()
                     == epoll::Events::EPOLLIN.bits()
-                    && events[i].data != listen_fd as u64
+                    && item_rdy.data != listen_fd as u64
                 {
-                    let fd: i32 = events[i].data as i32;
+                    let fd: i32 = item_rdy.data as i32;
                     let s = clients.get_mut(&fd).unwrap();
 
                     let result = self.process_read(s);
@@ -251,11 +250,11 @@ impl Server {
                     }
                 }
 
-                if events[i].events & epoll::Events::EPOLLOUT.bits()
+                if item_rdy.events & epoll::Events::EPOLLOUT.bits()
                     == epoll::Events::EPOLLOUT.bits()
                 {
                     // We only get here if we got an would block on a write before
-                    let fd: i32 = events[i].data as i32;
+                    let fd: i32 = item_rdy.data as i32;
                     let c = clients.get_mut(&fd).unwrap();
 
                     if !wire::write_buffer(&mut c.c, &mut c.wb)? && c.wb.is_empty() {
