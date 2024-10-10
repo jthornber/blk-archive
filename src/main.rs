@@ -60,7 +60,6 @@ fn main_() -> Result<()> {
 
     let matches = command!()
         .arg(json)
-        .arg(client)
         .propagate_version(true)
         .subcommand_required(true)
         .arg_required_else_help(true)
@@ -131,6 +130,7 @@ fn main_() -> Result<()> {
         .subcommand(
             Command::new("send")
                 .about("packs a stream into a remote archive")
+                .arg(client.clone())
                 .arg(
                     Arg::new("INPUT")
                         .help("Specify a device or file to archive")
