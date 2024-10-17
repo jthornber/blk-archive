@@ -20,6 +20,7 @@ use crate::run_iter::*;
 use crate::slab::*;
 use crate::stream;
 use crate::stream::*;
+use crate::stream_meta;
 use crate::thin_metadata::*;
 
 //-----------------------------------------
@@ -473,7 +474,7 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
         u.unpack(&report)
     } else {
         // Check the size matches the stream size.
-        let stream_cfg = config::read_stream_config(stream)?;
+        let stream_cfg = stream_meta::read_stream_config(stream)?;
         let stream_size = stream_cfg.size;
         let output_size = thinp::file_utils::file_size(output_file)?;
         if output_size != stream_size {

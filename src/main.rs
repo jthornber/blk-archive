@@ -53,7 +53,7 @@ fn main_() -> Result<()> {
 
     let client = Arg::new("CLIENT")
         .help("Run in client mode")
-        .required(false)
+        .required(true)
         .long("client")
         .short('c')
         .value_name("CLIENT");
@@ -193,23 +193,16 @@ fn main_() -> Result<()> {
         json: matches.get_flag("JSON"),
     });
 
-    let client_connect = {
-        if matches.contains_id("CLIENT") {
-            Some(matches.get_one::<String>("CLIENT").unwrap().clone())
-        } else {
-            None
-        }
-    };
-
     match matches.subcommand() {
         Some(("create", sub_matches)) => {
             create::run(sub_matches, report)?;
         }
         Some(("send", sub_matches)) => {
-            pack::run(sub_matches, output, client_connect)?;
+            let client = Some(sub_matches.get_one::<String>("CLIENT").unwrap().clone());
+            pack::run(sub_matches, output, client)?;
         }
         Some(("pack", sub_matches)) => {
-            pack::run(sub_matches, output, client_connect)?;
+            pack::run(sub_matches, output, None)?;
         }
         Some(("unpack", sub_matches)) => {
             unpack::run_unpack(sub_matches, report)?;
