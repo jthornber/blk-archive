@@ -157,11 +157,16 @@ impl Db {
     }
 
     // Returns the (slab, entry) for the newly added entry
-    pub fn add_data_entry(&mut self, h: Hash256, iov: &IoVec, len: u64) -> Result<(u32, u32)> {
+    pub fn add_data_entry(
+        &mut self,
+        h: Hash256,
+        iov: &IoVec,
+        len: u64,
+    ) -> Result<((u32, u32), u64)> {
         // There is an inherent race condition between checking if we have it and adding it,
         // check before we add when this functionality ends up on a server side.
         if let Some(location) = self.is_known(&h)? {
-            return Ok(location);
+            return Ok((location, 0));
         }
 
         // Add entry to cuckoo filter, not checking return value as we could get indication that
@@ -175,7 +180,7 @@ impl Db {
         self.current_entries += 1;
         self.current_index.insert(h, len as usize);
         self.maybe_complete_data(SLAB_SIZE_TARGET)?;
-        Ok(r)
+        Ok((r, len))
     }
 
     // Have we seen this hash before, if we have we will return the slab and offset

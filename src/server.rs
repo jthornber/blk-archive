@@ -18,6 +18,7 @@ use tempfile::TempDir;
 use crate::iovec::*;
 use crate::ipc;
 use crate::ipc::*;
+use crate::stream_meta;
 
 pub struct Server {
     db: Db,
@@ -124,6 +125,32 @@ impl Server {
                             rc = wire::IORequest::WouldBlock;
                         }
                     }
+                    wire::Rpc::StreamSend(id, sm, stream_bytes, stream_offsets) => {
+                        let packed_path = sm.source_path.clone();
+                        let write_rc =
+                            stream_meta::package_unwrap(sm, stream_bytes, stream_offsets);
+                        match write_rc {
+                            Ok(_) => {
+                                if wire::write(
+                                    &mut c.c,
+                                    wire::Rpc::StreamSendComplete(id),
+                                    &mut c.wb,
+                                )? {
+                                    rc = wire::IORequest::WouldBlock;
+                                }
+                            }
+                            Err(e) => {
+                                let message = format!(
+                                    "During stream write id={} for stream = {} we encountered {}",
+                                    id, packed_path, e
+                                );
+                                if wire::write(&mut c.c, wire::Rpc::Error(id, message), &mut c.wb)?
+                                {
+                                    rc = wire::IORequest::WouldBlock;
+                                }
+                            }
+                        }
+                    }
                     _ => {
                         eprint!("What are we not handling! {:?}", p);
                     }
@@ -131,21 +158,18 @@ impl Server {
             }
         } else {
             // No more data to read, did we process anything?
-            //println!("Server, nothing to read, why?");
         }
 
-        if !found_it.is_empty() {
-            //println!("We are writing back found for {}", found_it.len());
-            if wire::write(&mut c.c, wire::Rpc::HaveDataRespYes(found_it), &mut c.wb)? {
-                rc = wire::IORequest::WouldBlock;
-            }
+        if !found_it.is_empty()
+            && wire::write(&mut c.c, wire::Rpc::HaveDataRespYes(found_it), &mut c.wb)?
+        {
+            rc = wire::IORequest::WouldBlock;
         }
 
-        if !data_needed.is_empty() {
-            //println!("We are writing back data needed for {}", data_needed.len());
-            if wire::write(&mut c.c, wire::Rpc::HaveDataRespNo(data_needed), &mut c.wb)? {
-                rc = wire::IORequest::WouldBlock;
-            }
+        if !data_needed.is_empty()
+            && wire::write(&mut c.c, wire::Rpc::HaveDataRespNo(data_needed), &mut c.wb)?
+        {
+            rc = wire::IORequest::WouldBlock;
         }
 
         Ok(rc)
@@ -157,7 +181,6 @@ impl Server {
         let mut clients = HashMap::<i32, Client>::new();
 
         let listen_fd = self.listener.as_raw_fd();
-        println!("listening fd = {}", listen_fd);
 
         let mut event: epoll::Event = epoll::Event {
             events: epoll::Events::EPOLLIN.bits(),

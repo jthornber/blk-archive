@@ -4,6 +4,7 @@ use std::fmt::Debug;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
+use crate::handshake::HandShake;
 use crate::ipc;
 use crate::ipc::*;
 use crate::stream::*;
@@ -12,14 +13,17 @@ use crate::wire;
 
 pub struct Client {
     s: Box<dyn ReadAndWrite>,
-    inflight: HashMap<u64, Data>, // Items waiting to complete
+    data_inflight: HashMap<u64, Data>, // Data items waiting to complete
+    cmds_inflight: HashMap<u64, HandShake>,
     so: Arc<Mutex<StreamOrder>>,
     req_q: Arc<Mutex<ClientRequests>>,
 }
 
 pub struct ClientRequests {
-    requests: VecDeque<Data>,
+    data: VecDeque<Data>,
+    control: VecDeque<SyncCommand>,
     pub dead_thread: bool,
+    pub data_written: u64,
 }
 
 pub struct Data {
@@ -27,6 +31,25 @@ pub struct Data {
     pub h: [u8; 32],
     pub len: u64,
     pub d: Option<Vec<u8>>,
+}
+
+pub enum Command {
+    Cmd(wire::Rpc),
+    Exit,
+}
+
+pub struct SyncCommand {
+    pub c: Command,
+    pub h: HandShake,
+}
+
+impl SyncCommand {
+    pub fn new(c: Command) -> Self {
+        SyncCommand {
+            c,
+            h: HandShake::new(),
+        }
+    }
 }
 
 impl Debug for Data {
@@ -53,17 +76,27 @@ pub const END: Data = Data {
 impl ClientRequests {
     fn new() -> Result<Self> {
         Ok(Self {
-            requests: VecDeque::new(),
+            data: VecDeque::new(),
+            control: VecDeque::new(),
             dead_thread: false,
+            data_written: 0,
         })
     }
 
     pub fn handle_data(&mut self, d: Data) {
-        self.requests.push_back(d);
+        self.data.push_back(d);
     }
 
     pub fn remove(&mut self) -> Option<Data> {
-        self.requests.pop_front()
+        self.data.pop_front()
+    }
+
+    pub fn handle_control(&mut self, c: SyncCommand) {
+        self.control.push_back(c);
+    }
+
+    pub fn remove_control(&mut self) -> Option<SyncCommand> {
+        self.control.pop_front()
     }
 }
 
@@ -73,7 +106,8 @@ impl Client {
 
         Ok(Self {
             s,
-            inflight: HashMap::new(),
+            data_inflight: HashMap::new(),
+            cmds_inflight: HashMap::new(),
             so,
             req_q: Arc::new(Mutex::new(ClientRequests::new()?)),
         })
@@ -87,13 +121,11 @@ impl Client {
         let mut should_exit = false;
         while let Some(e) = req.remove() {
             if e.id == u64::MAX {
-                println!("We have been told that we are done processing entries for stream");
                 should_exit = true;
                 rc = wire::IORequest::Exit;
             } else {
-                //println!("entry add: {} - {:?} - {:?}", e.id, e.h, e);
                 entries.push((e.id, e.h));
-                self.inflight.insert(e.id, e);
+                self.data_inflight.insert(e.id, e);
             }
         }
         if !entries.is_empty() {
@@ -104,6 +136,21 @@ impl Client {
 
             if should_exit {
                 self.s.flush()?;
+            }
+        }
+
+        while let Some(e) = req.remove_control() {
+            match e.c {
+                Command::Cmd(rpc) => {
+                    self.cmds_inflight.insert(0, e.h.clone());
+                    if wire::write(&mut self.s, rpc, w_b)? {
+                        rc = wire::IORequest::WouldBlock;
+                    }
+                }
+                Command::Exit => {
+                    rc = wire::IORequest::Exit;
+                    e.h.done();
+                }
             }
         }
 
@@ -124,14 +171,12 @@ impl Client {
                         // Server already had data, build the stream
                         let mut stream = self.so.lock().unwrap();
                         for (id, location) in y {
-                            //println!("server already has {} - {}:{}", id, location.0, location.1);
-
                             let e = MapEntry::Data {
                                 slab: location.0,
                                 offset: location.1,
                                 nr_entries: 1,
                             };
-                            let removed = self.inflight.remove(&id).unwrap();
+                            let removed = self.data_inflight.remove(&id).unwrap();
                             let len = removed.len;
                             stream.entry_complete(id, e, len)?;
                         }
@@ -139,10 +184,9 @@ impl Client {
                     wire::Rpc::HaveDataRespNo(to_send) => {
                         // Server does not have data, lets send it
                         for id in to_send {
-                            if let Some(data) = self.inflight.get_mut(&id) {
+                            if let Some(data) = self.data_inflight.get_mut(&id) {
                                 // We remove the data from the structure to hopefully save some
                                 // data sitting in memory
-                                //println!("in HaveDataRespNo: {:?}", data);
                                 let d = data.d.take().unwrap();
                                 let pack_req = wire::Rpc::PackReq(data.id, data.h, d);
                                 if wire::write(&mut self.s, pack_req, w_b)? {
@@ -153,17 +197,20 @@ impl Client {
                             }
                         }
                     }
-                    wire::Rpc::PackResp(id, (slab, offset)) => {
-                        //println!("wire::Rpc::PackResp: {} - {}:{}", id, slab, offset);
+                    wire::Rpc::PackResp(id, ((slab, offset), wrote)) => {
+                        self.req_q.lock().unwrap().data_written += wrote;
                         let mut stream = self.so.lock().unwrap();
                         let e = MapEntry::Data {
                             slab,
                             offset,
                             nr_entries: 1,
                         };
-                        let removed = self.inflight.remove(&id).unwrap();
+                        let removed = self.data_inflight.remove(&id).unwrap();
                         let len = removed.len;
                         stream.entry_complete(id, e, len)?;
+                    }
+                    wire::Rpc::StreamSendComplete(id) => {
+                        self.cmds_inflight.remove(&id).unwrap().done();
                     }
                     _ => {
                         eprint!("What are we not handling! {:?}", p);
@@ -217,7 +264,6 @@ impl Client {
                         }
                         Ok(r) => {
                             if r == wire::IORequest::WouldBlock {
-                                //println!("Write would block with {} bytes to send", wb.len());
                                 event.events |= epoll::Events::EPOLLOUT.bits();
                                 epoll::ctl(
                                     event_fd,

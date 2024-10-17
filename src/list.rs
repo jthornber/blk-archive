@@ -9,8 +9,8 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::config;
 use crate::output::Output;
+use crate::stream_meta;
 
 //-----------------------------------------
 
@@ -36,8 +36,8 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
 
     let mut streams = Vec::new();
     for id in stream_ids {
-        let cfg = config::read_stream_config(&id)?;
-        streams.push((id, config::to_date_time(&cfg.pack_time), cfg));
+        let cfg = stream_meta::read_stream_config(&id)?;
+        streams.push((id, stream_meta::to_date_time(&cfg.pack_time), cfg));
     }
 
     streams.sort_by(|l, r| l.1.partial_cmp(&r.1).unwrap());

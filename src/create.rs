@@ -91,6 +91,7 @@ pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     create_sub_dir(dir, "data")?;
     create_sub_dir(dir, "streams")?;
     create_sub_dir(dir, "indexes")?;
+    create_sub_dir(dir, "tmp")?;
 
     std::env::set_current_dir(dir)?;
 

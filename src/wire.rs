@@ -7,6 +7,7 @@ use std::io::Write;
 use std::net::TcpStream;
 
 use crate::ipc::*;
+use crate::stream_meta;
 
 const CONFIG: config::Configuration<config::BigEndian, config::Fixint> = config::standard()
     .with_fixed_int_encoding()
@@ -21,9 +22,9 @@ struct Packet {
     payload_crc: u32,
 }
 
-#[derive(Encode, Decode, PartialEq, Debug)]
+#[derive(Encode, Decode, Debug, PartialEq)]
 pub enum Rpc {
-    Error(u32, String),
+    Error(u64, String),
 
     // Do we have the data?
     HaveDataReq(Vec<(u64, [u8; 32])>), // One of more tuples of (request id, hash signature bytes)
@@ -32,7 +33,10 @@ pub enum Rpc {
 
     // Send the data we don't have
     PackReq(u64, [u8; 32], Vec<u8>), // Request id, stream sequence number, hash signature, data
-    PackResp(u64, (u32, u32)), // The response to the Pack is the request id and the (slab #, slab offset)
+    PackResp(u64, ((u32, u32), u64)), // The response to the Pack is the request id and the (slab #, slab offset)
+
+    StreamSend(u64, stream_meta::StreamMetaInfo, Vec<u8>, Vec<u8>),
+    StreamSendComplete(u64),
 
     UnPackReq(u64, String), // stream id, Request id (returned from server, so client can correlate)
     UnPackResp(u64, Vec<u8>), // Request id, data

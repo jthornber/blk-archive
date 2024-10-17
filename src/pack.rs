@@ -1,10 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::prelude::*;
 use clap::ArgMatches;
-use rand::prelude::*;
-use rand_chacha::ChaCha20Rng;
-use serde_json::json;
-use serde_json::to_string_pretty;
 //use size_display::Size;
 use std::boxed::Box;
 use std::env;
@@ -17,9 +13,9 @@ use std::time::Duration;
 
 use crate::chunkers::*;
 use crate::client::*;
-use crate::config;
 use crate::content_sensitive_splitter::*;
 use crate::db::*;
+use crate::handshake::HandShake;
 use crate::hash::*;
 use crate::iovec::*;
 use crate::output::Output;
@@ -29,6 +25,7 @@ use crate::slab::*;
 use crate::splitter::*;
 use crate::stream::*;
 use crate::stream_builders::*;
+use crate::stream_meta;
 use crate::stream_orderer::*;
 use crate::thin_metadata::*;
 
@@ -44,28 +41,27 @@ enum Tp {
 
 struct DedupHandler {
     nr_chunks: usize,
-
-    stream_file: SlabFile,
     stream_buf: Vec<u8>,
-
+    stream_meta: stream_meta::StreamMeta,
     mapping_builder: Arc<Mutex<dyn Builder>>,
-
-    _data_written: u64,
-    mapped_size: u64,
-    fill_size: u64,
+    pub stats: stream_meta::StreamStats,
     so: Arc<Mutex<StreamOrder>>,
     transport: Tp,
 }
 
 impl DedupHandler {
     fn new(
-        stream_file: SlabFile,
+        names: stream_meta::StreamNames,
+        stats: stream_meta::StreamStats,
+        thin_id: Option<u32>,
         mapping_builder: Arc<Mutex<dyn Builder>>,
         server_addr: Option<String>,
     ) -> Result<Self> {
         let so = Arc::new(Mutex::new(StreamOrder::new()?));
+        let mut sending = false;
 
         let tp: Tp = if let Some(s_conn) = server_addr {
+            sending = true;
             println!("Client is connecting to server using {}", s_conn);
             let mut client = Client::new(s_conn, so.clone())?;
             let rq = client.get_request_queue();
@@ -78,15 +74,15 @@ impl DedupHandler {
             Tp::Local(Db::new()?)
         };
 
+        // Create the stream meta and store
+        let stream_meta = stream_meta::StreamMeta::new(names, thin_id, sending)?;
+
         Ok(Self {
             nr_chunks: 0,
-            stream_file,
+            stream_meta,
             stream_buf: Vec::new(),
             mapping_builder,
-            // Stats
-            _data_written: 0,
-            mapped_size: 0,
-            fill_size: 0,
+            stats,
             so,
             transport: tp,
         })
@@ -114,7 +110,7 @@ impl DedupHandler {
 
     fn maybe_complete_stream(&mut self) -> Result<()> {
         complete_slab(
-            &mut self.stream_file,
+            &mut self.stream_meta.stream_file,
             &mut self.stream_buf,
             SLAB_SIZE_TARGET,
         )?;
@@ -161,10 +157,12 @@ impl IoVecHandler for DedupHandler {
     fn handle_data(&mut self, iov: &IoVec) -> Result<()> {
         self.nr_chunks += 1;
         let len = iov_len_(iov);
-        self.mapped_size += len;
+
+        // TODO: Understand why the code was incrementing mapped size here previously
+        //self.stats.mapped_size += len;
 
         if let Some(first_byte) = all_same(iov) {
-            self.fill_size += len;
+            self.stats.fill_size += len;
             self.enqueue_entry(
                 MapEntry::Fill {
                     byte: first_byte,
@@ -177,7 +175,7 @@ impl IoVecHandler for DedupHandler {
                 Tp::Local(ref mut db) => {
                     let len = iov_len_(iov);
                     let h = hash_256_iov(iov);
-                    let (slab, offset) = db.add_data_entry(h, iov, len)?;
+                    let ((slab, offset), len_written) = db.add_data_entry(h, iov, len)?;
                     self.enqueue_entry(
                         MapEntry::Data {
                             slab,
@@ -186,6 +184,7 @@ impl IoVecHandler for DedupHandler {
                         },
                         len,
                     )?;
+                    self.stats.written += len_written;
                 }
                 Tp::Remote(ref rq, _) => {
                     let h = hash_256_iov(iov);
@@ -210,27 +209,55 @@ impl IoVecHandler for DedupHandler {
         // We need to process everything that is outstanding which could be
         // quite a bit
         // TODO: Make this handle errors, like if we end up hanging forever
+        let h: HandShake;
         println!("IoVecHandler::complete, waiting for stream order to complete!");
 
         loop {
             if !self.process_stream()? {
+                print!(".");
                 thread::sleep(Duration::from_millis(100));
             } else {
                 break;
             }
         }
 
+        println!("stream is complete!");
         let mut builder = self.mapping_builder.lock().unwrap();
         builder.complete(&mut self.stream_buf)?;
         drop(builder);
 
-        complete_slab(&mut self.stream_file, &mut self.stream_buf, 0)?;
-        self.stream_file.close()?;
+        complete_slab(&mut self.stream_meta.stream_file, &mut self.stream_buf, 0)?;
+        self.stream_meta.stream_file.close()?;
+
+        // The stream file is done, lets put the file in the correct place which could be the
+        // correct local archive directory or remote archive directory.
 
         match self.transport {
-            Tp::Local(ref _db) => {}
+            Tp::Local(ref _db) => {
+                self.stream_meta.complete(&self.stats)?;
+            }
             Tp::Remote(ref mut rq, ref mut handle) => {
-                rq.lock().unwrap().handle_data(END);
+                // Send the stream file to the server and wait for it to complete
+                {
+                    let mut req = rq.lock().unwrap();
+                    self.stats.written = req.data_written;
+
+                    // Send the stream metadata & stream itself to the server side
+                    let to_send = self.stream_meta.package(self.stats.clone())?;
+                    let cmd = SyncCommand::new(Command::Cmd(to_send));
+                    h = cmd.h.clone();
+                    req.handle_control(cmd);
+                }
+
+                // You need to make sure we are not holding a lock when we call wait,
+                // this is achieved by using different scopes.
+                h.wait();
+
+                //TODO: Change this to use the command queue instead of data queue
+                {
+                    let mut req = rq.lock().unwrap();
+                    req.handle_data(END);
+                }
 
                 if let Some(worker) = handle.take() {
                     let rc = worker.join();
@@ -245,87 +272,50 @@ impl IoVecHandler for DedupHandler {
 
 //-----------------------------------------
 
-// Assumes we've chdir'd to the archive
-fn new_stream_path_(rng: &mut ChaCha20Rng) -> Result<Option<(String, PathBuf)>> {
-    // choose a random number
-    let n: u64 = rng.gen();
-
-    // turn this into a path
-    let name = format!("{:>016x}", n);
-    let path: PathBuf = ["streams", &name].iter().collect();
-
-    if path.exists() {
-        Ok(None)
-    } else {
-        Ok(Some((name, path)))
-    }
-}
-
-fn new_stream_path() -> Result<(String, PathBuf)> {
-    let mut rng = ChaCha20Rng::from_entropy();
-    loop {
-        if let Some(r) = new_stream_path_(&mut rng)? {
-            return Ok(r);
-        }
-    }
-
-    // Can't get here
-}
-
 struct Packer {
     output: Arc<Output>,
-    input_path: PathBuf,
-    stream_name: String,
+    names: stream_meta::StreamNames,
     it: Box<dyn Iterator<Item = Result<Chunk>>>,
-    input_size: u64,
     mapping_builder: Arc<Mutex<dyn Builder>>,
-    mapped_size: u64,
     block_size: usize,
     thin_id: Option<u32>,
+    stats: stream_meta::StreamStats,
 }
 
 impl Packer {
     #[allow(clippy::too_many_arguments)]
     fn new(
         output: Arc<Output>,
-        input_path: PathBuf,
-        stream_name: String,
+        names: stream_meta::StreamNames,
         it: Box<dyn Iterator<Item = Result<Chunk>>>,
-        input_size: u64,
+        stats: stream_meta::StreamStats,
         mapping_builder: Arc<Mutex<dyn Builder>>,
-        mapped_size: u64,
         block_size: usize,
         thin_id: Option<u32>,
     ) -> Self {
         Self {
             output,
-            input_path,
-            stream_name,
+            names,
             it,
-            input_size,
             mapping_builder,
-            mapped_size,
             block_size,
             thin_id,
+            stats,
         }
     }
 
     fn pack(mut self, server_addr: Option<String>) -> Result<()> {
         let mut splitter = ContentSensitiveSplitter::new(self.block_size as u32);
 
-        let (stream_id, mut stream_path) = new_stream_path()?;
+        let mapped_size = self.stats.mapped_size;
 
-        std::fs::create_dir(stream_path.clone())?;
-        stream_path.push("stream");
-
-        let stream_file = SlabFileBuilder::create(stream_path)
-            .queue_depth(16)
-            .compressed(true)
-            .build()
-            .context("couldn't open stream slab file")?;
-
-        let mut handler =
-            DedupHandler::new(stream_file, self.mapping_builder.clone(), server_addr)?;
+        let mut handler = DedupHandler::new(
+            self.names,
+            self.stats,
+            self.thin_id,
+            self.mapping_builder.clone(),
+            server_addr,
+        )?;
 
         // TODO handle this
         //handler.ensure_extra_capacity(self.mapped_size as usize / self.block_size)?;
@@ -342,7 +332,7 @@ impl Packer {
                     total_read += len as u64;
                     self.output
                         .report
-                        .progress(((100 * total_read) / self.mapped_size) as u8);
+                        .progress(((100 * total_read) / mapped_size) as u8);
                 }
                 Chunk::Unmapped(len) => {
                     assert!(len > 0);
@@ -369,15 +359,15 @@ impl Packer {
         //let data_written = db_sizes.0 - data_size;
         //let hashes_written = db_sizes.1 - hashes_size;
 
-        let stream_written = handler.stream_file.get_file_size();
+        //let stream_written = handler.stream_file.get_file_size();
         //let ratio =
         //    (self.mapped_size as f64) / ((data_written + hashes_written + stream_written) as f64);
 
         if self.output.json {
             // Should all the values simply be added to the json too?  We can always add entries, but
             // we can never take any away to maintains backwards compatibility with JSON consumers.
-            let result = json!({ "stream_id": stream_id });
-            println!("{}", to_string_pretty(&result).unwrap());
+            //let result = json!({ "stream_id": stream_id });
+            //println!("{}", to_string_pretty(&result).unwrap());
         } else {
             /*
             self.output
@@ -424,6 +414,7 @@ impl Packer {
         }
 
         // write the stream config
+        /*
         let cfg = config::StreamConfig {
             name: Some(self.stream_name.to_string()),
             source_path: self.input_path.display().to_string(),
@@ -434,6 +425,7 @@ impl Packer {
             thin_id: self.thin_id,
         };
         config::write_stream_config(&stream_id, &cfg)?;
+        */
 
         Ok(())
     }
@@ -441,40 +433,38 @@ impl Packer {
 
 //-----------------------------------------
 
-fn thick_packer(output: Arc<Output>, input_file: &Path, input_name: String) -> Result<Packer> {
-    let input_size = thinp::file_utils::file_size(input_file)?;
+fn thick_packer(output: Arc<Output>, names: stream_meta::StreamNames) -> Result<Packer> {
+    let mut stats = stream_meta::StreamStats::zero();
 
-    let mapped_size = input_size;
-    let input_iter = Box::new(ThickChunker::new(input_file, 16 * 1024 * 1024)?);
+    stats.size = thinp::file_utils::file_size(names.input_file.clone())?;
+    stats.mapped_size = stats.size;
+
+    let input_iter = Box::new(ThickChunker::new(
+        &names.input_file.clone(),
+        16 * 1024 * 1024,
+    )?);
     let thin_id = None;
     let builder = Arc::new(Mutex::new(MappingBuilder::default()));
 
     Ok(Packer::new(
-        output,
-        input_file.to_path_buf(),
-        input_name,
-        input_iter,
-        input_size,
-        builder,
-        mapped_size,
-        4096,
-        thin_id,
+        output, names, input_iter, stats, builder, 4096, thin_id,
     ))
 }
 
-fn thin_packer(output: Arc<Output>, input_file: &Path, input_name: String) -> Result<Packer> {
+fn thin_packer(output: Arc<Output>, names: stream_meta::StreamNames) -> Result<Packer> {
     let input = OpenOptions::new()
         .read(true)
         .write(false)
-        .open(input_file)
+        .open(names.input_file.clone())
         .context("couldn't open input file/dev")?;
-    let input_size = thinp::file_utils::file_size(input_file)?;
+    let mut stats = stream_meta::StreamStats::zero();
+    stats.size = thinp::file_utils::file_size(names.input_file.clone())?;
 
-    let mappings = read_thin_mappings(input_file)?;
-    let mapped_size = mappings.provisioned_blocks.len() * mappings.data_block_size as u64 * 512;
+    let mappings = read_thin_mappings(names.input_file.clone())?;
+    stats.mapped_size = mappings.provisioned_blocks.len() * mappings.data_block_size as u64 * 512;
     let run_iter = RunIter::new(
         mappings.provisioned_blocks,
-        (input_size / (mappings.data_block_size as u64 * 512)) as u32,
+        (stats.size / (mappings.data_block_size as u64 * 512)) as u32,
     );
     let input_iter = Box::new(ThinChunker::new(
         input,
@@ -486,17 +476,9 @@ fn thin_packer(output: Arc<Output>, input_file: &Path, input_name: String) -> Re
 
     output
         .report
-        .set_title(&format!("Packing {} ...", input_file.display()));
+        .set_title(&format!("Packing {} ...", names.input_file.display()));
     Ok(Packer::new(
-        output,
-        input_file.to_path_buf(),
-        input_name,
-        input_iter,
-        input_size,
-        builder,
-        mapped_size,
-        4096,
-        thin_id,
+        output, names, input_iter, stats, builder, 4096, thin_id,
     ))
 }
 
@@ -511,8 +493,7 @@ fn open_thin_stream(stream_id: &str) -> Result<SlabFile> {
 #[allow(dead_code)]
 fn thin_delta_packer(
     output: Arc<Output>,
-    input_file: &Path,
-    input_name: String,
+    names: stream_meta::StreamNames,
     delta_device: &Path,
     delta_id: &str,
     hashes_file: Arc<Mutex<SlabFile>>,
@@ -520,18 +501,20 @@ fn thin_delta_packer(
     let input = OpenOptions::new()
         .read(true)
         .write(false)
-        .open(input_file)
+        .open(names.input_file.clone())
         .context("couldn't open input file/dev")?;
-    let input_size = thinp::file_utils::file_size(input_file)?;
 
-    let mappings = read_thin_delta(delta_device, input_file)?;
-    let old_config = config::read_stream_config(delta_id)?;
-    let mapped_size = old_config.mapped_size;
+    let mut stats = stream_meta::StreamStats::zero();
+    stats.size = thinp::file_utils::file_size(names.input_file.clone())?;
+
+    let mappings = read_thin_delta(delta_device, &names.input_file.clone())?;
+    let old_config = stream_meta::read_stream_config(delta_id)?;
+    stats.mapped_size = old_config.mapped_size;
 
     let run_iter = DualIter::new(
         mappings.additions,
         mappings.removals,
-        (input_size / (mappings.data_block_size as u64 * 512)) as u32,
+        (stats.size / (mappings.data_block_size as u64 * 512)) as u32,
     );
 
     let input_iter = Box::new(DeltaChunker::new(
@@ -547,17 +530,9 @@ fn thin_delta_packer(
 
     output
         .report
-        .set_title(&format!("Packing {} ...", input_file.display()));
+        .set_title(&format!("Packing {} ...", names.input_file.display()));
     Ok(Packer::new(
-        output,
-        input_file.to_path_buf(),
-        input_name,
-        input_iter,
-        input_size,
-        builder,
-        mapped_size,
-        4096,
-        thin_id,
+        output, names, input_iter, stats, builder, 4096, thin_id,
     ))
 }
 
@@ -584,8 +559,12 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>, client: Option<String>) ->
     // TODO we need to remove this and move it to the server side.  Replace with creating a temp.
     // directory and stream file and when successfully done, we'll then transfer that to the server
     // which may or may not be the same machine
-    let archive_dir = Path::new(matches.get_one::<String>("ARCHIVE").unwrap()).canonicalize()?;
-    env::set_current_dir(archive_dir)?;
+
+    if client.is_none() {
+        let archive_dir =
+            Path::new(matches.get_one::<String>("ARCHIVE").unwrap()).canonicalize()?;
+        env::set_current_dir(archive_dir)?;
+    }
 
     let input_file = Path::new(matches.get_one::<String>("INPUT").unwrap());
     let input_name = input_file
@@ -595,6 +574,11 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>, client: Option<String>) ->
         .unwrap()
         .to_string();
     let input_file = Path::new(matches.get_one::<String>("INPUT").unwrap()).canonicalize()?;
+
+    let names = stream_meta::StreamNames {
+        name: input_name,
+        input_file: input_file.clone(),
+    };
 
     output
         .report
@@ -611,9 +595,9 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>, client: Option<String>) ->
         hashes_file.clone(),
     )? */
     let packer = if is_thin_device(&input_file)? {
-        thin_packer(output.clone(), &input_file, input_name)?
+        thin_packer(output.clone(), names)?
     } else {
-        thick_packer(output.clone(), &input_file, input_name)?
+        thick_packer(output.clone(), names)?
     };
 
     output
