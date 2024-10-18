@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::ArgAction;
-use clap::{command, Arg, ArgMatches, Command};
+use clap::{command, Arg, ArgGroup, ArgMatches, Command};
 use std::env;
 use std::path::Path;
 use std::process::exit;
@@ -51,12 +51,12 @@ fn main_() -> Result<()> {
         .short('j')
         .action(ArgAction::SetTrue);
 
-    let client = Arg::new("CLIENT")
-        .help("Run in client mode")
+    let server = Arg::new("SERVER")
+        .help("Server connection information")
         .required(true)
-        .long("client")
-        .short('c')
-        .value_name("CLIENT");
+        .long("server")
+        .short('s')
+        .value_name("SERVER");
 
     let matches = command!()
         .arg(json)
@@ -130,7 +130,7 @@ fn main_() -> Result<()> {
         .subcommand(
             Command::new("send")
                 .about("packs a stream into a remote archive")
-                .arg(client.clone())
+                .arg(server.clone())
                 .arg(
                     Arg::new("INPUT")
                         .help("Specify a device or file to archive")
@@ -171,13 +171,33 @@ fn main_() -> Result<()> {
         .subcommand(
             Command::new("dump-stream")
                 .about("dumps stream instructions (development tool)")
-                .arg(archive_arg.clone())
-                .arg(stream_arg.clone()),
+                .arg(archive_arg.clone()),
         )
         .subcommand(
             Command::new("list")
+                // Note: We can't use the existing archive etc. as they CANNOT have required=true
+                // in them, otherwise you panic at runtime!
                 .about("lists the streams in the archive")
-                .arg(archive_arg.clone()),
+                .arg(
+                    Arg::new("LIST_ARCHIVE")
+                        .help("Specify archive directory")
+                        .long("archive")
+                        .short('a')
+                        .value_name("ARCHIVE"),
+                )
+                .arg(
+                    Arg::new("LIST_SERVER")
+                        .help("Specify server connection information (hostname:port/ip:port)")
+                        .long("server")
+                        .short('s')
+                        .value_name("SERVER"),
+                )
+                .group(
+                    ArgGroup::new("list_exclusive_option")
+                        .arg("LIST_SERVER")
+                        .arg("LIST_ARCHIVE")
+                        .required(true),
+                ),
         )
         .subcommand(
             Command::new("server")
@@ -198,8 +218,8 @@ fn main_() -> Result<()> {
             create::run(sub_matches, report)?;
         }
         Some(("send", sub_matches)) => {
-            let client = Some(sub_matches.get_one::<String>("CLIENT").unwrap().clone());
-            pack::run(sub_matches, output, client)?;
+            let server = Some(sub_matches.get_one::<String>("SERVER").unwrap().clone());
+            pack::run(sub_matches, output, server)?;
         }
         Some(("pack", sub_matches)) => {
             pack::run(sub_matches, output, None)?;

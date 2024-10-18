@@ -83,11 +83,11 @@ pub struct StreamNames {
     pub input_file: PathBuf,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Encode, Decode, PartialEq)]
 pub struct StreamConfig {
     pub name: Option<String>,
     pub source_path: String,
-    pub pack_time: toml::value::Datetime,
+    pub pack_time: String,
     pub size: u64,        // This is raw size
     pub mapped_size: u64, // Size of data that is actually allocated, will match size for thick
     pub packed_size: u64, // size of stream + amount written to data slab, this also used to include hashes written, but that isn't simple when you have multiple clients writing to the same slab at the same time
@@ -125,7 +125,7 @@ impl StreamMeta {
         let cfg = StreamConfig {
             name: Some(self.names.name.clone()),
             source_path: self.names.input_file.to_string_lossy().into_owned(),
-            pack_time: now(),
+            pack_time: now_string(),
             size: stats.size,
             mapped_size: stats.mapped_size,
             packed_size: stats.written + stream_size, //data_written + stream_written + hashes written,
@@ -173,7 +173,7 @@ pub fn package_unwrap(
     let stream_config = StreamConfig {
         name: sm.name,
         source_path: sm.source_path,
-        pack_time: sm.pack_time.parse::<toml::value::Datetime>().unwrap(),
+        pack_time: sm.pack_time,
         size: sm.stats.size,
         mapped_size: sm.stats.mapped_size,
         packed_size: sm.stats.written + stream_file.len() as u64,
@@ -248,8 +248,8 @@ pub fn now() -> toml::value::Datetime {
     str.parse::<toml::value::Datetime>().unwrap()
 }
 
-pub fn to_date_time(t: &toml::value::Datetime) -> chrono::DateTime<FixedOffset> {
-    DateTime::parse_from_rfc3339(&t.to_string()).unwrap()
+pub fn to_date_time(t: &str) -> chrono::DateTime<FixedOffset> {
+    DateTime::parse_from_rfc3339(t).unwrap()
 }
 
 pub fn create_temp_stream_dir(non_local: bool) -> anyhow::Result<TempDir> {
@@ -272,10 +272,15 @@ pub fn create_temp_stream_dir(non_local: bool) -> anyhow::Result<TempDir> {
 //-----------------------------------------
 #[cfg(test)]
 mod stream_meta_tests {
-    use super::StreamMeta;
+    use super::{StreamMeta, StreamNames};
+    use std::path::PathBuf;
 
     #[test]
     fn simple_create() {
-        let _sm = StreamMeta::new("testing".to_string()).unwrap();
+        let sn = StreamNames {
+            name: "what".to_string(),
+            input_file: PathBuf::from("/var/what"),
+        };
+        let _sm = StreamMeta::new(sn, None, true).unwrap();
     }
 }

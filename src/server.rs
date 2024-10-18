@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::env;
 use std::os::fd::AsRawFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -18,6 +18,7 @@ use tempfile::TempDir;
 use crate::iovec::*;
 use crate::ipc;
 use crate::ipc::*;
+use crate::list::streams_get;
 use crate::stream_meta;
 
 pub struct Server {
@@ -146,6 +147,27 @@ impl Server {
                                 );
                                 if wire::write(&mut c.c, wire::Rpc::Error(id, message), &mut c.wb)?
                                 {
+                                    rc = wire::IORequest::WouldBlock;
+                                }
+                            }
+                        }
+                    }
+                    wire::Rpc::ArchiveListReq(id) => {
+                        let streams = streams_get(&PathBuf::from("./streams"));
+                        match streams {
+                            Ok(streams) => {
+                                if wire::write(
+                                    &mut c.c,
+                                    wire::Rpc::ArchiveListResp(id, streams),
+                                    &mut c.wb,
+                                )? {
+                                    rc = wire::IORequest::WouldBlock;
+                                }
+                            }
+                            Err(e) => {
+                                let message =
+                                    format!("During list::streams_get we encountered {}", e);
+                                if wire::write(&mut c.c, wire::Rpc::Error(0, message), &mut c.wb)? {
                                     rc = wire::IORequest::WouldBlock;
                                 }
                             }

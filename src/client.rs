@@ -3,7 +3,9 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
+use std::thread;
 
+use crate::handshake;
 use crate::handshake::HandShake;
 use crate::ipc;
 use crate::ipc::*;
@@ -22,6 +24,7 @@ pub struct Client {
 pub struct ClientRequests {
     data: VecDeque<Data>,
     control: VecDeque<SyncCommand>,
+    responses: VecDeque<wire::Rpc>,
     pub dead_thread: bool,
     pub data_written: u64,
 }
@@ -80,6 +83,7 @@ impl ClientRequests {
             control: VecDeque::new(),
             dead_thread: false,
             data_written: 0,
+            responses: VecDeque::new(),
         })
     }
 
@@ -97,6 +101,14 @@ impl ClientRequests {
 
     pub fn remove_control(&mut self) -> Option<SyncCommand> {
         self.control.pop_front()
+    }
+
+    pub fn response_add(&mut self, r: wire::Rpc) {
+        self.responses.push_back(r);
+    }
+
+    pub fn response_remove(&mut self) -> Option<wire::Rpc> {
+        self.responses.pop_front()
     }
 }
 
@@ -212,6 +224,14 @@ impl Client {
                     wire::Rpc::StreamSendComplete(id) => {
                         self.cmds_inflight.remove(&id).unwrap().done();
                     }
+                    wire::Rpc::ArchiveListResp(id, archive_list) => {
+                        {
+                            // This seems wrong, to have a Archive Resp and craft another to return?
+                            let mut req = self.req_q.lock().unwrap();
+                            req.response_add(wire::Rpc::ArchiveListResp(id, archive_list));
+                        }
+                        self.cmds_inflight.remove(&id).unwrap().done();
+                    }
                     _ => {
                         eprint!("What are we not handling! {:?}", p);
                     }
@@ -249,7 +269,7 @@ impl Client {
                         event.data as i32,
                         event,
                     )?;
-                    eprintln!("We got socket errors, exiting!");
+                    eprintln!("Socket errors, exiting!");
                     end = true;
                     break;
                 }
@@ -259,7 +279,7 @@ impl Client {
                     let read_result = self.process_read(&mut read_buffer, &mut wb);
                     match read_result {
                         Err(e) => {
-                            println!("The process_read returned an error, we are exiting {:?}", e);
+                            eprintln!("Error on read, exiting! {:?}", e);
                             return Err(e);
                         }
                         Ok(r) => {
@@ -296,11 +316,9 @@ impl Client {
             }
 
             if self.process_request_queue(&mut wb)? == wire::IORequest::Exit {
-                println!("request queue just got an end marker!");
                 break;
             }
         }
-        println!("Client thread is exiting!");
         Ok(())
     }
 
@@ -314,7 +332,7 @@ impl Client {
         }
 
         if let Err(e) = result {
-            eprintln!("Client runner errored {}", e);
+            eprintln!("Client runner errored: {}", e);
             return Err(e);
         }
 
@@ -324,4 +342,40 @@ impl Client {
     pub fn get_request_queue(&self) -> Arc<Mutex<ClientRequests>> {
         self.req_q.clone()
     }
+}
+
+pub fn one_rpc(server: &str, rpc: wire::Rpc) -> Result<wire::Rpc> {
+    let h: handshake::HandShake;
+    let so = Arc::new(Mutex::new(StreamOrder::new()?));
+
+    let mut client = Client::new(server.to_string(), so.clone())?;
+    let rq = client.get_request_queue();
+    // Start a thread to handle client communication
+    let thread_handle = thread::Builder::new()
+        .name("one_rpc".to_string())
+        .spawn(move || client.run())?;
+
+    {
+        let cmd = SyncCommand::new(Command::Cmd(rpc));
+        h = cmd.h.clone();
+        let mut req = rq.lock().unwrap();
+        req.handle_control(cmd);
+    }
+
+    // Wait for this to be done
+    h.wait();
+    let response: wire::Rpc;
+
+    {
+        let mut req = rq.lock().unwrap();
+        response = req.response_remove().unwrap();
+        req.handle_data(END);
+    }
+
+    let rc = thread_handle.join();
+    if rc.is_err() {
+        println!("client worker thread ended with {:?}", rc);
+    }
+
+    Ok(response)
 }
