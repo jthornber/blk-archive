@@ -555,12 +555,12 @@ fn get_delta_args(matches: &ArgMatches) -> Result<Option<(String, PathBuf)>> {
     }
 }
 
-pub fn run(matches: &ArgMatches, output: Arc<Output>, client: Option<String>) -> Result<()> {
+pub fn run(matches: &ArgMatches, output: Arc<Output>, server: Option<String>) -> Result<()> {
     // TODO we need to remove this and move it to the server side.  Replace with creating a temp.
     // directory and stream file and when successfully done, we'll then transfer that to the server
     // which may or may not be the same machine
 
-    if client.is_none() {
+    if server.is_none() {
         let archive_dir =
             Path::new(matches.get_one::<String>("ARCHIVE").unwrap()).canonicalize()?;
         env::set_current_dir(archive_dir)?;
@@ -603,7 +603,7 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>, client: Option<String>) ->
     output
         .report
         .set_title(&format!("Packing {} ...", input_file.display()));
-    packer.pack(client)
+    packer.pack(server)
 }
 
 //-----------------------------------------

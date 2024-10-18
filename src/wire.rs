@@ -38,6 +38,9 @@ pub enum Rpc {
     StreamSend(u64, stream_meta::StreamMetaInfo, Vec<u8>, Vec<u8>),
     StreamSendComplete(u64),
 
+    ArchiveListReq(u64),
+    ArchiveListResp(u64, Vec<(String, String, stream_meta::StreamConfig)>), // This may not scale well enough
+
     UnPackReq(u64, String), // stream id, Request id (returned from server, so client can correlate)
     UnPackResp(u64, Vec<u8>), // Request id, data
 }
