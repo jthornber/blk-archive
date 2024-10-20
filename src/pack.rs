@@ -173,7 +173,6 @@ impl IoVecHandler for DedupHandler {
         } else {
             match self.transport {
                 Tp::Local(ref mut db) => {
-                    let len = iov_len_(iov);
                     let h = hash_256_iov(iov);
                     let ((slab, offset), len_written) = db.add_data_entry(h, iov, len)?;
                     self.enqueue_entry(
@@ -214,7 +213,6 @@ impl IoVecHandler for DedupHandler {
 
         loop {
             if !self.process_stream()? {
-                print!(".");
                 thread::sleep(Duration::from_millis(100));
             } else {
                 break;
