@@ -218,6 +218,7 @@ impl Server {
 
         let sfd_fd = self.signalfd.as_raw_fd();
         event = ipc::read_event(sfd_fd);
+        event.data = sfd_fd as u64;
 
         epoll::ctl(
             event_fd,
@@ -228,7 +229,7 @@ impl Server {
 
         loop {
             let mut events = [epoll::Event::new(epoll::Events::empty(), 0); 10];
-            let rdy = epoll::wait(event_fd, 2, &mut events)?;
+            let rdy = epoll::wait(event_fd, 100, &mut events)?;
             let mut end = false;
 
             for item_rdy in events.iter().take(rdy) {

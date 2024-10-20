@@ -1,10 +1,10 @@
 use anyhow::Result;
 use bincode::{config, Decode, Encode};
+use core::fmt;
 use std::collections::VecDeque;
 use std::io;
 use std::io::Read;
 use std::io::Write;
-use std::net::TcpStream;
 
 use crate::ipc::*;
 use crate::stream_meta;
@@ -17,12 +17,15 @@ const CONFIG: config::Configuration<config::BigEndian, config::Fixint> = config:
 #[derive(Encode, Decode, PartialEq, Debug)]
 struct Packet {
     length: u64,
+    magic: u64,
     version: u32,
     payload: Vec<u8>, // The payload will be compressed
     payload_crc: u32,
 }
 
-#[derive(Encode, Decode, Debug, PartialEq)]
+pub const PACKET_MAGIC: u64 = 0x4D454F474D454F47;
+
+#[derive(Encode, Decode, PartialEq)]
 pub enum Rpc {
     Error(u64, String),
 
@@ -45,6 +48,21 @@ pub enum Rpc {
     UnPackResp(u64, Vec<u8>), // Request id, data
 }
 
+impl fmt::Debug for Rpc {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Rpc::Error(e, msg) => write!(f, "Rpc::Error({}:{}", e, msg),
+            Rpc::HaveDataRespYes(i) => write!(f, "Rpc::HaveDataReq({})", i.len()),
+            Rpc::HaveDataRespNo(i) => write!(f, "Rpc::HaveDataYes({})", i.len()),
+            Rpc::PackReq(i, hash, data) => {
+                write!(f, "Rpc::PackReq({}:[{:?}]:{})", i, hash, data.len())
+            }
+            Rpc::PackResp(id, _t) => write!(f, "Rpc::PackResp({})", id),
+            _ => write!(f, "Not implemented!"),
+        }
+    }
+}
+
 #[derive(PartialEq, Debug)]
 pub enum IORequest {
     Ok,
@@ -59,28 +77,6 @@ fn payload_to_rpc(packet: Packet) -> Rpc {
     result
 }
 
-pub fn read(s: &mut TcpStream) -> Result<Option<Rpc>, io::Error> {
-    let mut packet_length = [0; 8];
-
-    let r = s.read_exact(&mut packet_length);
-    if let Err(r) = r {
-        match r.kind() {
-            io::ErrorKind::WouldBlock => return Ok(None),
-            _ => return Err(r),
-        }
-    }
-
-    let bytes_to_read = u64::from_be_bytes(packet_length);
-    let mut buffer = vec![0u8; bytes_to_read as usize];
-
-    // Place the length in the main buffer that we already read from the stream and read the
-    // rest
-    buffer[..8].clone_from_slice(&packet_length);
-    s.read_exact(&mut buffer[8..])?;
-
-    Ok(Some(bytes_to_rpc(&buffer)))
-}
-
 fn to_8(b: &[u8]) -> &[u8; 8] {
     b.try_into().expect("we need 8 bytes!")
 }
@@ -91,17 +87,16 @@ fn get_u64(b: &[u8]) -> u64 {
 
 fn get_hdr_len(b: &mut VecDeque<u8>) -> usize {
     let slice = b.make_contiguous();
+    // Make sure we are at a packet boundary
+    assert_eq!(get_u64(&slice[8..16]), PACKET_MAGIC);   // We probably shouldn't panic here
     get_u64(&slice[0..8]) as usize
 }
 
 fn _read_into_rpc(b: &mut VecDeque<u8>) -> Result<Option<Vec<Rpc>>, io::Error> {
     let mut rc = Vec::new();
 
-    while b.len() > 8 {
+    while b.len() > 16 {
         let hdr_len = get_hdr_len(b);
-
-        assert!(hdr_len < 1024 * 1024 * 5);
-
         if b.len() >= hdr_len {
             let mut packet = b.drain(0..hdr_len).collect::<VecDeque<_>>();
             let packet_slice = packet.make_contiguous();
@@ -130,14 +125,8 @@ pub fn read_using_buffer(
         }
     }
 
-    // This indicates that the socket was closed cleanly from other side, our expectation is
-    // we don't have any data left in our buffer
+    // This indicates that the socket was closed cleanly from other side
     if total_read == 0 {
-        println!("We read zero, our vecqueue = {}", b.len());
-        if b.len() >= 8 {
-            println!("Our header len = {}", get_hdr_len(b));
-        }
-        assert!(b.is_empty());
         return Err(io::ErrorKind::NotConnected.into());
     }
 
@@ -151,28 +140,42 @@ pub fn write_rpc_panic(s: &mut Box<dyn ReadAndWrite>, rpc: Rpc) {
 
 pub fn write(s: &mut Box<dyn ReadAndWrite>, rpc: Rpc, wb: &mut VecDeque<u8>) -> Result<bool> {
     let bytes = rpc_to_bytes(&rpc);
+    //println!("writing {} byte packet! to write buffer", bytes.len());
     wb.extend(bytes);
-    write_buffer(s, wb)
+
+    // Empty or until we would get a WouldBlock!
+    while !wb.is_empty() {
+        if write_buffer(s, wb)? {
+            return Ok(true);
+        }
+    }
+    assert_eq!(wb.len(), 0);
+    Ok(false)
 }
 
 pub fn write_buffer(
     s: &mut Box<dyn ReadAndWrite>,
     write_buffer: &mut VecDeque<u8>,
 ) -> Result<bool> {
-    let amt_written = s.write(write_buffer.make_contiguous());
-    let rc = match amt_written {
-        Err(r) => match r.kind() {
-            io::ErrorKind::WouldBlock => true,
-            _ => {
-                return Err(r.into());
+    if !write_buffer.is_empty() {
+        let to_be_written = write_buffer.make_contiguous();
+
+        let amt_written = s.write(to_be_written);
+        let rc = match amt_written {
+            Err(r) => match r.kind() {
+                io::ErrorKind::WouldBlock => true,
+                _ => {
+                    return Err(r.into());
+                }
+            },
+            Ok(bytes_written) => {
+                write_buffer.drain(0..bytes_written);
+                false
             }
-        },
-        Ok(bytes_written) => {
-            write_buffer.drain(0..bytes_written);
-            false
-        }
-    };
-    Ok(rc)
+        };
+        return Ok(rc);
+    }
+    Ok(false)
 }
 
 pub fn bytes_to_rpc(d: &[u8]) -> Rpc {
@@ -183,8 +186,9 @@ pub fn bytes_to_rpc(d: &[u8]) -> Rpc {
 pub fn rpc_to_bytes(cmd: &Rpc) -> Vec<u8> {
     let c_bytes = bincode::encode_to_vec(cmd, CONFIG).unwrap();
     let packet = Packet {
-        length: 8 + 4 + 8 + c_bytes.len() as u64 + 4, // length(8), version(4), payload(8 + #bytes), payload_crc(4)
+        length: 8 + 8 + 4 + 8 + c_bytes.len() as u64 + 4, // length(8), version(4), payload(8 + #bytes), payload_crc(4)
         version: 1,
+        magic: PACKET_MAGIC,
         payload_crc: 0,
         payload: c_bytes,
     };

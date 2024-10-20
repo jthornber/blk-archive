@@ -242,10 +242,29 @@ impl Client {
         Ok(rc)
     }
 
+    fn _enable_poll_out(event_fd: i32, fd: i32, current_setting: &mut bool) -> Result<()> {
+        if *current_setting {
+            return Ok(());
+        }
+
+        *current_setting = true;
+        let mut event = ipc::read_event(fd);
+        event.events |= epoll::Events::EPOLLOUT.bits();
+        event.data = fd as u64;
+
+        Ok(epoll::ctl(
+            event_fd,
+            epoll::ControlOptions::EPOLL_CTL_MOD,
+            fd,
+            event,
+        )?)
+    }
+
     fn _run(&mut self) -> Result<()> {
         let event_fd = epoll::create(true)?;
         let fd = self.s.as_raw_fd();
         let mut event = ipc::read_event(fd);
+        let mut poll_out = false;
 
         epoll::ctl(event_fd, epoll::ControlOptions::EPOLL_CTL_ADD, fd, event)?;
 
@@ -284,13 +303,7 @@ impl Client {
                         }
                         Ok(r) => {
                             if r == wire::IORequest::WouldBlock {
-                                event.events |= epoll::Events::EPOLLOUT.bits();
-                                epoll::ctl(
-                                    event_fd,
-                                    epoll::ControlOptions::EPOLL_CTL_MOD,
-                                    event.data as i32,
-                                    event,
-                                )?;
+                                Client::_enable_poll_out(event_fd, fd, &mut poll_out)?;
                             }
                         }
                     }
@@ -301,7 +314,9 @@ impl Client {
                     && !wire::write_buffer(&mut self.s, &mut wb)?
                     && wb.is_empty()
                 {
+                    poll_out = false;
                     event = ipc::read_event(event.data as i32);
+                    event.data = fd as u64;
                     epoll::ctl(
                         event_fd,
                         epoll::ControlOptions::EPOLL_CTL_MOD,
@@ -315,8 +330,11 @@ impl Client {
                 break;
             }
 
-            if self.process_request_queue(&mut wb)? == wire::IORequest::Exit {
+            let rc = self.process_request_queue(&mut wb)?;
+            if rc == wire::IORequest::Exit {
                 break;
+            } else if rc == wire::IORequest::WouldBlock {
+                Client::_enable_poll_out(event_fd, fd, &mut poll_out)?;
             }
         }
         Ok(())
