@@ -154,7 +154,7 @@ impl Client {
         while let Some(e) = req.remove_control() {
             match e.c {
                 Command::Cmd(rpc) => {
-                    self.cmds_inflight.insert(0, e.h.clone());
+                    self.cmds_inflight.insert(wire::id_get(&rpc), e.h.clone());
                     if wire::write(&mut self.s, rpc, w_b)? {
                         rc = wire::IORequest::WouldBlock;
                     }

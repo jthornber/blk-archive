@@ -45,7 +45,21 @@ pub enum Rpc {
     ArchiveListResp(u64, Vec<(String, String, stream_meta::StreamConfig)>), // This may not scale well enough
 
     UnPackReq(u64, String), // stream id, Request id (returned from server, so client can correlate)
-    UnPackResp(u64, Vec<u8>), // Request id, data
+    UnPackResp(u64, u64, Vec<u8>), // Request id, sequence_id, data
+}
+
+pub fn id_get(rpc: &Rpc) -> u64 {
+    match rpc {
+        Rpc::PackReq(id, _hash, _data) => *id,
+        Rpc::PackResp(id, _location) => *id,
+        Rpc::StreamSend(id, _sm, _stream_bytes, _stream_offsets) => *id,
+        Rpc::StreamSendComplete(id) => *id,
+        Rpc::ArchiveListReq(id) => *id,
+        Rpc::ArchiveListResp(id, _entries) => *id,
+        Rpc::UnPackReq(id, _stream_id) => *id,
+        Rpc::UnPackResp(id, _seq_id, _data) => *id,
+        _ => 0,
+    }
 }
 
 impl fmt::Debug for Rpc {
@@ -88,7 +102,7 @@ fn get_u64(b: &[u8]) -> u64 {
 fn get_hdr_len(b: &mut VecDeque<u8>) -> usize {
     let slice = b.make_contiguous();
     // Make sure we are at a packet boundary
-    assert_eq!(get_u64(&slice[8..16]), PACKET_MAGIC);   // We probably shouldn't panic here
+    assert_eq!(get_u64(&slice[8..16]), PACKET_MAGIC); // We probably shouldn't panic here
     get_u64(&slice[0..8]) as usize
 }
 
