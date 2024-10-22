@@ -251,11 +251,7 @@ impl IoVecHandler for DedupHandler {
                 // this is achieved by using different scopes.
                 h.wait();
 
-                //TODO: Change this to use the command queue instead of data queue
-                {
-                    let mut req = rq.lock().unwrap();
-                    req.handle_data(END);
-                }
+                client_thread_end(rq);
 
                 if let Some(worker) = handle.take() {
                     let rc = worker.join();

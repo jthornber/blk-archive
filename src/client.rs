@@ -67,14 +67,6 @@ impl Debug for Data {
     }
 }
 
-// TODO Change this to an enum which can handle multiple different messages
-pub const END: Data = Data {
-    id: u64::MAX,
-    h: [0; 32],
-    len: 0,
-    d: None,
-};
-
 impl ClientRequests {
     fn new() -> Result<Self> {
         Ok(Self {
@@ -100,6 +92,18 @@ impl ClientRequests {
     pub fn remove_control(&mut self) -> Option<SyncCommand> {
         self.control.pop_front()
     }
+}
+
+pub const END: Data = Data {
+    id: u64::MAX,
+    h: [0; 32],
+    len: 0,
+    d: None,
+};
+
+pub fn client_thread_end(client_req: &Mutex<ClientRequests>) {
+    let mut rq = client_req.lock().unwrap();
+    rq.handle_data(END);
 }
 
 impl Client {
@@ -372,10 +376,7 @@ pub fn one_rpc(server: &str, rpc: wire::Rpc) -> Result<Option<wire::Rpc>> {
     // Wait for this to be done
     let response = h.wait();
 
-    {
-        let mut req = rq.lock().unwrap();
-        req.handle_data(END);
-    }
+    client_thread_end(&rq);
 
     let rc = thread_handle.join();
     if rc.is_err() {
