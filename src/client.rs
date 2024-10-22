@@ -24,7 +24,6 @@ pub struct Client {
 pub struct ClientRequests {
     data: VecDeque<Data>,
     control: VecDeque<SyncCommand>,
-    responses: VecDeque<wire::Rpc>,
     pub dead_thread: bool,
     pub data_written: u64,
 }
@@ -83,7 +82,6 @@ impl ClientRequests {
             control: VecDeque::new(),
             dead_thread: false,
             data_written: 0,
-            responses: VecDeque::new(),
         })
     }
 
@@ -101,14 +99,6 @@ impl ClientRequests {
 
     pub fn remove_control(&mut self) -> Option<SyncCommand> {
         self.control.pop_front()
-    }
-
-    pub fn response_add(&mut self, r: wire::Rpc) {
-        self.responses.push_back(r);
-    }
-
-    pub fn response_remove(&mut self) -> Option<wire::Rpc> {
-        self.responses.pop_front()
     }
 }
 
@@ -161,7 +151,7 @@ impl Client {
                 }
                 Command::Exit => {
                     rc = wire::IORequest::Exit;
-                    e.h.done();
+                    e.h.done(None);
                 }
             }
         }
@@ -222,15 +212,14 @@ impl Client {
                         stream.entry_complete(id, e, len)?;
                     }
                     wire::Rpc::StreamSendComplete(id) => {
-                        self.cmds_inflight.remove(&id).unwrap().done();
+                        self.cmds_inflight.remove(&id).unwrap().done(None);
                     }
                     wire::Rpc::ArchiveListResp(id, archive_list) => {
-                        {
-                            // This seems wrong, to have a Archive Resp and craft another to return?
-                            let mut req = self.req_q.lock().unwrap();
-                            req.response_add(wire::Rpc::ArchiveListResp(id, archive_list));
-                        }
-                        self.cmds_inflight.remove(&id).unwrap().done();
+                        // This seems wrong, to have a Archive Resp and craft another to return?
+                        self.cmds_inflight
+                            .remove(&id)
+                            .unwrap()
+                            .done(Some(wire::Rpc::ArchiveListResp(id, archive_list)));
                     }
                     _ => {
                         eprint!("What are we not handling! {:?}", p);
@@ -362,7 +351,7 @@ impl Client {
     }
 }
 
-pub fn one_rpc(server: &str, rpc: wire::Rpc) -> Result<wire::Rpc> {
+pub fn one_rpc(server: &str, rpc: wire::Rpc) -> Result<Option<wire::Rpc>> {
     let h: handshake::HandShake;
     let so = Arc::new(Mutex::new(StreamOrder::new()?));
 
@@ -381,12 +370,10 @@ pub fn one_rpc(server: &str, rpc: wire::Rpc) -> Result<wire::Rpc> {
     }
 
     // Wait for this to be done
-    h.wait();
-    let response: wire::Rpc;
+    let response = h.wait();
 
     {
         let mut req = rq.lock().unwrap();
-        response = req.response_remove().unwrap();
         req.handle_data(END);
     }
 

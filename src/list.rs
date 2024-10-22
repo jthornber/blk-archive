@@ -51,12 +51,11 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
         streams_get(&PathBuf::from_str("./streams").unwrap())?
     } else {
         let server = matches.get_one::<String>("LIST_SERVER").unwrap();
-        let response = client::one_rpc(server, wire::Rpc::ArchiveListReq(0))?;
+        let response = client::one_rpc(server, wire::Rpc::ArchiveListReq(0))?.unwrap();
         if let wire::Rpc::ArchiveListResp(_id, streams) = response {
             streams
         } else {
-            let streams: Vec<(String, String, stream_meta::StreamConfig)> = Vec::new();
-            streams
+            panic!("We are expecting a result from wire::Rpc::ArchiveListResp");
         }
     };
 
