@@ -27,6 +27,8 @@ pub struct Db {
 
     data_buf: Vec<u8>,
     hashes_buf: Vec<u8>,
+
+    slabs: lru::LruCache<u32, ByIndex>,
 }
 
 fn complete_slab_(slab: &mut SlabFile, buf: &mut Vec<u8>) -> Result<()> {
@@ -45,17 +47,22 @@ pub fn complete_slab(slab: &mut SlabFile, buf: &mut Vec<u8>, threshold: usize) -
 }
 
 impl Db {
-    pub fn new() -> Result<Self> {
+    pub fn new(cache_entries: Option<usize>) -> Result<Self> {
         let seen = CuckooFilter::read(paths::index_path())?;
 
         let config = read_config(".")?;
 
         let hashes_per_slab = std::cmp::max(SLAB_SIZE_TARGET / config.block_size, 1);
-        let slab_capacity = ((config.hash_cache_size_meg * 1024 * 1024)
+        let mut slab_capacity = ((config.hash_cache_size_meg * 1024 * 1024)
             / std::mem::size_of::<Hash256>())
             / hashes_per_slab;
 
         let hashes = lru::LruCache::new(NonZeroUsize::new(slab_capacity).unwrap());
+
+        if let Some(cache_entries) = cache_entries {
+            slab_capacity = cache_entries;
+        }
+        let slabs = lru::LruCache::new(NonZeroUsize::new(slab_capacity).unwrap());
 
         let data_file = SlabFileBuilder::open(data_path())
             .write(true)
@@ -88,12 +95,21 @@ impl Db {
             current_entries: 0,
             data_buf: Vec::new(),
             hashes_buf: Vec::new(),
+            slabs,
         };
 
         // TODO make this more dynamic as needed that will work in multi-client env.
         s.rebuild_index(262144)?;
 
         Ok(s)
+    }
+
+    fn get_info(&mut self, slab: u32) -> Result<&ByIndex> {
+        self.slabs.try_get_or_insert(slab, || {
+            let mut hf = self.hashes_file.lock().unwrap();
+            let hashes = hf.read(slab)?;
+            ByIndex::new(hashes)
+        })
     }
 
     pub fn ensure_extra_capacity(&mut self, blocks: usize) -> Result<()> {
@@ -202,6 +218,39 @@ impl Db {
             }
             _ => None,
         };
+        Ok(rc)
+    }
+
+    pub fn data_get(
+        &mut self,
+        slab: u32,
+        offset: u32,
+        nr_entries: u32,
+        partial: Option<(u32, u32)>,
+    ) -> Result<Vec<u8>> {
+        let info = self.get_info(slab)?;
+
+        let (data_begin, data_end) = if nr_entries == 1 {
+            let (data_begin, data_end, _expected_hash) = info.get(offset as usize).unwrap();
+            (*data_begin as usize, *data_end as usize)
+        } else {
+            let (data_begin, _data_end, _expected_hash) = info.get(offset as usize).unwrap();
+            let (_data_begin, data_end, _expected_hash) = info
+                .get((offset as usize) + (nr_entries as usize) - 1)
+                .unwrap();
+            (*data_begin as usize, *data_end as usize)
+        };
+
+        let data = self.data_file.read(slab)?;
+
+        let rc = if let Some((begin, end)) = partial {
+            let data_end = data_begin + end as usize;
+            let data_begin = data_begin + begin as usize;
+            data[data_begin..data_end].to_vec()
+        } else {
+            data[data_begin..data_end].to_vec()
+        };
+
         Ok(rc)
     }
 

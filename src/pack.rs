@@ -71,7 +71,7 @@ impl DedupHandler {
                 .spawn(move || client.run())?;
             Tp::Remote(rq, Some(h))
         } else {
-            Tp::Local(Db::new()?)
+            Tp::Local(Db::new(None)?)
         };
 
         // Create the stream meta and store
