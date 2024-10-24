@@ -135,18 +135,35 @@ impl Db {
     }
 
     fn rebuild_index(&mut self, new_capacity: usize) -> Result<()> {
-        let mut seen = CuckooFilter::with_capacity(new_capacity);
+        let mut cap = new_capacity;
+        let mut seen: CuckooFilter;
+        let mut resize = true;
 
-        // Scan the hashes file.
-        let mut hashes_file = self.hashes_file.lock().unwrap();
-        let nr_slabs = hashes_file.get_nr_slabs();
-        for s in 0..nr_slabs {
-            let buf = hashes_file.read(s as u32)?;
-            let hi = ByHash::new(buf)?;
-            for i in 0..hi.len() {
-                let h = hi.get(i);
-                let mini_hash = hash_le_u64(h);
-                seen.test_and_set(mini_hash, s as u32)?;
+        loop {
+            seen = CuckooFilter::with_capacity(cap);
+
+            resize = !resize;
+
+            // Scan the hashes file.
+            let mut hashes_file = self.hashes_file.lock().unwrap();
+            let nr_slabs = hashes_file.get_nr_slabs();
+            for s in 0..nr_slabs {
+                let buf = hashes_file.read(s as u32)?;
+                let hi = ByHash::new(buf)?;
+                for i in 0..hi.len() {
+                    let h = hi.get(i);
+                    let mini_hash = hash_le_u64(h);
+                    let ts_r = seen.test_and_set(mini_hash, s as u32);
+                    if ts_r.is_err() {
+                        cap *= 2;
+                        resize = true;
+                        break;
+                    }
+                }
+            }
+
+            if !resize {
+                break;
             }
         }
 
@@ -187,7 +204,11 @@ impl Db {
 
         // Add entry to cuckoo filter, not checking return value as we could get indication that
         // it's "PossiblyPresent" when our logical expectation is "Inserted".
-        self.seen.test_and_set(hash_le_u64(&h), self.current_slab)?;
+        let ts_result = self.seen.test_and_set(hash_le_u64(&h), self.current_slab);
+        if ts_result.is_err() {
+            let s = self.seen.capacity() * 2;
+            self.rebuild_index(s)?;
+        }
 
         let r = (self.current_slab, self.current_entries as u32);
         for v in iov {
