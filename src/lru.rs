@@ -90,7 +90,6 @@ impl LRU {
         } else {
             // evict and insert
             let index = self.tail;
-            self.tail = self.entries[index].next;
             let evicted = self.entries[index].n;
             self.tree.remove(&evicted);
             self.lru_update_(n, index);
