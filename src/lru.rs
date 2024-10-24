@@ -45,9 +45,6 @@ impl LRU {
         self.entries[self.tail].prev = index;
 
         self.head = index;
-        if index == 0 {
-            self.tail = index;
-        }
     }
 
     fn lru_update_(&mut self, n: u32, index: usize) {
