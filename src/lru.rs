@@ -50,31 +50,30 @@ impl LRU {
         }
     }
 
-    fn lru_add_(&mut self, n: u32, index: usize) {
+    fn lru_update_(&mut self, n: u32, index: usize) {
         let e = &mut self.entries[index];
+
         e.n = n;
-        e.prev = self.head;
-        e.next = self.tail;
+        // There's nothing to do if the entry is already at the head
+        if self.head != index {
+            // When moving the entry from the tail to the head, only the
+            // head and tail values need to change
+            if self.tail == index {
+                self.tail = e.next;
+            } else {
+                let prev = e.prev;
+                let next = e.next;
 
-        self.entries[self.head].next = index;
-        self.entries[self.tail].prev = index;
+                self.entries[prev].next = next;
+                self.entries[next].prev = prev;
 
-        self.head = index;
-    }
-
-    fn lru_del_(&mut self, index: usize) {
-        let e = &mut self.entries[index];
-        let prev = e.prev;
-        let next = e.next;
-
-        if self.tail == index {
-            self.tail = next;
+                self.entries[index].prev = self.head;
+                self.entries[index].next = self.tail;
+                self.entries[self.head].next = index;
+                self.entries[self.tail].prev = index;
+            }
+            self.head = index;
         }
-        if self.head == index {
-            self.head = prev;
-        }
-        self.entries[prev].next = next;
-        self.entries[next].prev = prev;
     }
 
     // Makes sure n is in the LRU, optionally returns an entry
@@ -84,8 +83,7 @@ impl LRU {
 
         let r = if let Some(index) = self.tree.get(&n).cloned() {
             // relink
-            self.lru_del_(index);
-            self.lru_add_(n, index);
+            self.lru_update_(n, index);
             AlreadyPresent
         } else if self.entries.len() < self.capacity {
             // insert
@@ -98,8 +96,7 @@ impl LRU {
             self.tail = self.entries[index].next;
             let evicted = self.entries[index].n;
             self.tree.remove(&evicted);
-            self.lru_del_(index);
-            self.lru_add_(n, index);
+            self.lru_update_(n, index);
             self.tree.insert(n, index);
             AddAndEvict(evicted)
         };
