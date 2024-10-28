@@ -239,7 +239,7 @@ impl IoVecHandler for DedupHandler {
 
                     // Send the stream metadata & stream itself to the server side
                     let to_send = self.stream_meta.package(&mut self.stats)?;
-                    let cmd = SyncCommand::new(Command::Cmd(to_send));
+                    let cmd = SyncCommand::new(Command::Cmd(Box::new(to_send)));
                     h = cmd.h.clone();
                     req.handle_control(cmd);
                 }

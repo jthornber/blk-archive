@@ -37,7 +37,7 @@ pub struct Data {
 }
 
 pub enum Command {
-    Cmd(wire::Rpc),
+    Cmd(Box<wire::Rpc>),
     Exit,
 }
 
@@ -151,7 +151,7 @@ impl Client {
             match e.c {
                 Command::Cmd(rpc) => {
                     self.cmds_inflight.insert(wire::id_get(&rpc), e.h.clone());
-                    if wire::write(&mut self.s, rpc, w_b)? {
+                    if wire::write(&mut self.s, *rpc, w_b)? {
                         rc = wire::IORequest::WouldBlock;
                     }
                 }
@@ -374,7 +374,7 @@ pub fn one_rpc(server: &str, rpc: wire::Rpc) -> Result<Option<wire::Rpc>> {
         .spawn(move || client.run())?;
 
     {
-        let cmd = SyncCommand::new(Command::Cmd(rpc));
+        let cmd = SyncCommand::new(Command::Cmd(Box::new(rpc)));
         h = cmd.h.clone();
         let mut req = rq.lock().unwrap();
         req.handle_control(cmd);
