@@ -2,6 +2,9 @@ use anyhow::{anyhow, Context, Result};
 use chrono::prelude::*;
 use clap::ArgMatches;
 //use size_display::Size;
+use serde_json::json;
+use serde_json::to_string_pretty;
+use size_display::Size;
 use std::boxed::Box;
 use std::env;
 use std::fs::OpenOptions;
@@ -42,7 +45,7 @@ enum Tp {
 struct DedupHandler {
     nr_chunks: usize,
     stream_buf: Vec<u8>,
-    stream_meta: stream_meta::StreamMeta,
+    pub stream_meta: stream_meta::StreamMeta,
     mapping_builder: Arc<Mutex<dyn Builder>>,
     pub stats: stream_meta::StreamStats,
     so: Arc<Mutex<StreamOrder>>,
@@ -140,12 +143,6 @@ impl DedupHandler {
         self.enqueue_entry(MapEntry::Ref { len }, len)
     }
 
-    fn db_sizes(&mut self) -> (u64, u64) {
-        // TODO fix me
-        //self.db.file_sizes()
-        (1, 1)
-    }
-
     // TODO: Is there a better way to handle this and what are the ramifications with
     // client server with multiple clients and one server?
     //fn ensure_extra_capacity(&mut self, blocks: usize) -> Result<()> {
@@ -174,7 +171,8 @@ impl IoVecHandler for DedupHandler {
             match self.transport {
                 Tp::Local(ref mut db) => {
                     let h = hash_256_iov(iov);
-                    let ((slab, offset), len_written) = db.add_data_entry(h, iov, len)?;
+                    let ((slab, offset), len_written, hash_written) =
+                        db.add_data_entry(h, iov, len)?;
                     self.enqueue_entry(
                         MapEntry::Data {
                             slab,
@@ -183,6 +181,7 @@ impl IoVecHandler for DedupHandler {
                         },
                         len,
                     )?;
+                    self.stats.hashes_written += hash_written;
                     self.stats.written += len_written;
                 }
                 Tp::Remote(ref rq, _) => {
@@ -209,8 +208,6 @@ impl IoVecHandler for DedupHandler {
         // quite a bit
         // TODO: Make this handle errors, like if we end up hanging forever
         let h: HandShake;
-        println!("IoVecHandler::complete, waiting for stream order to complete!");
-
         loop {
             if !self.process_stream()? {
                 thread::sleep(Duration::from_millis(100));
@@ -219,7 +216,6 @@ impl IoVecHandler for DedupHandler {
             }
         }
 
-        println!("stream is complete!");
         let mut builder = self.mapping_builder.lock().unwrap();
         builder.complete(&mut self.stream_buf)?;
         drop(builder);
@@ -232,16 +228,17 @@ impl IoVecHandler for DedupHandler {
 
         match self.transport {
             Tp::Local(ref _db) => {
-                self.stream_meta.complete(&self.stats)?;
+                self.stream_meta.complete(&mut self.stats)?;
             }
             Tp::Remote(ref mut rq, ref mut handle) => {
                 // Send the stream file to the server and wait for it to complete
                 {
                     let mut req = rq.lock().unwrap();
                     self.stats.written = req.data_written;
+                    self.stats.hashes_written = req.hashes_written;
 
                     // Send the stream metadata & stream itself to the server side
-                    let to_send = self.stream_meta.package(self.stats.clone())?;
+                    let to_send = self.stream_meta.package(&mut self.stats)?;
                     let cmd = SyncCommand::new(Command::Cmd(to_send));
                     h = cmd.h.clone();
                     req.handle_control(cmd);
@@ -255,7 +252,9 @@ impl IoVecHandler for DedupHandler {
 
                 if let Some(worker) = handle.take() {
                     let rc = worker.join();
-                    println!("client worker thread ended with {:?}", rc);
+                    if rc.is_err() {
+                        println!("client worker thread ended with {:?}", rc);
+                    }
                 }
             }
         }
@@ -342,50 +341,50 @@ impl Packer {
 
         splitter.complete(&mut handler)?;
         self.output.report.progress(100);
+
+        let fill_size = handler.stats.fill_size;
         let end_time: DateTime<Utc> = Utc::now();
         let elapsed = end_time - start_time;
-        let _elapsed = elapsed.num_milliseconds() as f64 / 1000.0;
+        let elapsed = elapsed.num_milliseconds() as f64 / 1000.0;
 
-        let _db_sizes = handler.db_sizes();
+        let data_written = handler.stats.written;
+        let hashes_written = handler.stats.hashes_written;
 
-        // TODO fix stats!
+        let stream_written = handler.stats.stream_written;
+        let mapped_size = handler.stats.mapped_size;
 
-        //let data_written = db_sizes.0 - data_size;
-        //let hashes_written = db_sizes.1 - hashes_size;
-
-        //let stream_written = handler.stream_file.get_file_size();
-        //let ratio =
-        //    (self.mapped_size as f64) / ((data_written + hashes_written + stream_written) as f64);
+        let stream_id = handler.stream_meta.stream_id;
+        let ratio =
+            (mapped_size as f64) / ((data_written + hashes_written + stream_written) as f64);
 
         if self.output.json {
             // Should all the values simply be added to the json too?  We can always add entries, but
             // we can never take any away to maintains backwards compatibility with JSON consumers.
-            //let result = json!({ "stream_id": stream_id });
-            //println!("{}", to_string_pretty(&result).unwrap());
+            let result = json!({ "stream_id": stream_id });
+            println!("{}", to_string_pretty(&result).unwrap());
         } else {
-            /*
             self.output
                 .report
                 .info(&format!("elapsed          : {}", elapsed));
             self.output
                 .report
                 .info(&format!("stream id        : {}", stream_id));
+            self.output.report.info(&format!(
+                "file size        : {:.2}",
+                Size(handler.stats.size)
+            ));
             self.output
                 .report
-                .info(&format!("file size        : {:.2}", Size(self.input_size)));
-            self.output
-                .report
-                .info(&format!("mapped size      : {:.2}", Size(self.mapped_size)));
+                .info(&format!("mapped size      : {:.2}", Size(mapped_size)));
             self.output
                 .report
                 .info(&format!("total read       : {:.2}", Size(total_read)));
-            self.output.report.info(&format!(
-                "fills size       : {:.2}",
-                Size(handler.fill_size)
-            ));
+            self.output
+                .report
+                .info(&format!("fills size       : {:.2}", Size(fill_size)));
             self.output.report.info(&format!(
                 "duplicate data   : {:.2}",
-                Size(total_read - handler.data_written - handler.fill_size)
+                Size(total_read - data_written - fill_size)
             ));
 
             self.output
@@ -404,23 +403,7 @@ impl Packer {
                 "speed            : {:.2}/s",
                 Size((total_read as f64 / elapsed) as u64)
             ));
-            */
         }
-
-        // write the stream config
-        /*
-        let cfg = config::StreamConfig {
-            name: Some(self.stream_name.to_string()),
-            source_path: self.input_path.display().to_string(),
-            pack_time: config::now(),
-            size: self.input_size,
-            mapped_size: self.mapped_size,
-            packed_size: stream_written, //data_written + hashes_written + stream_written,
-            thin_id: self.thin_id,
-        };
-        config::write_stream_config(&stream_id, &cfg)?;
-        */
-
         Ok(())
     }
 }
