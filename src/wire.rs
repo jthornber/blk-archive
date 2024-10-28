@@ -36,7 +36,7 @@ pub enum Rpc {
 
     // Send the data we don't have
     PackReq(u64, [u8; 32], Vec<u8>), // Request id, stream sequence number, hash signature, data
-    PackResp(u64, ((u32, u32), u64)), // The response to the Pack is the request id and the (slab #, slab offset)
+    PackResp(u64, ((u32, u32), u64, u64)), // The response to the Pack is the request id and the (slab #, slab offset)
 
     StreamSend(u64, stream_meta::StreamMetaInfo, Vec<u8>, Vec<u8>),
     StreamSendComplete(u64),

@@ -50,7 +50,7 @@ pub struct StreamMetaInfo {
 }
 
 pub struct StreamMeta {
-    stream_id: String,
+    pub stream_id: String,
     _stream_tmp_dir: TempDir,
     stream_dir: PathBuf,
     names: StreamNames,
@@ -64,6 +64,8 @@ pub struct StreamStats {
     pub mapped_size: u64,
     pub written: u64,
     pub fill_size: u64,
+    pub hashes_written: u64,
+    pub stream_written: u64,
 }
 
 impl StreamStats {
@@ -73,6 +75,8 @@ impl StreamStats {
             mapped_size: 0,
             written: 0,
             fill_size: 0,
+            hashes_written: 0,
+            stream_written: 0,
         }
     }
 }
@@ -119,8 +123,10 @@ impl StreamMeta {
         })
     }
 
-    pub fn complete(&self, stats: &StreamStats) -> Result<()> {
+    pub fn complete(&self, stats: &mut StreamStats) -> Result<()> {
         let stream_size = thinp::file_utils::file_size(self.stream_dir.join("stream"))?;
+
+        stats.stream_written = stream_size;
 
         let cfg = StreamConfig {
             name: Some(self.names.name.clone()),
@@ -128,7 +134,7 @@ impl StreamMeta {
             pack_time: now_string(),
             size: stats.size,
             mapped_size: stats.mapped_size,
-            packed_size: stats.written + stream_size, //data_written + stream_written + hashes written,
+            packed_size: stats.written + stream_size + stats.hashes_written, //data_written + stream_written + hashes written,
             thin_id: self.thin_id,
         };
         write_stream_config(&self.stream_dir, &cfg)?;
@@ -140,18 +146,20 @@ impl StreamMeta {
         Ok(())
     }
 
-    pub fn package(&self, stats: StreamStats) -> Result<wire::Rpc> {
+    pub fn package(&self, stats: &mut StreamStats) -> Result<wire::Rpc> {
+        let stream_bytes = fs::read(self.stream_dir.join("stream"))?;
+        let stream_offset_bytes = fs::read(self.stream_dir.join("stream.offsets"))?;
+
+        stats.stream_written = stream_bytes.len() as u64;
+
         let sm = StreamMetaInfo {
             stream_id: self.stream_id.clone(),
             name: Some(self.names.name.clone()),
             source_path: self.names.input_file.to_string_lossy().into_owned(),
             pack_time: now_string(),
-            stats,
+            stats: stats.clone(),
             thin_id: self.thin_id,
         };
-
-        let stream_bytes = fs::read(self.stream_dir.join("stream"))?;
-        let stream_offset_bytes = fs::read(self.stream_dir.join("stream.offsets"))?;
         Ok(wire::Rpc::StreamSend(
             0,
             sm,

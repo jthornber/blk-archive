@@ -26,6 +26,7 @@ pub struct ClientRequests {
     control: VecDeque<SyncCommand>,
     pub dead_thread: bool,
     pub data_written: u64,
+    pub hashes_written: u64,
 }
 
 pub struct Data {
@@ -74,6 +75,7 @@ impl ClientRequests {
             control: VecDeque::new(),
             dead_thread: false,
             data_written: 0,
+            hashes_written: 0,
         })
     }
 
@@ -203,8 +205,12 @@ impl Client {
                             }
                         }
                     }
-                    wire::Rpc::PackResp(id, ((slab, offset), wrote)) => {
-                        self.req_q.lock().unwrap().data_written += wrote;
+                    wire::Rpc::PackResp(id, ((slab, offset), wrote, hashes_written)) => {
+                        {
+                            let mut rq = self.req_q.lock().unwrap();
+                            rq.data_written += wrote;
+                            rq.hashes_written += hashes_written;
+                        }
                         let mut stream = self.so.lock().unwrap();
                         let e = MapEntry::Data {
                             slab,
@@ -213,6 +219,7 @@ impl Client {
                         };
                         let removed = self.data_inflight.remove(&id).unwrap();
                         let len = removed.len;
+
                         stream.entry_complete(id, e, len)?;
                     }
                     wire::Rpc::StreamSendComplete(id) => {
