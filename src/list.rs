@@ -25,13 +25,7 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
 
     let paths = fs::read_dir(Path::new("./streams"))?;
     let stream_ids = paths
-        .filter_map(|entry| {
-            entry.ok().and_then(|e| {
-                e.path()
-                    .file_name()
-                    .and_then(|n| n.to_str().map(String::from))
-            })
-        })
+        .filter_map(|entry| entry.ok().and_then(|e| e.file_name().into_string().ok()))
         .collect::<Vec<String>>();
 
     let mut streams = Vec::new();
