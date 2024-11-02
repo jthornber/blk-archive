@@ -7,7 +7,8 @@ use std::collections::BTreeMap;
 #[derive(Debug)]
 pub struct Sentry {
     pub e: MapEntry,
-    pub len: u64,
+    pub len: Option<u64>,
+    pub data: Option<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -32,9 +33,14 @@ impl StreamOrder {
         v
     }
 
-    pub fn entry_complete(&mut self, id: u64, e: MapEntry, len: u64) -> Result<()> {
-        self.ready.insert(id, Sentry { e, len });
-        Ok(())
+    pub fn entry_complete(
+        &mut self,
+        id: u64,
+        e: MapEntry,
+        len: Option<u64>,
+        data: Option<Vec<u8>>,
+    ) {
+        self.ready.insert(id, Sentry { e, len, data });
     }
 
     pub fn remove(&mut self) -> Option<Sentry> {
@@ -52,6 +58,6 @@ impl StreamOrder {
     }
 
     pub fn is_complete(&self) -> bool {
-        self.ready.is_empty() && (self.seq_id == self.next)
+        self.ready.is_empty() && (self.seq_id == self.next) && self.seq_id > 0
     }
 }

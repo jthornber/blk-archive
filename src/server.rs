@@ -1,24 +1,27 @@
 use anyhow::Result;
 
-use crate::db::*;
 use crate::hash::bytes_to_hash256;
 use crate::wire;
+use crate::{config, db::*};
 use nix::sys::signal;
 use nix::sys::signal::SigSet;
 use nix::sys::signalfd::{SfdFlags, SignalFd};
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::env;
+use std::fs;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tempfile::TempDir;
 
+use crate::client;
 use crate::iovec::*;
 use crate::ipc;
 use crate::ipc::*;
 use crate::list::streams_get;
+use crate::paths;
 use crate::stream_meta;
 
 pub struct Server {
@@ -97,14 +100,10 @@ impl Server {
         let mut data_needed: Vec<u64> = Vec::new();
         let mut rc = wire::IORequest::Ok;
 
-        //println!("process_read entry!");
-
         if let Some(rpcs) = wire::read_using_buffer(&mut c.c, &mut c.buff)? {
-            //println!("Our read returned {} rpc messages", rpcs.len());
             for p in rpcs {
                 match p {
                     wire::Rpc::HaveDataReq(hd) => {
-                        //println!("wire::Rpc::HaveDataReq: {}", hd.len());
                         for (id, hash) in hd {
                             let hash256 = bytes_to_hash256(&hash);
                             if let Some(location) = self.db.is_known(hash256)? {
@@ -119,7 +118,6 @@ impl Server {
                     wire::Rpc::PackReq(id, hash, data) => {
                         let hash256 = bytes_to_hash256(&hash);
                         let iov: IoVec = vec![&data[..]];
-                        //println!("packing data from client {} {:?} {}", id, hash, data.len());
                         let new_entry =
                             self.db.add_data_entry(*hash256, &iov, data.len() as u64)?;
                         if wire::write(&mut c.c, wire::Rpc::PackResp(id, new_entry), &mut c.wb)? {
@@ -167,9 +165,101 @@ impl Server {
                             Err(e) => {
                                 let message =
                                     format!("During list::streams_get we encountered {}", e);
-                                if wire::write(&mut c.c, wire::Rpc::Error(0, message), &mut c.wb)? {
+                                if wire::write(&mut c.c, wire::Rpc::Error(id, message), &mut c.wb)?
+                                {
                                     rc = wire::IORequest::WouldBlock;
                                 }
+                            }
+                        }
+                    }
+                    wire::Rpc::ArchiveConfig(id) => {
+                        let config = config::read_config(".");
+                        match config {
+                            Ok(config) => {
+                                if wire::write(
+                                    &mut c.c,
+                                    wire::Rpc::ArchiveConfigResp(id, config),
+                                    &mut c.wb,
+                                )? {
+                                    rc = wire::IORequest::WouldBlock;
+                                }
+                            }
+                            Err(e) => {
+                                let message =
+                                    format!("During wire::Rpc::ArchiveConfig we encountered {}", e);
+                                if wire::write(&mut c.c, wire::Rpc::Error(id, message), &mut c.wb)?
+                                {
+                                    rc = wire::IORequest::WouldBlock;
+                                }
+                            }
+                        }
+                    }
+                    wire::Rpc::StreamConfig(id, stream_id) => {
+                        // Read up the stream config
+                        let stream_config = stream_meta::read_stream_config(&stream_id);
+
+                        match stream_config {
+                            Ok(stream_config) => {
+                                if wire::write(
+                                    &mut c.c,
+                                    wire::Rpc::StreamConfigResp(id, stream_config),
+                                    &mut c.wb,
+                                )? {
+                                    rc = wire::IORequest::WouldBlock;
+                                }
+                            }
+                            Err(e) => {
+                                let message =   //println!("process_read entry!");
+                                    format!("During wire::Rpc::StreamConfig we encountered {}", e);
+                                if wire::write(&mut c.c, wire::Rpc::Error(id, message), &mut c.wb)?
+                                {
+                                    rc = wire::IORequest::WouldBlock;
+                                }
+                            }
+                        }
+                    }
+                    wire::Rpc::StreamRetrieve(id, stream_id) => {
+                        let stream_data = fs::read(paths::stream_path(&stream_id));
+                        let stream_offset_data = fs::read(paths::stream_path_offsets(&stream_id));
+
+                        match stream_data {
+                            Ok(stream_data) => {
+                                if wire::write(
+                                    &mut c.c,
+                                    wire::Rpc::StreamRetrieveResp(
+                                        id,
+                                        Some((stream_data, stream_offset_data.unwrap())),
+                                    ),
+                                    &mut c.wb,
+                                )? {
+                                    rc = wire::IORequest::WouldBlock;
+                                }
+                            }
+                            Err(e) => {
+                                // Would this simply we missing file -> wrong stream id?
+
+                                let message = format!(
+                                    "During wire::Rpc::StreamRetrieve we encountered {}",
+                                    e
+                                );
+                                if wire::write(&mut c.c, wire::Rpc::Error(id, message), &mut c.wb)?
+                                {
+                                    rc = wire::IORequest::WouldBlock;
+                                }
+                            }
+                        }
+                    }
+                    wire::Rpc::RetrieveChunkReq(id, op_type) => {
+                        if let client::IdType::Unpack(slab, offset, nr_entries, partial) = op_type {
+                            // How could this fail in normal operation?
+                            let data = self.db.data_get(slab, offset, nr_entries, partial).unwrap();
+
+                            if wire::write(
+                                &mut c.c,
+                                wire::Rpc::RetrieveChunkResp(id, data),
+                                &mut c.wb,
+                            )? {
+                                rc = wire::IORequest::WouldBlock;
                             }
                         }
                     }

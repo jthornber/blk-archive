@@ -109,7 +109,6 @@ impl CuckooFilter {
     }
 
     pub fn with_capacity(mut n: usize) -> Self {
-        println!("cuckcoo size = {}", n);
         n = (n * 5) / 4;
         n /= ENTRIES_PER_BUCKET;
         let mut rng = ChaCha20Rng::seed_from_u64(1);

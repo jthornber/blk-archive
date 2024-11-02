@@ -104,7 +104,7 @@ impl DedupHandler {
 
         for e in rc.0 {
             me = e.e;
-            len = e.len;
+            len = e.len.unwrap();
             self.process_stream_entry(&me, len)?;
             self.maybe_complete_stream()?
         }
@@ -129,7 +129,7 @@ impl DedupHandler {
         {
             let mut so = self.so.lock().unwrap();
             let id = so.entry_start();
-            so.entry_complete(id, e, len)?;
+            so.entry_complete(id, e, Some(len), None);
         }
         //self.process_stream()?;
         Ok(())
@@ -188,9 +188,9 @@ impl IoVecHandler for DedupHandler {
                     let h = hash_256_iov(iov);
                     let data = Data {
                         id: self.get_next_stream_id(),
-                        h: hash256_to_bytes(&h),
-                        len,
-                        d: Some(io_vec_to_vec(iov)),
+                        t: IdType::Pack(hash256_to_bytes(&h), len),
+                        data: Some(io_vec_to_vec(iov)),
+                        entry: None,
                     };
                     let mut req = rq.lock().unwrap();
                     req.handle_data(data);

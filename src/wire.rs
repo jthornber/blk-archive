@@ -1,18 +1,21 @@
 use anyhow::Result;
-use bincode::{config, Decode, Encode};
+use bincode::{Decode, Encode};
 use core::fmt;
 use std::collections::VecDeque;
 use std::io;
 use std::io::Read;
 use std::io::Write;
 
+use crate::client;
+use crate::config;
 use crate::ipc::*;
 use crate::stream_meta;
 
-const CONFIG: config::Configuration<config::BigEndian, config::Fixint> = config::standard()
-    .with_fixed_int_encoding()
-    .with_big_endian(); // We can certainly remove this to get little endian as most of the arches
-                        // are little endian today, historically on-wire has been big endian
+const CONFIG: bincode::config::Configuration<bincode::config::BigEndian, bincode::config::Fixint> =
+    bincode::config::standard()
+        .with_fixed_int_encoding()
+        .with_big_endian(); // We can certainly remove this to get little endian as most of the arches
+                            // are little endian today, historically on-wire has been big endian
 
 #[derive(Encode, Decode, PartialEq, Debug)]
 struct Packet {
@@ -29,6 +32,9 @@ pub const PACKET_MAGIC: u64 = 0x4D454F474D454F47;
 pub enum Rpc {
     Error(u64, String),
 
+    ArchiveConfig(u64),
+    ArchiveConfigResp(u64, config::Config),
+
     // Do we have the data?
     HaveDataReq(Vec<(u64, [u8; 32])>), // One of more tuples of (request id, hash signature bytes)
     HaveDataRespYes(Vec<(u64, (u32, u32))>), // One or more tuples of (request id, (slab #, slab offset) )
@@ -41,11 +47,17 @@ pub enum Rpc {
     StreamSend(u64, stream_meta::StreamMetaInfo, Vec<u8>, Vec<u8>),
     StreamSendComplete(u64),
 
+    StreamConfig(u64, String),
+    StreamConfigResp(u64, stream_meta::StreamConfig),
+
+    StreamRetrieve(u64, String),
+    StreamRetrieveResp(u64, Option<(Vec<u8>, Vec<u8>)>),
+
+    RetrieveChunkReq(u64, client::IdType),
+    RetrieveChunkResp(u64, Vec<u8>),
+
     ArchiveListReq(u64),
     ArchiveListResp(u64, Vec<(String, String, stream_meta::StreamConfig)>), // This may not scale well enough
-
-    UnPackReq(u64, String), // stream id, Request id (returned from server, so client can correlate)
-    UnPackResp(u64, u64, Vec<u8>), // Request id, sequence_id, data
 }
 
 pub fn id_get(rpc: &Rpc) -> u64 {
@@ -56,8 +68,6 @@ pub fn id_get(rpc: &Rpc) -> u64 {
         Rpc::StreamSendComplete(id) => *id,
         Rpc::ArchiveListReq(id) => *id,
         Rpc::ArchiveListResp(id, _entries) => *id,
-        Rpc::UnPackReq(id, _stream_id) => *id,
-        Rpc::UnPackResp(id, _seq_id, _data) => *id,
         _ => 0,
     }
 }
@@ -66,8 +76,13 @@ impl fmt::Debug for Rpc {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Rpc::Error(e, msg) => write!(f, "Rpc::Error({}:{}", e, msg),
+
+            Rpc::ArchiveConfig(id) => write!(f, "Rpc::ArchiveConfig({})", id),
+            Rpc::ArchiveConfigResp(id, _config) => write!(f, "Rpc::ArchiveConfigResp({})", id),
+
             Rpc::HaveDataRespYes(i) => write!(f, "Rpc::HaveDataReq({})", i.len()),
             Rpc::HaveDataRespNo(i) => write!(f, "Rpc::HaveDataYes({})", i.len()),
+
             Rpc::PackReq(i, hash, data) => {
                 write!(f, "Rpc::PackReq({}:[{:?}]:{})", i, hash, data.len())
             }

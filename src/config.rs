@@ -1,11 +1,12 @@
 use anyhow::{Context, Result};
+use bincode::{Decode, Encode};
 use serde_derive::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 //-----------------------------------------
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Encode, Decode, PartialEq)]
 pub struct Config {
     pub block_size: usize,
     pub splitter_alg: String,
