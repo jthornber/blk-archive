@@ -1,6 +1,6 @@
 use anyhow::Result;
+use bincode::{Decode, Encode};
 use std::collections::{HashMap, VecDeque};
-use std::fmt::Debug;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -29,11 +29,18 @@ pub struct ClientRequests {
     pub hashes_written: u64,
 }
 
+#[derive(PartialEq, Encode, Decode, Clone)]
+pub enum IdType {
+    Pack([u8; 32], u64),
+    Unpack(u32, u32, u32, Option<(u32, u32)>), // Slab, offset, number entries, (partial_begin, partial_end)
+}
+
+#[derive(PartialEq, Clone)]
 pub struct Data {
     pub id: u64,
-    pub h: [u8; 32],
-    pub len: u64,
-    pub d: Option<Vec<u8>>,
+    pub t: IdType,
+    pub data: Option<Vec<u8>>,
+    pub entry: Option<MapEntry>,
 }
 
 pub enum Command {
@@ -55,18 +62,45 @@ impl SyncCommand {
     }
 }
 
+/*
 impl Debug for Data {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+
+        let rc = match self.t {
+            IdType::Pack(h, len, data) => {
+
+                f.debug_struct("Data")
+                .field("id", &self.id)
+                .field("t", &self.h)
+                .field("len", &self.len)
+                .field("d", &data)
+                .finish()
+            }
+            IdType::Unpack(slab,offset, nr_entries,partial) => {
+                f.debug_struct("Data")
+                .field("id", &self.id)
+                .field("h", &self.h)
+                .field("len", &self.len)
+                .field("d", &data)
+                .finish()
+            }
+        }
+
+        Ok(rc)
+
         let data = if self.d.is_some() { "Some(d)" } else { "None" };
 
+        /*
         f.debug_struct("Data")
             .field("id", &self.id)
             .field("h", &self.h)
             .field("len", &self.len)
             .field("d", &data)
             .finish()
+        */
     }
 }
+*/
 
 impl ClientRequests {
     fn new() -> Result<Self> {
@@ -98,9 +132,9 @@ impl ClientRequests {
 
 pub const END: Data = Data {
     id: u64::MAX,
-    h: [0; 32],
-    len: 0,
-    d: None,
+    t: IdType::Pack([0; 32], 0),
+    data: None,
+    entry: None,
 };
 
 pub fn client_thread_end(client_req: &Mutex<ClientRequests>) {
@@ -125,19 +159,35 @@ impl Client {
         // Empty the request queue and send as one packet!
         let mut rc = wire::IORequest::Ok;
         let mut req = self.req_q.lock().unwrap();
-        let mut entries: Vec<(u64, [u8; 32])> = Vec::new();
+        let mut pack_entries: Vec<(u64, [u8; 32])> = Vec::new();
         let mut should_exit = false;
-        while let Some(e) = req.remove() {
+        while let Some(ref e) = req.remove() {
             if e.id == u64::MAX {
                 should_exit = true;
                 rc = wire::IORequest::Exit;
             } else {
-                entries.push((e.id, e.h));
-                self.data_inflight.insert(e.id, e);
+                // We need to
+                let t = &e.t;
+                match t {
+                    IdType::Pack(hash, _len) => {
+                        let id = e.id;
+                        pack_entries.push((id, *hash));
+                        self.data_inflight.insert(id, e.clone());
+                    }
+                    IdType::Unpack(_slab, _offset, _nr, _partial) => {
+                        let id = e.id;
+                        let t = e.t.clone();
+                        self.data_inflight.insert(e.id, e.clone());
+                        let rpc_request = wire::Rpc::RetrieveChunkReq(id, t);
+                        if wire::write(&mut self.s, rpc_request, w_b)? {
+                            rc = wire::IORequest::WouldBlock;
+                        }
+                    }
+                }
             }
         }
-        if !entries.is_empty() {
-            let rpc_request = wire::Rpc::HaveDataReq(entries);
+        if !pack_entries.is_empty() {
+            let rpc_request = wire::Rpc::HaveDataReq(pack_entries);
             if wire::write(&mut self.s, rpc_request, w_b)? {
                 rc = wire::IORequest::WouldBlock;
             }
@@ -185,8 +235,15 @@ impl Client {
                                 nr_entries: 1,
                             };
                             let removed = self.data_inflight.remove(&id).unwrap();
-                            let len = removed.len;
-                            stream.entry_complete(id, e, len)?;
+
+                            match removed.t {
+                                IdType::Pack(_hash, len) => {
+                                    stream.entry_complete(id, e, Some(len), None);
+                                }
+                                _ => {
+                                    panic!("We are expecting only Pack type!");
+                                }
+                            }
                         }
                     }
                     wire::Rpc::HaveDataRespNo(to_send) => {
@@ -195,10 +252,12 @@ impl Client {
                             if let Some(data) = self.data_inflight.get_mut(&id) {
                                 // We remove the data from the structure to hopefully save some
                                 // data sitting in memory
-                                let d = data.d.take().unwrap();
-                                let pack_req = wire::Rpc::PackReq(data.id, data.h, d);
-                                if wire::write(&mut self.s, pack_req, w_b)? {
-                                    rc = wire::IORequest::WouldBlock;
+                                if let IdType::Pack(hash, _len) = data.t {
+                                    let d = data.data.take().unwrap();
+                                    let pack_req = wire::Rpc::PackReq(data.id, hash, d);
+                                    if wire::write(&mut self.s, pack_req, w_b)? {
+                                        rc = wire::IORequest::WouldBlock;
+                                    }
                                 }
                             } else {
                                 panic!("How does this happen? {}", id);
@@ -218,10 +277,19 @@ impl Client {
                             nr_entries: 1,
                         };
                         let removed = self.data_inflight.remove(&id).unwrap();
-                        let len = removed.len;
 
-                        stream.entry_complete(id, e, len)?;
+                        if let IdType::Pack(_hash, len) = removed.t {
+                            stream.entry_complete(id, e, Some(len), None);
+                        }
                     }
+                    wire::Rpc::RetrieveChunkResp(id, data) => {
+                        let removed = self.data_inflight.remove(&id).unwrap();
+                        let mut stream = self.so.lock().unwrap();
+                        if let IdType::Unpack(_slab, _offset, _nr, _partial) = removed.t {
+                            stream.entry_complete(id, removed.entry.unwrap(), None, Some(data));
+                        }
+                    }
+
                     wire::Rpc::StreamSendComplete(id) => {
                         self.cmds_inflight.remove(&id).unwrap().done(None);
                     }
@@ -231,6 +299,18 @@ impl Client {
                             .remove(&id)
                             .unwrap()
                             .done(Some(wire::Rpc::ArchiveListResp(id, archive_list)));
+                    }
+                    wire::Rpc::ArchiveConfigResp(id, config) => {
+                        self.cmds_inflight
+                            .remove(&id)
+                            .unwrap()
+                            .done(Some(wire::Rpc::ArchiveConfigResp(id, config)));
+                    }
+                    wire::Rpc::StreamRetrieveResp(id, data) => {
+                        self.cmds_inflight
+                            .remove(&id)
+                            .unwrap()
+                            .done(Some(wire::Rpc::StreamRetrieveResp(id, data)));
                     }
                     _ => {
                         eprint!("What are we not handling! {:?}", p);
@@ -362,8 +442,20 @@ impl Client {
     }
 }
 
-pub fn one_rpc(server: &str, rpc: wire::Rpc) -> Result<Option<wire::Rpc>> {
+pub fn rpc_invoke(rq: &Mutex<ClientRequests>, rpc: wire::Rpc) -> Result<Option<wire::Rpc>> {
     let h: handshake::HandShake;
+    {
+        let cmd = SyncCommand::new(Command::Cmd(Box::new(rpc)));
+        h = cmd.h.clone();
+        let mut req = rq.lock().unwrap();
+        req.handle_control(cmd);
+    }
+
+    // Wait for this to be done
+    Ok(h.wait())
+}
+
+pub fn one_rpc(server: &str, rpc: wire::Rpc) -> Result<Option<wire::Rpc>> {
     let so = Arc::new(Mutex::new(StreamOrder::new()?));
 
     let mut client = Client::new(server.to_string(), so.clone())?;
@@ -373,16 +465,7 @@ pub fn one_rpc(server: &str, rpc: wire::Rpc) -> Result<Option<wire::Rpc>> {
         .name("one_rpc".to_string())
         .spawn(move || client.run())?;
 
-    {
-        let cmd = SyncCommand::new(Command::Cmd(Box::new(rpc)));
-        h = cmd.h.clone();
-        let mut req = rq.lock().unwrap();
-        req.handle_control(cmd);
-    }
-
-    // Wait for this to be done
-    let response = h.wait();
-
+    let response = rpc_invoke(&rq, rpc)?;
     client_thread_end(&rq);
 
     let rc = thread_handle.join();

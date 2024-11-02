@@ -157,6 +157,24 @@ fn main_() -> Result<()> {
                 .arg(stream_arg.clone()),
         )
         .subcommand(
+            Command::new("receive")
+                .about("unpacks a stream from a remote archive")
+                .arg(
+                    Arg::new("OUTPUT")
+                        .help("Specify a device or file as the destination")
+                        .required(true)
+                        .value_name("OUTPUT"),
+                )
+                .arg(
+                    Arg::new("CREATE")
+                        .help("Create a new file rather than unpack to an existing device/file.")
+                        .long("create")
+                        .value_name("CREATE"),
+                )
+                .arg(server.clone())
+                .arg(stream_arg.clone()),
+        )
+        .subcommand(
             Command::new("verify")
                 .about("verifies stream in the archive against the original file/dev")
                 .arg(
@@ -226,6 +244,9 @@ fn main_() -> Result<()> {
         }
         Some(("unpack", sub_matches)) => {
             unpack::run_unpack(sub_matches, report)?;
+        }
+        Some(("receive", sub_matches)) => {
+            unpack::run_receive(sub_matches, report)?;
         }
         Some(("verify", sub_matches)) => {
             unpack::run_verify(sub_matches, report)?;

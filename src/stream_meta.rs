@@ -169,6 +169,18 @@ impl StreamMeta {
     }
 }
 
+pub fn write_file(file_name: &Path, contents: Vec<u8>) -> Result<()> {
+    let mut stream = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(file_name)?;
+
+    stream.write_all(&contents)?;
+    stream.flush()?;
+    Ok(())
+}
+
 pub fn package_unwrap(
     sm: StreamMetaInfo,
     stream_file: Vec<u8>,
@@ -191,28 +203,9 @@ pub fn package_unwrap(
     write_stream_config(&stream_dir, &stream_config)?;
 
     let stream_file_name = stream_dir.join("stream");
-    {
-        let mut stream = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(stream_file_name.clone())?;
-
-        stream.write_all(&stream_file[..])?;
-        stream.flush()?;
-    }
-
+    write_file(&stream_file_name, stream_file)?;
     let stream_file_name_offsets = stream_dir.join("stream.offsets");
-    {
-        let mut stream = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(stream_file_name_offsets.clone())?;
-
-        stream.write_all(&stream_offsets[..])?;
-        stream.flush()?;
-    }
+    write_file(&stream_file_name_offsets, stream_offsets)?;
 
     // TODO: Flush containing directory and archive/stream directory too
 
