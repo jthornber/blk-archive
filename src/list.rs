@@ -40,7 +40,7 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
         streams.push((id, config::to_date_time(&cfg.pack_time), cfg));
     }
 
-    streams.sort_by(|l, r| l.1.partial_cmp(&r.1).unwrap());
+    streams.sort_by(|l, r| l.1.cmp(&r.1));
 
     if output.json {
         let mut j_output = Vec::new();
