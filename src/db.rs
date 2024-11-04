@@ -244,15 +244,12 @@ impl Db {
         Ok(rc)
     }
 
-    pub fn data_get(
-        &mut self,
-        slab: u32,
+    fn calculate_offsets(
         offset: u32,
         nr_entries: u32,
+        info: &ByIndex,
         partial: Option<(u32, u32)>,
-    ) -> Result<Vec<u8>> {
-        let info = self.get_info(slab)?;
-
+    ) -> (usize, usize) {
         let (data_begin, data_end) = if nr_entries == 1 {
             let (data_begin, data_end, _expected_hash) = info.get(offset as usize).unwrap();
             (*data_begin as usize, *data_end as usize)
@@ -264,31 +261,31 @@ impl Db {
             (*data_begin as usize, *data_end as usize)
         };
 
-        let data = self.data_file.read(slab)?;
-
-        let rc = if let Some((begin, end)) = partial {
+        if let Some((begin, end)) = partial {
             let data_end = data_begin + end as usize;
             let data_begin = data_begin + begin as usize;
-            data[data_begin..data_end].to_vec()
+            (data_begin, data_end)
         } else {
-            data[data_begin..data_end].to_vec()
-        };
+            (data_begin, data_end)
+        }
+    }
 
-        Ok(rc)
+    pub fn data_get(
+        &mut self,
+        slab: u32,
+        offset: u32,
+        nr_entries: u32,
+        partial: Option<(u32, u32)>,
+    ) -> Result<Vec<u8>> {
+        let info = self.get_info(slab)?;
+        let (data_begin, data_end) = Self::calculate_offsets(offset, nr_entries, info, partial);
+        let data = self.data_file.read(slab)?;
+
+        Ok(data[data_begin..data_end].to_vec())
     }
 
     pub fn complete_slab(&mut self) -> Result<u64> {
         self.maybe_complete_data(0)
-    }
-
-    // NOTE: This won't work for multiple clients and one server!
-    pub fn file_sizes(&mut self) -> (u64, u64) {
-        let hashes_written = {
-            let hashes_file = self.hashes_file.lock().unwrap();
-            hashes_file.get_file_size()
-        };
-
-        (self.data_file.get_file_size(), hashes_written)
     }
 
     fn sync_and_close(&mut self) {
