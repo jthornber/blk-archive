@@ -128,6 +128,8 @@ impl Server {
                         let packed_path = sm.source_path.clone();
                         let write_rc =
                             stream_meta::package_unwrap(sm, stream_bytes, stream_offsets);
+                        // We have been sent a stream file, lets sync the data slab
+                        self.db.complete_slab().unwrap();
                         match write_rc {
                             Ok(_) => {
                                 if wire::write(
