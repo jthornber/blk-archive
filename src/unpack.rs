@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::thread::JoinHandle;
-use std::time::Duration;
+//use std::time::Duration;
+use chrono::prelude::*;
+use size_display::Size;
 use tempfile::TempDir;
 use thinp::report::*;
 
@@ -78,8 +80,10 @@ impl<D: UnpackDest> Unpacker<D> {
         })
     }
 
-    fn unpack_entry(&mut self, e: &MapEntry, data: Option<Vec<u8>>) -> Result<()> {
+    fn unpack_entry(&mut self, e: &MapEntry, data: Option<Vec<u8>>) -> Result<u64> {
         use MapEntry::*;
+
+        let amt_written: u64;
 
         match e {
             Fill { byte, len } => {
@@ -93,9 +97,11 @@ impl<D: UnpackDest> Unpacker<D> {
                     self.dest.handle_mapped(&bytes[..])?;
                     written += write_len;
                 }
+                amt_written = *len;
             }
             Unmapped { len } => {
                 self.dest.handle_unmapped(*len)?;
+                amt_written = *len;
             }
             Data {
                 slab,
@@ -111,6 +117,7 @@ impl<D: UnpackDest> Unpacker<D> {
                         .data_get(*slab, *offset, *nr_entries, None)?
                 };
 
+                amt_written = data.len() as u64;
                 self.dest.handle_mapped(&data[..])?;
             }
             Partial {
@@ -132,6 +139,7 @@ impl<D: UnpackDest> Unpacker<D> {
                         .data_get(*slab, *offset, *nr_entries, partial)?
                 };
 
+                amt_written = data.len() as u64;
                 self.dest.handle_mapped(&data[..])?;
             }
             Ref { .. } => {
@@ -140,11 +148,15 @@ impl<D: UnpackDest> Unpacker<D> {
             }
         }
 
-        Ok(())
+        Ok(amt_written)
     }
 
-    pub fn unpack(&mut self, report: &Arc<Report>) -> Result<()> {
+    pub fn unpack(&mut self, report: &Arc<Report>, total: u64) -> Result<()> {
         report.progress(0);
+
+        let mut amt_written = 0;
+
+        let start_time: DateTime<Utc> = Utc::now();
 
         if self.remote.is_some() {
             let mut remote = self.remote.take().unwrap();
@@ -153,20 +165,30 @@ impl<D: UnpackDest> Unpacker<D> {
             // that is running the function `build_entries`
             loop {
                 let entries = remote.so.lock().unwrap().drain();
-
                 if !entries.0.is_empty() {
                     for e in entries.0 {
-                        self.unpack_entry(&e.e, e.data)?;
+                        amt_written += self.unpack_entry(&e.e, e.data)?;
                     }
+                    let percentage = ((amt_written as f64 / total as f64) * 100.0) as u8;
+                    report.progress(percentage);
                 } else {
                     //TODO: Change this to use a CondVar
-                    thread::sleep(Duration::from_millis(1));
+                    //thread::sleep(Duration::from_millis(1));
                 }
 
                 if entries.1 {
                     break;
                 }
             }
+
+            let end_time: DateTime<Utc> = Utc::now();
+            let elapsed = end_time - start_time;
+            let elapsed = elapsed.num_milliseconds() as f64 / 1000.0;
+
+            report.info(&format!(
+                "speed            : {:.2}/s",
+                Size((total as f64 / elapsed) as u64)
+            ));
 
             let entry_thread = remote.entry_thread.take().unwrap();
 
@@ -204,6 +226,15 @@ impl<D: UnpackDest> Unpacker<D> {
                     }
                 }
             }
+
+            let end_time: DateTime<Utc> = Utc::now();
+            let elapsed = end_time - start_time;
+            let elapsed = elapsed.num_milliseconds() as f64 / 1000.0;
+
+            report.info(&format!(
+                "speed            : {:.2}/s",
+                Size((total as f64 / elapsed) as u64)
+            ));
         }
 
         self.dest.complete()?;
@@ -653,20 +684,20 @@ pub fn run_receive(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
         so,
     };
 
+    // Check the size matches the stream size.
+    let stream_cfg = _retrieve_stream_config(&remote.rq, stream_id)?;
+    let stream_size = stream_cfg.size;
+    let output_size = thinp::file_utils::file_size(output_file)?;
+
     if create {
         report.set_title(&format!("Unpacking {} ...", output_file.display()));
         let dest = ThickDest { output };
         let mut u = Unpacker::new(&stream_file, cache_nr_entries, dest, Some(remote))?;
-        u.unpack(&report)
+        u.unpack(&report, stream_size)
     } else {
-        // Check the size matches the stream size.
-        let stream_cfg = _retrieve_stream_config(&remote.rq, stream_id)?;
-        let stream_size = stream_cfg.size;
-        let output_size = thinp::file_utils::file_size(output_file)?;
         if output_size != stream_size {
             return Err(anyhow!("Destination size doesn't not match stream size"));
         }
-
         report.set_title(&format!("Unpacking {} ...", output_file.display()));
         if is_thin_device(output_file)? {
             let mappings = read_thin_mappings(output_file)?;
@@ -685,11 +716,11 @@ pub fn run_receive(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
                 writes_avoided: 0,
             };
             let mut u = Unpacker::new(&stream_file, cache_nr_entries, dest, Some(remote))?;
-            u.unpack(&report)
+            u.unpack(&report, stream_size)
         } else {
             let dest = ThickDest { output };
             let mut u = Unpacker::new(&stream_file, cache_nr_entries, dest, Some(remote))?;
-            u.unpack(&report)
+            u.unpack(&report, stream_size)
         }
     }
 }
@@ -720,6 +751,10 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     };
     env::set_current_dir(archive_dir)?;
 
+    let stream_cfg = stream_meta::read_stream_config(stream)?;
+    let stream_size = stream_cfg.size;
+    let output_size = thinp::file_utils::file_size(output_file)?;
+
     report.set_title(&format!("Unpacking {} ...", output_file.display()));
     if create {
         let config = config::read_config(".")?;
@@ -727,12 +762,9 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
 
         let dest = ThickDest { output };
         let mut u = Unpacker::new(&stream_path, cache_nr_entries, dest, None)?;
-        u.unpack(&report)
+        u.unpack(&report, stream_size)
     } else {
         // Check the size matches the stream size.
-        let stream_cfg = stream_meta::read_stream_config(stream)?;
-        let stream_size = stream_cfg.size;
-        let output_size = thinp::file_utils::file_size(output_file)?;
         if output_size != stream_size {
             return Err(anyhow!("Destination size doesn't not match stream size"));
         }
@@ -758,11 +790,11 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
                 writes_avoided: 0,
             };
             let mut u = Unpacker::new(&stream_path, cache_nr_entries, dest, None)?;
-            u.unpack(&report)
+            u.unpack(&report, stream_size)
         } else {
             let dest = ThickDest { output };
             let mut u = Unpacker::new(&stream_path, cache_nr_entries, dest, None)?;
-            u.unpack(&report)
+            u.unpack(&report, stream_size)
         }
     }
 }
@@ -984,7 +1016,7 @@ pub fn run_verify(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     let stream_path = stream_path(stream);
 
     let mut u = Unpacker::new(&stream_path, cache_nr_entries, dest, None)?;
-    u.unpack(&report)
+    u.unpack(&report, 1)
 }
 
 //-----------------------------------------
