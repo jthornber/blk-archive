@@ -225,6 +225,13 @@ impl Client {
         if let Some(cmds) = wire::read_using_buffer(&mut self.s, buff)? {
             for p in cmds {
                 match p {
+                    wire::Rpc::RetrieveChunkResp(id, data) => {
+                        let removed = self.data_inflight.remove(&id).unwrap();
+                        let mut stream = self.so.lock().unwrap();
+                        if let IdType::Unpack(_slab, _offset, _nr, _partial) = removed.t {
+                            stream.entry_complete(id, removed.entry.unwrap(), None, Some(data));
+                        }
+                    }
                     wire::Rpc::HaveDataRespYes(y) => {
                         // Server already had data, build the stream
                         let mut stream = self.so.lock().unwrap();
@@ -282,14 +289,6 @@ impl Client {
                             stream.entry_complete(id, e, Some(len), None);
                         }
                     }
-                    wire::Rpc::RetrieveChunkResp(id, data) => {
-                        let removed = self.data_inflight.remove(&id).unwrap();
-                        let mut stream = self.so.lock().unwrap();
-                        if let IdType::Unpack(_slab, _offset, _nr, _partial) = removed.t {
-                            stream.entry_complete(id, removed.entry.unwrap(), None, Some(data));
-                        }
-                    }
-
                     wire::Rpc::StreamSendComplete(id) => {
                         self.cmds_inflight.remove(&id).unwrap().done(None);
                     }
@@ -311,6 +310,12 @@ impl Client {
                             .remove(&id)
                             .unwrap()
                             .done(Some(wire::Rpc::StreamRetrieveResp(id, data)));
+                    }
+                    wire::Rpc::StreamConfigResp(id, config) => {
+                        self.cmds_inflight
+                            .remove(&id)
+                            .unwrap()
+                            .done(Some(wire::Rpc::StreamConfigResp(id, config)));
                     }
                     _ => {
                         eprint!("What are we not handling! {:?}", p);
