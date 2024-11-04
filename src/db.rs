@@ -277,6 +277,10 @@ impl Db {
         Ok(rc)
     }
 
+    pub fn complete_slab(&mut self) -> Result<u64> {
+        self.maybe_complete_data(0)
+    }
+
     // NOTE: This won't work for multiple clients and one server!
     pub fn file_sizes(&mut self) -> (u64, u64) {
         let hashes_written = {
