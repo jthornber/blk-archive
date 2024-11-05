@@ -289,7 +289,6 @@ impl Db {
     }
 
     fn sync_and_close(&mut self) {
-        eprintln!("closing db!");
         self.maybe_complete_data(0)
             .expect("db.drop: maybe_complete_data error!");
         let mut hashes_file = self.hashes_file.lock().unwrap();
