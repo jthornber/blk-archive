@@ -8,12 +8,12 @@ use nix::sys::signal::SigSet;
 use nix::sys::signalfd::{SfdFlags, SignalFd};
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::env;
 use std::fs;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::{env, io};
 use tempfile::TempDir;
 
 use crate::client;
@@ -237,18 +237,30 @@ impl Server {
                                     rc = wire::IORequest::WouldBlock;
                                 }
                             }
-                            Err(e) => {
-                                // Would this simply we missing file -> wrong stream id?
-
-                                let message = format!(
-                                    "During wire::Rpc::StreamRetrieve we encountered {}",
-                                    e
-                                );
-                                if wire::write(&mut c.c, wire::Rpc::Error(id, message), &mut c.wb)?
-                                {
-                                    rc = wire::IORequest::WouldBlock;
+                            Err(e) => match e.kind() {
+                                io::ErrorKind::NotFound => {
+                                    if wire::write(
+                                        &mut c.c,
+                                        wire::Rpc::StreamRetrieveResp(id, None),
+                                        &mut c.wb,
+                                    )? {
+                                        rc = wire::IORequest::WouldBlock;
+                                    }
                                 }
-                            }
+                                _ => {
+                                    let message = format!(
+                                        "During wire::Rpc::StreamRetrieve we encountered {}",
+                                        e
+                                    );
+                                    if wire::write(
+                                        &mut c.c,
+                                        wire::Rpc::Error(id, message),
+                                        &mut c.wb,
+                                    )? {
+                                        rc = wire::IORequest::WouldBlock;
+                                    }
+                                }
+                            },
                         }
                     }
                     wire::Rpc::RetrieveChunkReq(id, op_type) => {
@@ -349,7 +361,6 @@ impl Server {
                     || item_rdy.events & epoll::Events::EPOLLHUP.bits()
                         == epoll::Events::EPOLLHUP.bits()
                 {
-                    println!("We lost a client!");
                     let fd_to_remove = item_rdy.data as i32;
                     event.data = fd_to_remove as u64;
                     epoll::ctl(
@@ -370,7 +381,7 @@ impl Server {
                     let result = self.process_read(s);
                     match result {
                         Err(e) => {
-                            println!("Client ended in error: {}", e);
+                            println!("Client removed: {}", e);
                             clients.remove(&fd);
                         }
                         Ok(r) => {
@@ -412,13 +423,6 @@ impl Server {
                 break;
             }
         }
-        println!("exiting server.run()");
         Ok(())
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        println!("Calling server.drop!");
     }
 }

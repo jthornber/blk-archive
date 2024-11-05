@@ -153,7 +153,7 @@ impl<D: UnpackDest> Unpacker<D> {
 
     pub fn unpack(&mut self, report: &Arc<Report>, total: u64) -> Result<()> {
         report.progress(0);
-
+        let mut socket_thread_alive: bool = true;
         let mut amt_written = 0;
 
         let start_time: DateTime<Utc> = Utc::now();
@@ -179,16 +179,28 @@ impl<D: UnpackDest> Unpacker<D> {
                 if entries.1 {
                     break;
                 }
+
+                {
+                    let rq = remote.rq.lock().unwrap();
+                    if rq.dead_thread {
+                        socket_thread_alive = false;
+                        break;
+                    }
+                }
             }
 
-            let end_time: DateTime<Utc> = Utc::now();
-            let elapsed = end_time - start_time;
-            let elapsed = elapsed.num_milliseconds() as f64 / 1000.0;
+            if socket_thread_alive {
+                let end_time: DateTime<Utc> = Utc::now();
+                let elapsed = end_time - start_time;
+                let elapsed = elapsed.num_milliseconds() as f64 / 1000.0;
 
-            report.info(&format!(
-                "speed            : {:.2}/s",
-                Size((total as f64 / elapsed) as u64)
-            ));
+                report.info(&format!(
+                    "speed            : {:.2}/s",
+                    Size((total as f64 / elapsed) as u64)
+                ));
+            } else {
+                eprintln!("We encountered an error during communication, exiting!");
+            }
 
             let entry_thread = remote.entry_thread.take().unwrap();
 
@@ -602,31 +614,74 @@ fn _retrieve_stream_config(
     }
 }
 
-//-----------------------------------------
-pub fn run_receive(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
-    // Connect to server
-    // retrieve the stream file to local
-    // unpack the stream file while retrieving data from server
-
-    let output_file = Path::new(matches.get_one::<String>("OUTPUT").unwrap());
-    let stream_id = matches.get_one::<String>("STREAM").unwrap();
-    let create = matches.contains_id("CREATE");
-    let server = matches.get_one::<String>("SERVER").unwrap();
-
+fn create_open_output(create: bool, output_file: &Path) -> Result<File> {
     let output = if create {
         fs::OpenOptions::new()
             .read(false)
             .write(true)
             .create_new(true)
             .open(output_file)
-            .context("Couldn't open output")?
+            .context(format!("Couldn't create output file: {:?}", output_file))?
     } else {
         fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(output_file)
-            .context("Couldn't open output")?
+            .context(format!("Couldn't open output file: {:?}", output_file))?
     };
+    Ok(output)
+}
+
+fn unpack_common(
+    report: Arc<Report>,
+    create: bool,
+    output_file: &Path,
+    stream_file: &Path,
+    remote: Option<Remote>,
+    cache_nr_entries: usize,
+    output_size: u64,
+) -> Result<()> {
+    let output = create_open_output(create, output_file)?;
+
+    if create {
+        report.set_title(&format!("Unpacking {} ...", output_file.display()));
+        let dest = ThickDest { output };
+        let mut u = Unpacker::new(stream_file, cache_nr_entries, dest, remote)?;
+        u.unpack(&report, output_size)
+    } else {
+        report.set_title(&format!("Unpacking {} ...", output_file.display()));
+        if is_thin_device(output_file)? {
+            let mappings = read_thin_mappings(output_file)?;
+            let block_size = mappings.data_block_size as u64 * 512;
+            let provisioned = RunIter::new(
+                mappings.provisioned_blocks,
+                (output_size / block_size) as u32,
+            );
+
+            let dest = ThinDest {
+                block_size,
+                output,
+                pos: 0,
+                provisioned,
+                run: None,
+                writes_avoided: 0,
+            };
+            let mut u = Unpacker::new(stream_file, cache_nr_entries, dest, remote)?;
+            u.unpack(&report, output_size)
+        } else {
+            let dest = ThickDest { output };
+            let mut u = Unpacker::new(stream_file, cache_nr_entries, dest, remote)?;
+            u.unpack(&report, output_size)
+        }
+    }
+}
+
+//-----------------------------------------
+pub fn run_receive(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
+    let output_file = Path::new(matches.get_one::<String>("OUTPUT").unwrap());
+    let stream_id = matches.get_one::<String>("STREAM").unwrap();
+    let create = matches.get_one::<bool>("CREATE").unwrap();
+    let server = matches.get_one::<String>("SERVER").unwrap();
 
     let so = Arc::new(Mutex::new(StreamOrder::new()?));
     let mut client = client::Client::new(server.to_string(), so.clone())?;
@@ -687,42 +742,20 @@ pub fn run_receive(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     // Check the size matches the stream size.
     let stream_cfg = _retrieve_stream_config(&remote.rq, stream_id)?;
     let stream_size = stream_cfg.size;
-    let output_size = thinp::file_utils::file_size(output_file)?;
 
-    if create {
-        report.set_title(&format!("Unpacking {} ...", output_file.display()));
-        let dest = ThickDest { output };
-        let mut u = Unpacker::new(&stream_file, cache_nr_entries, dest, Some(remote))?;
-        u.unpack(&report, stream_size)
-    } else {
-        if output_size != stream_size {
-            return Err(anyhow!("Destination size doesn't not match stream size"));
-        }
-        report.set_title(&format!("Unpacking {} ...", output_file.display()));
-        if is_thin_device(output_file)? {
-            let mappings = read_thin_mappings(output_file)?;
-            let block_size = mappings.data_block_size as u64 * 512;
-            let provisioned = RunIter::new(
-                mappings.provisioned_blocks,
-                (output_size / block_size) as u32,
-            );
-
-            let dest = ThinDest {
-                block_size,
-                output,
-                pos: 0,
-                provisioned,
-                run: None,
-                writes_avoided: 0,
-            };
-            let mut u = Unpacker::new(&stream_file, cache_nr_entries, dest, Some(remote))?;
-            u.unpack(&report, stream_size)
-        } else {
-            let dest = ThickDest { output };
-            let mut u = Unpacker::new(&stream_file, cache_nr_entries, dest, Some(remote))?;
-            u.unpack(&report, stream_size)
-        }
+    if !*create && stream_size != thinp::file_utils::file_size(output_file)? {
+        return Err(anyhow!("Destination size doesn't not match stream size"));
     }
+
+    unpack_common(
+        report,
+        *create,
+        output_file,
+        &stream_file,
+        Some(remote),
+        cache_nr_entries,
+        stream_size,
+    )
 }
 
 pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
@@ -731,72 +764,30 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
         .context("Bad archive dir")?;
     let output_file = Path::new(matches.get_one::<String>("OUTPUT").unwrap());
     let stream = matches.get_one::<String>("STREAM").unwrap();
-    let create = matches.contains_id("CREATE");
-
+    let create = matches.get_one::<bool>("CREATE").unwrap();
     let stream_path = stream_path(stream);
 
-    let output = if create {
-        fs::OpenOptions::new()
-            .read(false)
-            .write(true)
-            .create_new(true)
-            .open(output_file)
-            .context("Couldn't open output")?
-    } else {
-        fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(output_file)
-            .context("Couldn't open output")?
-    };
     env::set_current_dir(archive_dir)?;
+
+    let config = config::read_config(".")?;
+    let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
 
     let stream_cfg = stream_meta::read_stream_config(stream)?;
     let stream_size = stream_cfg.size;
-    let output_size = thinp::file_utils::file_size(output_file)?;
 
-    report.set_title(&format!("Unpacking {} ...", output_file.display()));
-    if create {
-        let config = config::read_config(".")?;
-        let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
-
-        let dest = ThickDest { output };
-        let mut u = Unpacker::new(&stream_path, cache_nr_entries, dest, None)?;
-        u.unpack(&report, stream_size)
-    } else {
-        // Check the size matches the stream size.
-        if output_size != stream_size {
-            return Err(anyhow!("Destination size doesn't not match stream size"));
-        }
-
-        let config = config::read_config(".")?;
-        let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
-
-        report.set_title(&format!("Unpacking {} ...", output_file.display()));
-        if is_thin_device(output_file)? {
-            let mappings = read_thin_mappings(output_file)?;
-            let block_size = mappings.data_block_size as u64 * 512;
-            let provisioned = RunIter::new(
-                mappings.provisioned_blocks,
-                (output_size / block_size) as u32,
-            );
-
-            let dest = ThinDest {
-                block_size,
-                output,
-                pos: 0,
-                provisioned,
-                run: None,
-                writes_avoided: 0,
-            };
-            let mut u = Unpacker::new(&stream_path, cache_nr_entries, dest, None)?;
-            u.unpack(&report, stream_size)
-        } else {
-            let dest = ThickDest { output };
-            let mut u = Unpacker::new(&stream_path, cache_nr_entries, dest, None)?;
-            u.unpack(&report, stream_size)
-        }
+    if !*create && stream_size != thinp::file_utils::file_size(output_file)? {
+        return Err(anyhow!("Destination size doesn't not match stream size"));
     }
+
+    unpack_common(
+        report,
+        *create,
+        output_file,
+        &stream_path,
+        None,
+        cache_nr_entries,
+        stream_size,
+    )
 }
 
 //-----------------------------------------
@@ -1014,9 +1005,10 @@ pub fn run_verify(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     };
 
     let stream_path = stream_path(stream);
+    let size = thinp::file_utils::file_size(input_file)?;
 
     let mut u = Unpacker::new(&stream_path, cache_nr_entries, dest, None)?;
-    u.unpack(&report, 1)
+    u.unpack(&report, size)
 }
 
 //-----------------------------------------

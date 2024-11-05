@@ -151,7 +151,8 @@ fn main_() -> Result<()> {
                     Arg::new("CREATE")
                         .help("Create a new file rather than unpack to an existing device/file.")
                         .long("create")
-                        .value_name("CREATE"),
+                        .value_name("CREATE")
+                        .action(ArgAction::SetTrue),
                 )
                 .arg(archive_arg.clone())
                 .arg(stream_arg.clone()),
@@ -169,7 +170,8 @@ fn main_() -> Result<()> {
                     Arg::new("CREATE")
                         .help("Create a new file rather than unpack to an existing device/file.")
                         .long("create")
-                        .value_name("CREATE"),
+                        .value_name("CREATE")
+                        .action(ArgAction::SetTrue),
                 )
                 .arg(server.clone())
                 .arg(stream_arg.clone()),
@@ -189,7 +191,8 @@ fn main_() -> Result<()> {
         .subcommand(
             Command::new("dump-stream")
                 .about("dumps stream instructions (development tool)")
-                .arg(archive_arg.clone()),
+                .arg(archive_arg.clone())
+                .arg(stream_arg.clone()),
         )
         .subcommand(
             Command::new("list")

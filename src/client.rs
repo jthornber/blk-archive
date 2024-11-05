@@ -2,6 +2,7 @@ use anyhow::Result;
 use bincode::{Decode, Encode};
 use std::collections::{HashMap, VecDeque};
 use std::io::Write;
+use std::process;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -61,46 +62,6 @@ impl SyncCommand {
         }
     }
 }
-
-/*
-impl Debug for Data {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-
-        let rc = match self.t {
-            IdType::Pack(h, len, data) => {
-
-                f.debug_struct("Data")
-                .field("id", &self.id)
-                .field("t", &self.h)
-                .field("len", &self.len)
-                .field("d", &data)
-                .finish()
-            }
-            IdType::Unpack(slab,offset, nr_entries,partial) => {
-                f.debug_struct("Data")
-                .field("id", &self.id)
-                .field("h", &self.h)
-                .field("len", &self.len)
-                .field("d", &data)
-                .finish()
-            }
-        }
-
-        Ok(rc)
-
-        let data = if self.d.is_some() { "Some(d)" } else { "None" };
-
-        /*
-        f.debug_struct("Data")
-            .field("id", &self.id)
-            .field("h", &self.h)
-            .field("len", &self.len)
-            .field("d", &data)
-            .finish()
-        */
-    }
-}
-*/
 
 impl ClientRequests {
     fn new() -> Result<Self> {
@@ -316,6 +277,10 @@ impl Client {
                             .remove(&id)
                             .unwrap()
                             .done(Some(wire::Rpc::StreamConfigResp(id, config)));
+                    }
+                    wire::Rpc::Error(_id, msg) => {
+                        eprintln!("Unexpected error, server reported: {}", msg);
+                        process::exit(2);
                     }
                     _ => {
                         eprint!("What are we not handling! {:?}", p);

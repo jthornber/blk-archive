@@ -11,18 +11,17 @@ use crate::config;
 use crate::ipc::*;
 use crate::stream_meta;
 
-const CONFIG: bincode::config::Configuration<bincode::config::BigEndian, bincode::config::Fixint> =
-    bincode::config::standard()
-        .with_fixed_int_encoding()
-        .with_big_endian(); // We can certainly remove this to get little endian as most of the arches
-                            // are little endian today, historically on-wire has been big endian
+const CONFIG: bincode::config::Configuration<
+    bincode::config::LittleEndian,
+    bincode::config::Fixint,
+> = bincode::config::standard().with_fixed_int_encoding(); //Using little endian for wire as most of the hw arches are little now
 
 #[derive(Encode, Decode, PartialEq, Debug)]
 struct Packet {
     length: u64,
     magic: u64,
     version: u32,
-    payload: Vec<u8>, // The payload will be compressed
+    payload: Vec<u8>, // The payload will eventually be compressed
     payload_crc: u32,
 }
 
@@ -111,7 +110,7 @@ fn to_8(b: &[u8]) -> &[u8; 8] {
 }
 
 fn get_u64(b: &[u8]) -> u64 {
-    u64::from_be_bytes(*to_8(b))
+    u64::from_le_bytes(*to_8(b))
 }
 
 fn get_hdr_len(b: &mut VecDeque<u8>) -> usize {
