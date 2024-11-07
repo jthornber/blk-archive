@@ -1,89 +1,92 @@
 use anyhow::{anyhow, Context, Result};
 use clap::ArgMatches;
 use io::{Read, Seek, Write};
-use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::unix::io::AsRawFd;
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::thread::JoinHandle;
+//use std::time::Duration;
+use chrono::prelude::*;
+use size_display::Size;
+use tempfile::TempDir;
 use thinp::report::*;
 
 use crate::chunkers::*;
+use crate::client;
 use crate::config;
-use crate::hash_index::*;
-use crate::pack::SLAB_SIZE_TARGET;
+use crate::db;
+use crate::db::SLAB_SIZE_TARGET;
 use crate::paths::*;
 use crate::run_iter::*;
 use crate::slab::*;
 use crate::stream;
 use crate::stream::*;
+use crate::stream_meta;
+use crate::stream_orderer::StreamOrder;
 use crate::thin_metadata::*;
+use crate::wire;
 
 //-----------------------------------------
 
 // Unpack and verify do different things with the data.
 trait UnpackDest {
+    #[allow(dead_code)]
     fn handle_fill(&mut self, byte: u8, len: u64) -> Result<()>;
     fn handle_mapped(&mut self, data: &[u8]) -> Result<()>;
     fn handle_unmapped(&mut self, len: u64) -> Result<()>;
     fn complete(&mut self) -> Result<()>;
 }
 
-struct Unpacker<D: UnpackDest> {
-    data_file: SlabFile,
-    hashes_file: SlabFile,
-    stream_file: SlabFile,
+struct Remote {
+    rq: Arc<Mutex<client::ClientRequests>>,
+    socket_thread: Option<JoinHandle<std::result::Result<(), anyhow::Error>>>,
+    entry_thread: Option<JoinHandle<std::result::Result<(), anyhow::Error>>>,
+    _td: TempDir,
+    so: Arc<Mutex<StreamOrder>>,
+}
 
-    // FIXME: make this an lru cache
-    slabs: BTreeMap<u32, Arc<ByIndex>>,
-    partial: Option<(u32, u32)>,
+struct Unpacker<D: UnpackDest> {
+    stream_file: PathBuf,
+    db: Option<db::Db>,
 
     dest: D,
+    remote: Option<Remote>,
 }
 
 impl<D: UnpackDest> Unpacker<D> {
     // Assumes current directory is the root of the archive.
-    fn new(stream: &str, cache_nr_entries: usize, dest: D) -> Result<Self> {
-        let data_file = SlabFileBuilder::open(data_path())
-            .cache_nr_entries(cache_nr_entries)
-            .build()?;
-        let hashes_file = SlabFileBuilder::open(hashes_path()).build()?;
-        let stream_file = SlabFileBuilder::open(stream_path(stream)).build()?;
+    fn new(
+        stream: &Path,
+        cache_nr_entries: usize,
+        dest: D,
+        remote: Option<Remote>,
+    ) -> Result<Self> {
+        let db = if remote.is_some() {
+            None
+        } else {
+            Some(db::Db::new(Some(cache_nr_entries))?)
+        };
 
         Ok(Self {
-            data_file,
-            hashes_file,
-            stream_file,
-            slabs: BTreeMap::new(),
-            partial: None,
+            stream_file: stream.to_path_buf(),
+            db,
             dest,
+            remote,
         })
     }
 
-    fn read_info(&mut self, slab: u32) -> Result<ByIndex> {
-        let hashes = self.hashes_file.read(slab)?;
-        ByIndex::new(hashes)
-    }
-
-    fn get_info(&mut self, slab: u32) -> Result<Arc<ByIndex>> {
-        if let Some(info) = self.slabs.get(&slab) {
-            Ok(info.clone())
-        } else {
-            let info = Arc::new(self.read_info(slab)?);
-            self.slabs.insert(slab, info.clone());
-            Ok(info)
-        }
-    }
-
-    fn unpack_entry(&mut self, e: &MapEntry) -> Result<()> {
+    fn unpack_entry(&mut self, e: &MapEntry, data: Option<Vec<u8>>) -> Result<u64> {
         use MapEntry::*;
+
+        let amt_written: u64;
 
         match e {
             Fill { byte, len } => {
-                assert!(self.partial.is_none());
                 // len may be very big, so we have to be prepared to write in chunks.
                 // FIXME: if we're writing to a file would this be zeroes anyway?  fallocate?
                 const MAX_BUFFER: u64 = 16 * 1024 * 1024;
@@ -94,40 +97,28 @@ impl<D: UnpackDest> Unpacker<D> {
                     self.dest.handle_mapped(&bytes[..])?;
                     written += write_len;
                 }
+                amt_written = *len;
             }
             Unmapped { len } => {
-                assert!(self.partial.is_none());
                 self.dest.handle_unmapped(*len)?;
+                amt_written = *len;
             }
             Data {
                 slab,
                 offset,
                 nr_entries,
             } => {
-                let info = self.get_info(*slab)?;
-
-                let (data_begin, data_end) = if *nr_entries == 1 {
-                    let (data_begin, data_end, _expected_hash) =
-                        info.get(*offset as usize).unwrap();
-                    (*data_begin as usize, *data_end as usize)
+                let data = if let Some(d) = data {
+                    d
                 } else {
-                    let (data_begin, _data_end, _expected_hash) =
-                        info.get(*offset as usize).unwrap();
-                    let (_data_begin, data_end, _expected_hash) = info
-                        .get((*offset as usize) + (*nr_entries as usize) - 1)
-                        .unwrap();
-                    (*data_begin as usize, *data_end as usize)
+                    self.db
+                        .as_mut()
+                        .unwrap()
+                        .data_get(*slab, *offset, *nr_entries, None)?
                 };
 
-                let data = self.data_file.read(*slab)?;
-                if let Some((begin, end)) = self.partial {
-                    let data_end = data_begin + end as usize;
-                    let data_begin = data_begin + begin as usize;
-                    self.dest.handle_mapped(&data[data_begin..data_end])?;
-                    self.partial = None;
-                } else {
-                    self.dest.handle_mapped(&data[data_begin..data_end])?;
-                }
+                amt_written = data.len() as u64;
+                self.dest.handle_mapped(&data[..])?;
             }
             Partial {
                 begin,
@@ -136,13 +127,20 @@ impl<D: UnpackDest> Unpacker<D> {
                 offset,
                 nr_entries,
             } => {
-                assert!(self.partial.is_none());
-                self.partial = Some((*begin, *end));
-                self.unpack_entry(&MapEntry::Data {
-                    slab: *slab,
-                    offset: *offset,
-                    nr_entries: *nr_entries,
-                })?;
+                let data = if let Some(d) = data {
+                    // When we requested the data across the wire we already handled the partial
+                    // aspect, we have been passed what is needed here
+                    d
+                } else {
+                    let partial = Some((*begin, *end));
+                    self.db
+                        .as_mut()
+                        .unwrap()
+                        .data_get(*slab, *offset, *nr_entries, partial)?
+                };
+
+                amt_written = data.len() as u64;
+                self.dest.handle_mapped(&data[..])?;
             }
             Ref { .. } => {
                 // Can't get here.
@@ -150,33 +148,107 @@ impl<D: UnpackDest> Unpacker<D> {
             }
         }
 
-        Ok(())
+        Ok(amt_written)
     }
 
-    pub fn unpack(&mut self, report: &Arc<Report>) -> Result<()> {
+    pub fn unpack(&mut self, report: &Arc<Report>, total: u64) -> Result<()> {
         report.progress(0);
+        let mut socket_thread_alive: bool = true;
+        let mut amt_written = 0;
 
-        let nr_slabs = self.stream_file.get_nr_slabs();
-        let mut unpacker = stream::MappingUnpacker::default();
+        let start_time: DateTime<Utc> = Utc::now();
 
-        for s in 0..nr_slabs {
-            let stream_data = self.stream_file.read(s as u32)?;
-            let (entries, _positions) = unpacker.unpack(&stream_data[..])?;
-            let nr_entries = entries.len();
+        if self.remote.is_some() {
+            let mut remote = self.remote.take().unwrap();
 
-            for (i, e) in entries.iter().enumerate() {
-                self.unpack_entry(e)?;
+            // Loop getting stream entries from stream order which is be filled via the thread
+            // that is running the function `build_entries`
+            loop {
+                let entries = remote.so.lock().unwrap().drain();
+                if !entries.0.is_empty() {
+                    for e in entries.0 {
+                        amt_written += self.unpack_entry(&e.e, e.data)?;
+                    }
+                    let percentage = ((amt_written as f64 / total as f64) * 100.0) as u8;
+                    report.progress(percentage);
+                } else {
+                    //TODO: Change this to use a CondVar
+                    //thread::sleep(Duration::from_millis(1));
+                }
 
-                if i % 1024 == 0 {
-                    // update progress bar
-                    let entry_fraction = i as f64 / nr_entries as f64;
-                    let slab_fraction = s as f64 / nr_slabs as f64;
-                    let percent =
-                        ((slab_fraction + (entry_fraction / nr_slabs as f64)) * 100.0) as u8;
-                    report.progress(percent);
+                if entries.1 {
+                    break;
+                }
+
+                {
+                    let rq = remote.rq.lock().unwrap();
+                    if rq.dead_thread {
+                        socket_thread_alive = false;
+                        break;
+                    }
                 }
             }
+
+            if socket_thread_alive {
+                let end_time: DateTime<Utc> = Utc::now();
+                let elapsed = end_time - start_time;
+                let elapsed = elapsed.num_milliseconds() as f64 / 1000.0;
+
+                report.info(&format!(
+                    "speed            : {:.2}/s",
+                    Size((total as f64 / elapsed) as u64)
+                ));
+            } else {
+                eprintln!("We encountered an error during communication, exiting!");
+            }
+
+            let entry_thread = remote.entry_thread.take().unwrap();
+
+            let rc = entry_thread.join();
+            if rc.is_err() {
+                eprintln!("Entry thread exited with {:?}", rc);
+            }
+
+            // End the socket thread
+            client::client_thread_end(&remote.rq);
+            let socket_thread = remote.socket_thread.take().unwrap();
+            let rc = socket_thread.join();
+            if rc.is_err() {
+                eprintln!("Socket client thread exited with {:?}", rc);
+            }
+        } else {
+            let mut stream_file = SlabFileBuilder::open(&self.stream_file).build()?;
+            let nr_slabs = stream_file.get_nr_slabs();
+            let mut unpacker = stream::MappingUnpacker::default();
+            for s in 0..nr_slabs {
+                let stream_data = stream_file.read(s as u32)?;
+                let (entries, _positions) = unpacker.unpack(&stream_data[..])?;
+                let nr_entries = entries.len();
+
+                for (i, e) in entries.iter().enumerate() {
+                    self.unpack_entry(e, None)?;
+
+                    if i % 1024 == 0 {
+                        // update progress bar
+                        let entry_fraction = i as f64 / nr_entries as f64;
+                        let slab_fraction = s as f64 / nr_slabs as f64;
+                        let percent =
+                            ((slab_fraction + (entry_fraction / nr_slabs as f64)) * 100.0) as u8;
+                        report.progress(percent);
+                    }
+                }
+            }
+
+            let end_time: DateTime<Utc> = Utc::now();
+            let elapsed = end_time - start_time;
+            let elapsed = elapsed.num_milliseconds() as f64 / 1000.0;
+
+            report.info(&format!(
+                "speed            : {:.2}/s",
+                Size((total as f64 / elapsed) as u64)
+            ));
         }
+
         self.dest.complete()?;
         report.progress(100);
 
@@ -184,6 +256,81 @@ impl<D: UnpackDest> Unpacker<D> {
     }
 }
 
+/// Walks though the encoded stream file and placing each of the entries into a stream orderer.
+/// For each MapEntry that requires data we'll queue up that requests to be sent out.
+///
+/// This function does not block on any entries or for waiting for data from server.
+///
+/// TODO: We need to place limits on how much data we have outstanding to the server as we could
+/// use too much memory during this process.
+fn build_entries(
+    rq: Arc<Mutex<client::ClientRequests>>,
+    stream: PathBuf,
+    so: Arc<Mutex<StreamOrder>>,
+) -> Result<()> {
+    use MapEntry::*;
+    let mut stream_file = SlabFileBuilder::open(&stream).build()?;
+    let nr_slabs = stream_file.get_nr_slabs();
+    let mut unpacker = stream::MappingUnpacker::default();
+
+    for s in 0..nr_slabs {
+        let stream_data = stream_file.read(s as u32)?;
+        let (entries, _positions) = unpacker.unpack(&stream_data[..])?;
+
+        for e in entries.iter() {
+            match e {
+                Data {
+                    slab,
+                    offset,
+                    nr_entries,
+                } => {
+                    let mut _so = so.lock().unwrap();
+                    let id = _so.entry_start();
+                    // Get a seq number and enqueue request
+                    let data = client::Data {
+                        id,
+                        t: client::IdType::Unpack(*slab, *offset, *nr_entries, None),
+                        data: None,
+                        entry: Some(*e),
+                    };
+                    let mut rq = rq.lock().unwrap();
+                    rq.handle_data(data);
+                }
+                Partial {
+                    begin,
+                    end,
+                    slab,
+                    offset,
+                    nr_entries,
+                } => {
+                    let mut _so = so.lock().unwrap();
+                    let id = _so.entry_start();
+                    // Get a seq number and enqueue request
+                    let data = client::Data {
+                        id,
+                        t: client::IdType::Unpack(
+                            *slab,
+                            *offset,
+                            *nr_entries,
+                            Some((*begin, *end)),
+                        ),
+                        data: None,
+                        entry: Some(*e),
+                    };
+                    let mut rq = rq.lock().unwrap();
+                    rq.handle_data(data);
+                }
+                _ => {
+                    let mut _so = so.lock().unwrap();
+                    let id = _so.entry_start();
+                    _so.entry_complete(id, *e, None, None);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
 //-----------------------------------------
 
 struct ThickDest<W: Write> {
@@ -304,6 +451,8 @@ impl ThinDest {
 
     //------------------
 
+    //Why is this dead code?
+    #[allow(dead_code)]
     fn handle_fill_unprovisioned(&mut self, byte: u8, len: u64) -> Result<()> {
         if byte == 0 {
             // FIXME: what if we fill a partial block, then subsequently trigger a provision and
@@ -314,6 +463,8 @@ impl ThinDest {
         }
     }
 
+    //Why is this dead code?
+    #[allow(dead_code)]
     fn handle_fill_provisioned(&mut self, byte: u8, len: u64) -> Result<()> {
         self.fill(byte, len)
     }
@@ -432,52 +583,72 @@ impl UnpackDest for ThinDest {
     }
 }
 
-//-----------------------------------------
+fn _retrieve_stream(
+    rq: &Mutex<client::ClientRequests>,
+    stream_id: &str,
+) -> Result<(Vec<u8>, Vec<u8>)> {
+    let rc = client::rpc_invoke(rq, wire::Rpc::StreamRetrieve(0, stream_id.to_string()))?
+        .ok_or(anyhow!("expecting a result to StreamRetrieve!"))?;
 
-pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
-    let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap())
-        .canonicalize()
-        .context("Bad archive dir")?;
-    let output_file = Path::new(matches.value_of("OUTPUT").unwrap());
-    let stream = matches.value_of("STREAM").unwrap();
-    let create = matches.is_present("CREATE");
+    if let wire::Rpc::StreamRetrieveResp(_id, data) = rc {
+        if data.is_none() {
+            return Err(anyhow!(format!("stream id = {} not found!", stream_id)));
+        }
+        Ok(data.unwrap())
+    } else {
+        panic!("We received the wrong response {:?} !", rc);
+    }
+}
 
+fn _retrieve_stream_config(
+    rq: &Mutex<client::ClientRequests>,
+    stream_id: &str,
+) -> Result<stream_meta::StreamConfig> {
+    let rc = client::rpc_invoke(rq, wire::Rpc::StreamConfig(0, stream_id.to_string()))?
+        .ok_or(anyhow!("expecting a result to StreamConfig!"))?;
+
+    if let wire::Rpc::StreamConfigResp(_id, config) = rc {
+        Ok(config)
+    } else {
+        panic!("We received the wrong response {:?} !", rc);
+    }
+}
+
+fn create_open_output(create: bool, output_file: &Path) -> Result<File> {
     let output = if create {
         fs::OpenOptions::new()
             .read(false)
             .write(true)
             .create_new(true)
             .open(output_file)
-            .context("Couldn't open output")?
+            .context(format!("Couldn't create output file: {:?}", output_file))?
     } else {
         fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(output_file)
-            .context("Couldn't open output")?
+            .context(format!("Couldn't open output file: {:?}", output_file))?
     };
-    env::set_current_dir(archive_dir)?;
+    Ok(output)
+}
 
-    report.set_title(&format!("Unpacking {} ...", output_file.display()));
+fn unpack_common(
+    report: Arc<Report>,
+    create: bool,
+    output_file: &Path,
+    stream_file: &Path,
+    remote: Option<Remote>,
+    cache_nr_entries: usize,
+    output_size: u64,
+) -> Result<()> {
+    let output = create_open_output(create, output_file)?;
+
     if create {
-        let config = config::read_config(".")?;
-        let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
-
+        report.set_title(&format!("Unpacking {} ...", output_file.display()));
         let dest = ThickDest { output };
-        let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
-        u.unpack(&report)
+        let mut u = Unpacker::new(stream_file, cache_nr_entries, dest, remote)?;
+        u.unpack(&report, output_size)
     } else {
-        // Check the size matches the stream size.
-        let stream_cfg = config::read_stream_config(stream)?;
-        let stream_size = stream_cfg.size;
-        let output_size = thinp::file_utils::file_size(output_file)?;
-        if output_size != stream_size {
-            return Err(anyhow!("Destination size doesn't not match stream size"));
-        }
-
-        let config = config::read_config(".")?;
-        let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
-
         report.set_title(&format!("Unpacking {} ...", output_file.display()));
         if is_thin_device(output_file)? {
             let mappings = read_thin_mappings(output_file)?;
@@ -495,14 +666,128 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
                 run: None,
                 writes_avoided: 0,
             };
-            let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
-            u.unpack(&report)
+            let mut u = Unpacker::new(stream_file, cache_nr_entries, dest, remote)?;
+            u.unpack(&report, output_size)
         } else {
             let dest = ThickDest { output };
-            let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
-            u.unpack(&report)
+            let mut u = Unpacker::new(stream_file, cache_nr_entries, dest, remote)?;
+            u.unpack(&report, output_size)
         }
     }
+}
+
+//-----------------------------------------
+pub fn run_receive(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
+    let output_file = Path::new(matches.get_one::<String>("OUTPUT").unwrap());
+    let stream_id = matches.get_one::<String>("STREAM").unwrap();
+    let create = matches.get_one::<bool>("CREATE").unwrap();
+    let server = matches.get_one::<String>("SERVER").unwrap();
+
+    let so = Arc::new(Mutex::new(StreamOrder::new()?));
+    let mut client = client::Client::new(server.to_string(), so.clone())?;
+    let rq = client.get_request_queue();
+    // Start a thread to handle client communication
+    let h = thread::Builder::new()
+        .name("client unpack socket handler".to_string())
+        .spawn(move || client.run())?;
+
+    let td = stream_meta::create_temp_stream_dir(true)?;
+    let stream_dir = td.path().join(stream_id);
+    let stream_file = stream_dir.join("stream");
+    let stream_file_offsets = stream_dir.join("stream.offsets");
+    let e_msg = format!(
+        "Error creating the local tmp. stream directory {:?}",
+        stream_dir
+    );
+    fs::create_dir_all(stream_dir).context(e_msg)?;
+
+    // Get archive config from server side to retrieve the memory cache size
+    let cache_nr_entries = if let wire::Rpc::ArchiveConfigResp(_id, archive_config) =
+        client::rpc_invoke(&rq, wire::Rpc::ArchiveConfig(0))?.ok_or(anyhow!(format!(
+            "Unable to retrieve remote archive configuration"
+        )))? {
+        (1024 * 1024 * archive_config.data_cache_size_meg) / SLAB_SIZE_TARGET
+    } else {
+        return Err(anyhow!(
+            "Unknown error while trying to retrieve archive config"
+        ));
+    };
+
+    // Fetch stream file from server
+    let (stream_data, offset_data) = _retrieve_stream(&rq, stream_id)?;
+
+    // TODO: Move this stuff to a function in stream_meta, or instead of doing these files manually
+    // provide the functionality to grab everything in the stream directory and copy it to here,
+    // similar to making a tar file for a directory structure.
+    stream_meta::write_file(&stream_file, stream_data)?;
+    stream_meta::write_file(&stream_file_offsets, offset_data)?;
+
+    // We spin up a thread which handles retrieving the MapEntries from the stream and retrieving
+    // data from the server, does not block waiting for data from server.
+    let thread_rq = rq.clone();
+    let thread_so = so.clone();
+    let thread_stream_file = stream_file.clone();
+    let thread_handle = thread::Builder::new()
+        .name("entry builder".to_string())
+        .spawn(move || build_entries(thread_rq, thread_stream_file, thread_so))?;
+
+    let remote = Remote {
+        rq,
+        socket_thread: Some(h),
+        entry_thread: Some(thread_handle),
+        _td: td,
+        so,
+    };
+
+    // Check the size matches the stream size.
+    let stream_cfg = _retrieve_stream_config(&remote.rq, stream_id)?;
+    let stream_size = stream_cfg.size;
+
+    if !*create && stream_size != thinp::file_utils::file_size(output_file)? {
+        return Err(anyhow!("Destination size doesn't not match stream size"));
+    }
+
+    unpack_common(
+        report,
+        *create,
+        output_file,
+        &stream_file,
+        Some(remote),
+        cache_nr_entries,
+        stream_size,
+    )
+}
+
+pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
+    let archive_dir = Path::new(matches.get_one::<String>("ARCHIVE").unwrap())
+        .canonicalize()
+        .context("Bad archive dir")?;
+    let output_file = Path::new(matches.get_one::<String>("OUTPUT").unwrap());
+    let stream = matches.get_one::<String>("STREAM").unwrap();
+    let create = matches.get_one::<bool>("CREATE").unwrap();
+    let stream_path = stream_path(stream);
+
+    env::set_current_dir(archive_dir)?;
+
+    let config = config::read_config(".")?;
+    let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
+
+    let stream_cfg = stream_meta::read_stream_config(stream)?;
+    let stream_size = stream_cfg.size;
+
+    if !*create && stream_size != thinp::file_utils::file_size(output_file)? {
+        return Err(anyhow!("Destination size doesn't not match stream size"));
+    }
+
+    unpack_common(
+        report,
+        *create,
+        output_file,
+        &stream_path,
+        None,
+        cache_nr_entries,
+        stream_size,
+    )
 }
 
 //-----------------------------------------
@@ -698,9 +983,9 @@ fn thin_verifier(input_file: &Path) -> Result<VerifyDest> {
 }
 
 pub fn run_verify(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
-    let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
-    let input_file = Path::new(matches.value_of("INPUT").unwrap()).canonicalize()?;
-    let stream = matches.value_of("STREAM").unwrap();
+    let archive_dir = Path::new(matches.get_one::<String>("ARCHIVE").unwrap()).canonicalize()?;
+    let input_file = Path::new(matches.get_one::<String>("INPUT").unwrap()).canonicalize()?;
+    let stream = matches.get_one::<String>("STREAM").unwrap();
 
     env::set_current_dir(archive_dir)?;
 
@@ -719,8 +1004,11 @@ pub fn run_verify(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
         thick_verifier(&input_file)?
     };
 
-    let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
-    u.unpack(&report)
+    let stream_path = stream_path(stream);
+    let size = thinp::file_utils::file_size(input_file)?;
+
+    let mut u = Unpacker::new(&stream_path, cache_nr_entries, dest, None)?;
+    u.unpack(&report, size)
 }
 
 //-----------------------------------------

@@ -10,8 +10,8 @@ use crate::stream::*;
 //-----------------------------------------
 
 pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
-    let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
-    let stream = matches.value_of("STREAM").unwrap();
+    let archive_dir = Path::new(matches.get_one::<String>("ARCHIVE").unwrap()).canonicalize()?;
+    let stream = matches.get_one::<String>("STREAM").unwrap();
 
     env::set_current_dir(archive_dir)?;
 

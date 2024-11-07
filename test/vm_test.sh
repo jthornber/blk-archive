@@ -4,7 +4,7 @@
 export DEBIAN_FRONTEND="noninteractive"
 apt-get update -y || exit 1
 
-apt-get install git gcc clang-tools libdevmapper-dev pkg-config mount python3 python3-toml python3-pudb -y || exit 1
+apt-get install git gcc clang-tools libdevmapper-dev pkg-config mount python3 python3-toml python3-pudb python3-numpy -y || exit 1
 
 # install rust via rustup as packages are too old on ubuntu
 curl https://sh.rustup.rs -sSf | sh -s -- -y || exit 1

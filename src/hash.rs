@@ -1,4 +1,6 @@
 use blake2::{Blake2b, Digest};
+use byteorder::{LittleEndian, ReadBytesExt};
+use std::io::Cursor;
 
 use crate::iovec::*;
 
@@ -54,4 +56,33 @@ pub fn hash_32(v: &[u8]) -> Hash32 {
     hasher.finalize()
 }
 
+pub fn hash_le_u64(h: &[u8]) -> u64 {
+    let mini_hash = hash_64(h);
+    let mut c = Cursor::new(&mini_hash);
+    c.read_u64::<LittleEndian>().unwrap()
+}
+
+pub fn hash256_to_bytes(h: &Hash256) -> [u8; 32] {
+    let mut rc = [0u8; 32];
+    for (i, v) in h.iter().enumerate() {
+        rc[i] = *v;
+    }
+    rc
+}
+
+pub fn bytes_to_hash256(v: &[u8; 32]) -> &Hash256 {
+    Hash256::from_slice(&v[..])
+}
+
 //-----------------------------------------
+#[test]
+fn to_wire() {
+    let bytes = [0, 128];
+
+    // TODO: Maybe there is a better way to simply serialize/deserialize for the wire for a Hash256
+    let reference = hash_256(&bytes);
+    let as_bytes_rep = hash256_to_bytes(&reference);
+    let converted = bytes_to_hash256(&as_bytes_rep);
+
+    assert_eq!(reference, *converted);
+}

@@ -1,6 +1,8 @@
 use anyhow::Result;
-use clap::{command, Arg, ArgMatches, Command};
+use clap::ArgAction;
+use clap::{command, Arg, ArgGroup, ArgMatches, Command};
 use std::env;
+use std::path::Path;
 use std::process::exit;
 use std::sync::Arc;
 use thinp::report::*;
@@ -12,10 +14,12 @@ use blk_archive::output::Output;
 use blk_archive::pack;
 use blk_archive::unpack;
 
+use blk_archive::server;
+
 //-----------------------
 
 fn mk_report(matches: &ArgMatches) -> Arc<Report> {
-    if matches.is_present("JSON") {
+    if matches.get_flag("JSON") {
         Arc::new(mk_quiet_report())
     } else if atty::is(atty::Stream::Stdout) {
         Arc::new(mk_progress_bar_report())
@@ -25,44 +29,34 @@ fn mk_report(matches: &ArgMatches) -> Arc<Report> {
 }
 
 fn main_() -> Result<()> {
-    let default_archive = match env::var("BLK_ARCHIVE_DIR") {
-        Err(_) => String::new(),
-        Ok(s) => s,
-    };
-
-    let archive_arg = if default_archive.is_empty() {
-        Arg::new("ARCHIVE")
-            .help("Specify archive directory")
-            .required(true)
-            .long("archive")
-            .short('a')
-            .value_name("ARCHIVE")
-            .takes_value(true)
-    } else {
-        Arg::new("ARCHIVE")
-            .help("Specify archive directory")
-            .default_value(&default_archive)
-            .long("archive")
-            .short('a')
-            .value_name("ARCHIVE")
-            .takes_value(true)
-    };
+    let archive_arg = Arg::new("ARCHIVE")
+        .help("Specify archive directory")
+        .required(true)
+        .long("archive")
+        .short('a')
+        .value_name("ARCHIVE")
+        .env("BLK_ARCHIVE_DIR");
 
     let stream_arg = Arg::new("STREAM")
         .help("Specify an archived stream to unpack")
         .required(true)
         .long("stream")
         .short('s')
-        .value_name("STREAM")
-        .takes_value(true);
+        .value_name("STREAM");
 
     let json: Arg = Arg::new("JSON")
         .help("Output JSON")
         .required(false)
         .long("json")
         .short('j')
-        .value_name("JSON")
-        .takes_value(false);
+        .action(ArgAction::SetTrue);
+
+    let server = Arg::new("SERVER")
+        .help("Server connection information")
+        .required(true)
+        .long("server")
+        .short('s')
+        .value_name("SERVER");
 
     let matches = command!()
         .arg(json)
@@ -80,32 +74,28 @@ fn main_() -> Result<()> {
                         .required(true)
                         .long("archive")
                         .short('a')
-                        .value_name("ARCHIVE")
-                        .takes_value(true),
+                        .value_name("ARCHIVE"),
                 )
                 .arg(
                     Arg::new("BLOCK_SIZE")
                         .help("Specify the average block size used when deduplicating data")
                         .required(false)
                         .long("block-size")
-                        .value_name("BLOCK_SIZE")
-                        .takes_value(true),
+                        .value_name("BLOCK_SIZE"),
                 )
                 .arg(
                     Arg::new("HASH_CACHE_SIZE_MEG")
                         .help("Specify how much memory is used for caching hash entries")
                         .required(false)
                         .long("hash-cache-size-meg")
-                        .value_name("HASH_CACHE_SIZE_MEG")
-                        .takes_value(true),
+                        .value_name("HASH_CACHE_SIZE_MEG"),
                 )
                 .arg(
                     Arg::new("DATA_CACHE_SIZE_MEG")
                         .help("Specify how much memory is used for caching data")
                         .required(false)
                         .long("data-cache-size-meg")
-                        .value_name("DATA_CACHE_SIZE_MEG")
-                        .takes_value(true),
+                        .value_name("DATA_CACHE_SIZE_MEG"),
                 ),
         )
         .subcommand(
@@ -115,8 +105,7 @@ fn main_() -> Result<()> {
                     Arg::new("INPUT")
                         .help("Specify a device or file to archive")
                         .required(true)
-                        .value_name("INPUT")
-                        .takes_value(true),
+                        .value_name("INPUT"),
                 )
                 .arg(archive_arg.clone())
                 .arg(
@@ -126,8 +115,7 @@ fn main_() -> Result<()> {
                         )
                         .required(false)
                         .long("delta-stream")
-                        .value_name("DELTA_STREAM")
-                        .takes_value(true),
+                        .value_name("DELTA_STREAM"),
                 )
                 .arg(
                     Arg::new("DELTA_DEVICE")
@@ -136,8 +124,18 @@ fn main_() -> Result<()> {
                         )
                         .required(false)
                         .long("delta-device")
-                        .value_name("DELTA_DEVICE")
-                        .takes_value(true),
+                        .value_name("DELTA_DEVICE"),
+                ),
+        )
+        .subcommand(
+            Command::new("send")
+                .about("packs a stream into a remote archive")
+                .arg(server.clone())
+                .arg(
+                    Arg::new("INPUT")
+                        .help("Specify a device or file to archive")
+                        .required(true)
+                        .value_name("INPUT"),
                 ),
         )
         .subcommand(
@@ -147,17 +145,35 @@ fn main_() -> Result<()> {
                     Arg::new("OUTPUT")
                         .help("Specify a device or file as the destination")
                         .required(true)
-                        .value_name("OUTPUT")
-                        .takes_value(true),
+                        .value_name("OUTPUT"),
                 )
                 .arg(
                     Arg::new("CREATE")
                         .help("Create a new file rather than unpack to an existing device/file.")
                         .long("create")
                         .value_name("CREATE")
-                        .takes_value(false),
+                        .action(ArgAction::SetTrue),
                 )
                 .arg(archive_arg.clone())
+                .arg(stream_arg.clone()),
+        )
+        .subcommand(
+            Command::new("receive")
+                .about("unpacks a stream from a remote archive")
+                .arg(
+                    Arg::new("OUTPUT")
+                        .help("Specify a device or file as the destination")
+                        .required(true)
+                        .value_name("OUTPUT"),
+                )
+                .arg(
+                    Arg::new("CREATE")
+                        .help("Create a new file rather than unpack to an existing device/file.")
+                        .long("create")
+                        .value_name("CREATE")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(server.clone())
                 .arg(stream_arg.clone()),
         )
         .subcommand(
@@ -167,8 +183,7 @@ fn main_() -> Result<()> {
                     Arg::new("INPUT")
                         .help("Specify a device or file containing the correct version of the data")
                         .required(true)
-                        .value_name("INPUT")
-                        .takes_value(true),
+                        .value_name("INPUT"),
                 )
                 .arg(archive_arg.clone())
                 .arg(stream_arg.clone()),
@@ -181,7 +196,33 @@ fn main_() -> Result<()> {
         )
         .subcommand(
             Command::new("list")
+                // Note: We can't use the existing archive etc. as they CANNOT have required=true
+                // in them, otherwise you panic at runtime!
                 .about("lists the streams in the archive")
+                .arg(
+                    Arg::new("LIST_ARCHIVE")
+                        .help("Specify archive directory")
+                        .long("archive")
+                        .short('a')
+                        .value_name("ARCHIVE"),
+                )
+                .arg(
+                    Arg::new("LIST_SERVER")
+                        .help("Specify server connection information (hostname:port/ip:port)")
+                        .long("server")
+                        .short('s')
+                        .value_name("SERVER"),
+                )
+                .group(
+                    ArgGroup::new("list_exclusive_option")
+                        .arg("LIST_SERVER")
+                        .arg("LIST_ARCHIVE")
+                        .required(true),
+                ),
+        )
+        .subcommand(
+            Command::new("server")
+                .about("run in daemon mode")
                 .arg(archive_arg.clone()),
         )
         .get_matches();
@@ -190,17 +231,25 @@ fn main_() -> Result<()> {
     report.set_level(LogLevel::Info);
     let output = Arc::new(Output {
         report: report.clone(),
-        json: matches.is_present("JSON"),
+        json: matches.get_flag("JSON"),
     });
+
     match matches.subcommand() {
         Some(("create", sub_matches)) => {
             create::run(sub_matches, report)?;
         }
+        Some(("send", sub_matches)) => {
+            let server = Some(sub_matches.get_one::<String>("SERVER").unwrap().clone());
+            pack::run(sub_matches, output, server)?;
+        }
         Some(("pack", sub_matches)) => {
-            pack::run(sub_matches, output)?;
+            pack::run(sub_matches, output, None)?;
         }
         Some(("unpack", sub_matches)) => {
             unpack::run_unpack(sub_matches, report)?;
+        }
+        Some(("receive", sub_matches)) => {
+            unpack::run_receive(sub_matches, report)?;
         }
         Some(("verify", sub_matches)) => {
             unpack::run_verify(sub_matches, report)?;
@@ -210,6 +259,12 @@ fn main_() -> Result<()> {
         }
         Some(("dump-stream", sub_matches)) => {
             dump_stream::run(sub_matches, output)?;
+        }
+        Some(("server", sub_matches)) => {
+            let archive_dir =
+                Path::new(sub_matches.get_one::<String>("ARCHIVE").unwrap()).canonicalize()?;
+            let mut s = server::Server::new(Some(&archive_dir), false)?;
+            s.0.run()?;
         }
         _ => unreachable!("Exhausted list of subcommands and subcommand_required prevents 'None'"),
     }
