@@ -141,12 +141,7 @@ impl Iterator for ThinChunker {
     type Item = Result<Chunk>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mc = self.next_chunk();
-        match mc {
-            Err(e) => Some(Err(e)),
-            Ok(Some(c)) => Some(Ok(c)),
-            Ok(None) => None,
-        }
+        self.next_chunk().transpose()
     }
 }
 
@@ -223,12 +218,7 @@ impl Iterator for DeltaChunker {
     type Item = Result<Chunk>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mc = self.next_chunk();
-        match mc {
-            Err(e) => Some(Err(e)),
-            Ok(Some(c)) => Some(Ok(c)),
-            Ok(None) => None,
-        }
+        self.next_chunk().transpose()
     }
 }
 
