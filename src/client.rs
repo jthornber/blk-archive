@@ -139,7 +139,7 @@ impl Client {
                         let id = e.id;
                         let t = e.t.clone();
                         self.data_inflight.insert(e.id, e.clone());
-                        let rpc_request = wire::Rpc::RetrieveChunkReq(id, t);
+                        let rpc_request = wire::Rpc::RetrieveChunkReq(id, Box::new(t));
                         if wire::write(&mut self.s, rpc_request, w_b)? {
                             rc = wire::IORequest::WouldBlock;
                         }

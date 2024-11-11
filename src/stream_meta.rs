@@ -152,6 +152,9 @@ impl StreamMeta {
 
         stats.stream_written = stream_bytes.len() as u64;
 
+        let stream_files = wire::stream_files(stream_bytes, stream_offset_bytes);
+        let stream_file_bytes = wire::stream_files_bytes(&stream_files);
+
         let sm = StreamMetaInfo {
             stream_id: self.stream_id.clone(),
             name: Some(self.names.name.clone()),
@@ -160,12 +163,8 @@ impl StreamMeta {
             stats: stats.clone(),
             thin_id: self.thin_id,
         };
-        Ok(wire::Rpc::StreamSend(
-            0,
-            sm,
-            stream_bytes,
-            stream_offset_bytes,
-        ))
+
+        Ok(wire::Rpc::StreamSend(0, Box::new(sm), stream_file_bytes))
     }
 }
 

@@ -608,7 +608,7 @@ fn _retrieve_stream_config(
         .ok_or(anyhow!("expecting a result to StreamConfig!"))?;
 
     if let wire::Rpc::StreamConfigResp(_id, config) = rc {
-        Ok(config)
+        Ok(*config)
     } else {
         panic!("We received the wrong response {:?} !", rc);
     }

@@ -11,7 +11,7 @@ use crate::config;
 use crate::ipc::*;
 use crate::stream_meta;
 
-const CONFIG: bincode::config::Configuration<
+pub const CONFIG: bincode::config::Configuration<
     bincode::config::LittleEndian,
     bincode::config::Fixint,
 > = bincode::config::standard().with_fixed_int_encoding(); //Using little endian for wire as most of the hw arches are little now
@@ -29,41 +29,41 @@ pub const PACKET_MAGIC: u64 = 0x4D454F474D454F47;
 
 #[derive(Encode, Decode, PartialEq)]
 pub enum Rpc {
-    Error(u64, String),
+    Error(u64, String), // 32
 
-    ArchiveConfig(u64),
-    ArchiveConfigResp(u64, config::Config),
+    ArchiveConfig(u64),                          // 16
+    ArchiveConfigResp(u64, Box<config::Config>), //16 bytes
 
     // Do we have the data?
-    HaveDataReq(Vec<(u64, [u8; 32])>), // One of more tuples of (request id, hash signature bytes)
-    HaveDataRespYes(Vec<(u64, (u32, u32))>), // One or more tuples of (request id, (slab #, slab offset) )
-    HaveDataRespNo(Vec<u64>),                // We don't have the data for the following requests
+    HaveDataReq(Vec<(u64, [u8; 32])>), // One of more tuples of (request id, hash signature bytes)  // 24
+    HaveDataRespYes(Vec<(u64, (u32, u32))>), // One or more tuples of (request id, (slab #, slab offset) ) //24
+    HaveDataRespNo(Vec<u64>), // We don't have the data for the following requests // 24
 
     // Send the data we don't have
-    PackReq(u64, [u8; 32], Vec<u8>), // Request id, stream sequence number, hash signature, data
-    PackResp(u64, ((u32, u32), u64, u64)), // The response to the Pack is the request id and the (slab #, slab offset)
+    PackReq(u64, [u8; 32], Vec<u8>), // Request id, stream sequence number, hash signature, data 64
+    PackResp(u64, ((u32, u32), u64, u64)), // The response to the Pack is the request id and the (slab #, slab offset) 40
 
-    StreamSend(u64, stream_meta::StreamMetaInfo, Vec<u8>, Vec<u8>),
+    StreamSend(u64, Box<stream_meta::StreamMetaInfo>, Vec<u8>),
     StreamSendComplete(u64),
 
-    StreamConfig(u64, String),
-    StreamConfigResp(u64, stream_meta::StreamConfig),
+    StreamConfig(u64, String),                             // 32*
+    StreamConfigResp(u64, Box<stream_meta::StreamConfig>), //16*
 
-    StreamRetrieve(u64, String),
+    StreamRetrieve(u64, String), // 32*
     StreamRetrieveResp(u64, Option<(Vec<u8>, Vec<u8>)>),
 
-    RetrieveChunkReq(u64, client::IdType),
+    RetrieveChunkReq(u64, Box<client::IdType>),
     RetrieveChunkResp(u64, Vec<u8>),
 
-    ArchiveListReq(u64),
-    ArchiveListResp(u64, Vec<(String, String, stream_meta::StreamConfig)>), // This may not scale well enough
+    ArchiveListReq(u64),                                                    // 16
+    ArchiveListResp(u64, Vec<(String, String, stream_meta::StreamConfig)>), // This may not scale well enough, 32 bytes
 }
 
 pub fn id_get(rpc: &Rpc) -> u64 {
     match rpc {
         Rpc::PackReq(id, _hash, _data) => *id,
         Rpc::PackResp(id, _location) => *id,
-        Rpc::StreamSend(id, _sm, _stream_bytes, _stream_offsets) => *id,
+        Rpc::StreamSend(id, _sm, _stream_data) => *id,
         Rpc::StreamSendComplete(id) => *id,
         Rpc::ArchiveListReq(id) => *id,
         Rpc::ArchiveListResp(id, _entries) => *id,
@@ -204,6 +204,25 @@ pub fn write_buffer(
         return Ok(rc);
     }
     Ok(false)
+}
+
+#[derive(Encode, Decode, PartialEq, Debug)]
+pub struct StreamFiles {
+    pub stream: Vec<u8>,
+    pub offsets: Vec<u8>,
+}
+
+pub fn stream_files(stream: Vec<u8>, offsets: Vec<u8>) -> StreamFiles {
+    StreamFiles { stream, offsets }
+}
+
+pub fn stream_files_bytes(sf: &StreamFiles) -> Vec<u8> {
+    bincode::encode_to_vec(sf, CONFIG).unwrap()
+}
+
+pub fn bytes_to_stream_files(b: &[u8]) -> StreamFiles {
+    let (stream_files, _len) = bincode::decode_from_slice(b, CONFIG).unwrap();
+    stream_files
 }
 
 pub fn bytes_to_rpc(d: &[u8]) -> Rpc {

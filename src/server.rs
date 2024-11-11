@@ -124,10 +124,10 @@ impl Server {
                             rc = wire::IORequest::WouldBlock;
                         }
                     }
-                    wire::Rpc::StreamSend(id, sm, stream_bytes, stream_offsets) => {
+                    wire::Rpc::StreamSend(id, sm, stream_files_bytes) => {
                         let packed_path = sm.source_path.clone();
-                        let write_rc =
-                            stream_meta::package_unwrap(sm, stream_bytes, stream_offsets);
+                        let sf = wire::bytes_to_stream_files(&stream_files_bytes);
+                        let write_rc = stream_meta::package_unwrap(*sm, sf.stream, sf.offsets);
                         // We have been sent a stream file, lets sync the data slab
                         self.db.complete_slab().unwrap();
                         match write_rc {
@@ -180,7 +180,7 @@ impl Server {
                             Ok(config) => {
                                 if wire::write(
                                     &mut c.c,
-                                    wire::Rpc::ArchiveConfigResp(id, config),
+                                    wire::Rpc::ArchiveConfigResp(id, Box::new(config)),
                                     &mut c.wb,
                                 )? {
                                     rc = wire::IORequest::WouldBlock;
@@ -204,7 +204,7 @@ impl Server {
                             Ok(stream_config) => {
                                 if wire::write(
                                     &mut c.c,
-                                    wire::Rpc::StreamConfigResp(id, stream_config),
+                                    wire::Rpc::StreamConfigResp(id, Box::new(stream_config)),
                                     &mut c.wb,
                                 )? {
                                     rc = wire::IORequest::WouldBlock;
@@ -264,7 +264,8 @@ impl Server {
                         }
                     }
                     wire::Rpc::RetrieveChunkReq(id, op_type) => {
-                        if let client::IdType::Unpack(slab, offset, nr_entries, partial) = op_type {
+                        if let client::IdType::Unpack(slab, offset, nr_entries, partial) = *op_type
+                        {
                             // How could this fail in normal operation?
                             let data = self.db.data_get(slab, offset, nr_entries, partial).unwrap();
 
