@@ -1,8 +1,9 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use io::prelude::*;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io;
+use std::io::Take;
 use std::ops::Range;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
@@ -21,20 +22,21 @@ pub enum Chunk {
 }
 
 pub struct ThickChunker {
-    input: File,
+    input: Take<File>,
     input_size: u64,
     total_read: u64,
-    block_size: usize,
+    block_size: u64,
 }
 
 impl ThickChunker {
-    pub fn new(input_path: &Path, block_size: usize) -> Result<Self> {
+    pub fn new(input_path: &Path, block_size: u64) -> Result<Self> {
         let input_size = thinp::file_utils::file_size(input_path)?;
         let input = OpenOptions::new()
             .read(true)
             .write(false)
             .open(input_path)
-            .context("couldn't open input file/dev")?;
+            .context("couldn't open input file/dev")?
+            .take(0);
 
         Ok(Self {
             input,
@@ -44,9 +46,11 @@ impl ThickChunker {
         })
     }
 
-    // FIXME: stop reallocating and zeroing these buffers
-    fn do_read(&mut self, mut buffer: Vec<u8>) -> Result<Option<Chunk>> {
-        self.input.read_exact(&mut buffer)?;
+    fn do_read(&mut self, size: u64) -> Result<Option<Chunk>> {
+        let mut buffer = Vec::with_capacity(size as usize);
+        self.input.set_limit(size);
+        let read_size = self.input.read_to_end(&mut buffer)?;
+        ensure!(read_size == size as usize, "short read");
         self.total_read += buffer.len() as u64;
         Ok(Some(Chunk::Mapped(buffer)))
     }
@@ -56,12 +60,10 @@ impl ThickChunker {
 
         if remaining == 0 {
             Ok(None)
-        } else if remaining >= self.block_size as u64 {
-            let buf = vec![0; self.block_size];
-            self.do_read(buf)
+        } else if remaining >= self.block_size {
+            self.do_read(self.block_size)
         } else {
-            let buf = vec![0; remaining as usize];
-            self.do_read(buf)
+            self.do_read(remaining)
         }
     }
 }
@@ -141,12 +143,7 @@ impl Iterator for ThinChunker {
     type Item = Result<Chunk>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mc = self.next_chunk();
-        match mc {
-            Err(e) => Some(Err(e)),
-            Ok(Some(c)) => Some(Ok(c)),
-            Ok(None) => None,
-        }
+        self.next_chunk().transpose()
     }
 }
 
@@ -223,12 +220,7 @@ impl Iterator for DeltaChunker {
     type Item = Result<Chunk>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mc = self.next_chunk();
-        match mc {
-            Err(e) => Some(Err(e)),
-            Ok(Some(c)) => Some(Ok(c)),
-            Ok(None) => None,
-        }
+        self.next_chunk().transpose()
     }
 }
 

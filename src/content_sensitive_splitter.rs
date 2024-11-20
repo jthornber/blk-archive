@@ -136,36 +136,41 @@ impl ContentSensitiveSplitter {
         let mut offset = 0;
         let mut remainder = self.unconsumed_len as usize;
         let min_size = self.window_size as usize / 4;
+        let max_size = self.window_size as usize * 8;
         let ws = self.window_size as usize;
 
+        if remainder < min_size {
+            offset += min_size - remainder;
+            remainder = min_size;
+        }
         while offset < data.len() {
-            let end = data.len();
-            if let Some(boundary) = self.hasher.next_match(&data[offset..end], self.mask_s) {
-                consumes.push(remainder + boundary);
-                offset += boundary;
+            let len_s = ws - remainder;
+            if len_s > 0 {
+                let end = std::cmp::min(data.len(), offset + len_s);
+                if let Some(boundary) = self.hasher.next_match(&data[offset..end], self.mask_s) {
+                    consumes.push(remainder + boundary);
+                    offset += boundary + min_size;
+                    remainder = min_size;
+                    continue;
+                } else {
+                    offset += len_s;
+                    remainder += len_s;
+                }
 
-                let skip_size = std::cmp::min(data.len() - offset, min_size);
-                offset += skip_size;
-                remainder = skip_size;
-                continue;
-            } else {
-                offset += ws;
-                remainder += ws;
+                if offset >= data.len() {
+                    break;
+                }
             }
-
-            if offset >= data.len() {
-                break;
-            }
-
-            if let Some(boundary) = self.hasher.next_match(&data[offset..], self.mask_l) {
+            let len_l = max_size - remainder;
+            let end = std::cmp::min(data.len(), offset + len_l);
+            if let Some(boundary) = self.hasher.next_match(&data[offset..end], self.mask_l) {
                 consumes.push(remainder + boundary);
-                offset += boundary;
-
-                let skip_size = std::cmp::min(data.len() - offset, min_size);
-                offset += skip_size;
-                remainder = skip_size;
+                offset += boundary + min_size;
+                remainder = min_size;
             } else {
-                break;
+                consumes.push(end - offset + remainder);
+                offset = end + min_size;
+                remainder = min_size;
             }
         }
 
