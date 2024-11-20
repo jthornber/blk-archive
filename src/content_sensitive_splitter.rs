@@ -142,11 +142,8 @@ impl ContentSensitiveSplitter {
             let end = data.len();
             if let Some(boundary) = self.hasher.next_match(&data[offset..end], self.mask_s) {
                 consumes.push(remainder + boundary);
-                offset += boundary;
-
-                let skip_size = std::cmp::min(data.len() - offset, min_size);
-                offset += skip_size;
-                remainder = skip_size;
+                offset += boundary + min_size;
+                remainder = min_size;
                 continue;
             } else {
                 offset += ws;
@@ -159,11 +156,8 @@ impl ContentSensitiveSplitter {
 
             if let Some(boundary) = self.hasher.next_match(&data[offset..], self.mask_l) {
                 consumes.push(remainder + boundary);
-                offset += boundary;
-
-                let skip_size = std::cmp::min(data.len() - offset, min_size);
-                offset += skip_size;
-                remainder = skip_size;
+                offset += boundary + min_size;
+                remainder = min_size;
             } else {
                 break;
             }
