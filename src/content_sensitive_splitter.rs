@@ -138,6 +138,10 @@ impl ContentSensitiveSplitter {
         let min_size = self.window_size as usize / 4;
         let ws = self.window_size as usize;
 
+        if remainder < min_size {
+            offset += min_size - remainder;
+            remainder = min_size;
+        }
         while offset < data.len() {
             let end = data.len();
             if let Some(boundary) = self.hasher.next_match(&data[offset..end], self.mask_s) {
