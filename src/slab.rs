@@ -119,7 +119,7 @@ impl SlabOffsets {
 // derived data, and can be rebuilt with the repair fn.
 //
 // file := <header> <slab>*
-// header := <magic nr> <slab format version>
+// header := <magic nr> <slab format version> <flags>
 // slab := <magic nr> <len> <checksum> <compressed data>
 
 const FILE_MAGIC: u64 = 0xb927f96a6b611180;
@@ -196,7 +196,6 @@ fn writer_(shared: Arc<Mutex<SlabShared>>, rx: Receiver<SlabData>) -> Result<()>
         let buf = rx.recv();
         if buf.is_err() {
             // all send ends have been closed, so we're done.
-            assert!(queued.is_empty());
             break;
         }
 
