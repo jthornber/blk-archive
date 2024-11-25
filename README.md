@@ -39,6 +39,12 @@ also use this tool.
 blk-archive is written in Rust.  You will need to install a recent
 tool chain.  I recommend using *rustup*.
 
+### Build dependencies
+Some of the rust libraries have build dependencies which need to be satisfied.
+
+* Fedora/EL9(enable CRB repo): `$ sudo dnf cargo clang-devel device-mapper-devel`
+* ubuntu: `sudo apt-get install cargo libclang-dev libdevmapper-dev libsystemd-dev pkg-config`
+
 Build via the standard *cargo* tool.
 
 > cargo build --release
