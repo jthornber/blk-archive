@@ -8,7 +8,6 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0"
 atty = "0.2"
-bincode = { version = "2.0.0-rc.3" }
 blake2 = "0.10"
 byteorder = "1.4"
 chrono = "0.4"
@@ -37,6 +36,7 @@ toml = "0.5.8"
 udev = "0.7"
 walkdir = "2"
 zstd = "0.11"
+rkyv = "0.8"
 
 [profile.release]
 debug = 1

@@ -1,19 +1,18 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 
 use crate::hash::bytes_to_hash256;
-use crate::wire;
+use crate::wire::{self, IOResult};
 use crate::{config, db::*};
 use nix::sys::signal;
 use nix::sys::signal::SigSet;
 use nix::sys::signalfd::{SfdFlags, SignalFd};
+use rkyv::rancor::Error;
 use std::collections::HashMap;
-use std::collections::VecDeque;
-use std::fs;
+use std::env;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::{env, io};
 use tempfile::TempDir;
 
 use crate::client;
@@ -21,7 +20,6 @@ use crate::iovec::*;
 use crate::ipc;
 use crate::ipc::*;
 use crate::list::streams_get;
-use crate::paths;
 use crate::stream_meta;
 
 pub struct Server {
@@ -32,18 +30,18 @@ pub struct Server {
     _ipc_dir: Option<TempDir>,
 }
 
-struct Client {
+struct Client<'a> {
     c: Box<dyn ReadAndWrite>,
-    buff: VecDeque<u8>,
-    wb: VecDeque<u8>,
+    bm: wire::BufferMeta,
+    w: wire::OutstandingWrites<'a>,
 }
 
-impl Client {
+impl<'a> Client<'a> {
     fn new(c: Box<dyn ReadAndWrite>) -> Self {
         Self {
             c,
-            buff: VecDeque::new(),
-            wb: VecDeque::new(),
+            bm: wire::BufferMeta::new(),
+            w: wire::OutstandingWrites::new(),
         }
     }
 }
@@ -95,208 +93,252 @@ impl Server {
         ))
     }
 
-    fn process_read(&mut self, c: &mut Client) -> Result<wire::IORequest> {
-        let mut found_it: Vec<(u64, (u32, u32))> = Vec::new();
+    fn process_read(&mut self, c: &mut Client) -> Result<wire::IOResult> {
+        let mut found_it = Vec::new();
         let mut data_needed: Vec<u64> = Vec::new();
-        let mut rc = wire::IORequest::Ok;
 
-        if let Some(rpcs) = wire::read_using_buffer(&mut c.c, &mut c.buff)? {
-            for p in rpcs {
-                match p {
-                    wire::Rpc::HaveDataReq(hd) => {
-                        for (id, hash) in hd {
-                            let hash256 = bytes_to_hash256(&hash);
-                            if let Some(location) = self.db.is_known(hash256)? {
-                                // We know about this one
-                                found_it.push((id, location));
-                            } else {
-                                // We need to add the data
-                                data_needed.push(id);
-                            }
-                        }
-                    }
-                    wire::Rpc::PackReq(id, hash, data) => {
-                        let hash256 = bytes_to_hash256(&hash);
-                        let iov: IoVec = vec![&data[..]];
-                        let new_entry =
-                            self.db.add_data_entry(*hash256, &iov, data.len() as u64)?;
-                        if wire::write(&mut c.c, wire::Rpc::PackResp(id, new_entry), &mut c.wb)? {
-                            rc = wire::IORequest::WouldBlock;
-                        }
-                    }
-                    wire::Rpc::StreamSend(id, sm, stream_files_bytes) => {
-                        let packed_path = sm.source_path.clone();
-                        let sf = wire::bytes_to_stream_files(&stream_files_bytes);
-                        let write_rc = stream_meta::package_unwrap(*sm, sf.stream, sf.offsets);
-                        // We have been sent a stream file, lets sync the data slab
-                        self.db.complete_slab().unwrap();
-                        match write_rc {
-                            Ok(_) => {
-                                if wire::write(
-                                    &mut c.c,
-                                    wire::Rpc::StreamSendComplete(id),
-                                    &mut c.wb,
-                                )? {
-                                    rc = wire::IORequest::WouldBlock;
-                                }
-                            }
-                            Err(e) => {
-                                let message = format!(
-                                    "During stream write id={} for stream = {} we encountered {}",
-                                    id, packed_path, e
-                                );
-                                if wire::write(&mut c.c, wire::Rpc::Error(id, message), &mut c.wb)?
-                                {
-                                    rc = wire::IORequest::WouldBlock;
-                                }
-                            }
-                        }
-                    }
-                    wire::Rpc::ArchiveListReq(id) => {
-                        let streams = streams_get(&PathBuf::from("./streams"));
-                        match streams {
-                            Ok(streams) => {
-                                if wire::write(
-                                    &mut c.c,
-                                    wire::Rpc::ArchiveListResp(id, streams),
-                                    &mut c.wb,
-                                )? {
-                                    rc = wire::IORequest::WouldBlock;
-                                }
-                            }
-                            Err(e) => {
-                                let message =
-                                    format!("During list::streams_get we encountered {}", e);
-                                if wire::write(&mut c.c, wire::Rpc::Error(id, message), &mut c.wb)?
-                                {
-                                    rc = wire::IORequest::WouldBlock;
-                                }
-                            }
-                        }
-                    }
-                    wire::Rpc::ArchiveConfig(id) => {
-                        let config = config::read_config(".");
-                        match config {
-                            Ok(config) => {
-                                if wire::write(
-                                    &mut c.c,
-                                    wire::Rpc::ArchiveConfigResp(id, Box::new(config)),
-                                    &mut c.wb,
-                                )? {
-                                    rc = wire::IORequest::WouldBlock;
-                                }
-                            }
-                            Err(e) => {
-                                let message =
-                                    format!("During wire::Rpc::ArchiveConfig we encountered {}", e);
-                                if wire::write(&mut c.c, wire::Rpc::Error(id, message), &mut c.wb)?
-                                {
-                                    rc = wire::IORequest::WouldBlock;
-                                }
-                            }
-                        }
-                    }
-                    wire::Rpc::StreamConfig(id, stream_id) => {
-                        // Read up the stream config
-                        let stream_config = stream_meta::read_stream_config(&stream_id);
+        // This reads a single request from the wire, we may need to change it to handle
+        // all the requests to keep the incoming data as empty as possible.
+        let mut rc = wire::read_request(&mut c.c, &mut c.bm)?;
 
-                        match stream_config {
-                            Ok(stream_config) => {
-                                if wire::write(
-                                    &mut c.c,
-                                    wire::Rpc::StreamConfigResp(id, Box::new(stream_config)),
-                                    &mut c.wb,
-                                )? {
-                                    rc = wire::IORequest::WouldBlock;
-                                }
-                            }
-                            Err(e) => {
-                                let message =   //println!("process_read entry!");
-                                    format!("During wire::Rpc::StreamConfig we encountered {}", e);
-                                if wire::write(&mut c.c, wire::Rpc::Error(id, message), &mut c.wb)?
-                                {
-                                    rc = wire::IORequest::WouldBlock;
-                                }
-                            }
-                        }
-                    }
-                    wire::Rpc::StreamRetrieve(id, stream_id) => {
-                        let stream_data = fs::read(paths::stream_path(&stream_id));
-                        let stream_offset_data = fs::read(paths::stream_path_offsets(&stream_id));
+        if rc == wire::IOResult::Ok {
+            // We have a complete RPC request
 
-                        match stream_data {
-                            Ok(stream_data) => {
-                                if wire::write(
-                                    &mut c.c,
-                                    wire::Rpc::StreamRetrieveResp(
-                                        id,
-                                        Some((stream_data, stream_offset_data.unwrap())),
-                                    ),
-                                    &mut c.wb,
-                                )? {
-                                    rc = wire::IORequest::WouldBlock;
-                                }
-                            }
-                            Err(e) => match e.kind() {
-                                io::ErrorKind::NotFound => {
-                                    if wire::write(
-                                        &mut c.c,
-                                        wire::Rpc::StreamRetrieveResp(id, None),
-                                        &mut c.wb,
-                                    )? {
-                                        rc = wire::IORequest::WouldBlock;
-                                    }
-                                }
-                                _ => {
-                                    let message = format!(
-                                        "During wire::Rpc::StreamRetrieve we encountered {}",
-                                        e
-                                    );
-                                    if wire::write(
-                                        &mut c.c,
-                                        wire::Rpc::Error(id, message),
-                                        &mut c.wb,
-                                    )? {
-                                        rc = wire::IORequest::WouldBlock;
-                                    }
-                                }
-                            },
+            let r = rkyv::access::<wire::ArchivedRpc, Error>(
+                &c.bm.buff[c.bm.meta_start..c.bm.meta_end],
+            )
+            .unwrap();
+            let d = rkyv::deserialize::<wire::Rpc, Error>(r).unwrap();
+            match d {
+                wire::Rpc::HaveDataReq(data_req) => {
+                    for i in data_req {
+                        let hash256 = bytes_to_hash256(&i.hash);
+                        if let Some(location) = self.db.is_known(hash256)? {
+                            // We know about this one
+                            let l = wire::DataRespYes {
+                                id: i.id,
+                                slab: location.0,
+                                offset: location.1,
+                            };
+                            found_it.push(l);
+                        } else {
+                            // We need to add the data
+                            data_needed.push(i.id);
                         }
-                    }
-                    wire::Rpc::RetrieveChunkReq(id, op_type) => {
-                        if let client::IdType::Unpack(slab, offset, nr_entries, partial) = *op_type
-                        {
-                            // How could this fail in normal operation?
-                            let data = self.db.data_get(slab, offset, nr_entries, partial).unwrap();
-
-                            if wire::write(
-                                &mut c.c,
-                                wire::Rpc::RetrieveChunkResp(id, data),
-                                &mut c.wb,
-                            )? {
-                                rc = wire::IORequest::WouldBlock;
-                            }
-                        }
-                    }
-                    _ => {
-                        eprint!("What are we not handling! {:?}", p);
                     }
                 }
+                wire::Rpc::PackReq(id, hash) => {
+                    let mut iov = IoVec::new();
+                    let hash256 = bytes_to_hash256(&hash);
+                    iov.push(&c.bm.buff[c.bm.data_start..c.bm.data_end]);
+                    let (entry, data_written, hash_written) =
+                        self.db.add_data_entry(*hash256, &iov, c.bm.data_len())?;
+                    let new_entry = wire::PackResp {
+                        slab: entry.0,
+                        offset: entry.1,
+                        data_written,
+                        hash_written,
+                    };
+
+                    if wire::write_request(
+                        &mut c.c,
+                        &wire::Rpc::PackResp(id, Box::new(new_entry)),
+                        wire::WriteChunk::None,
+                        &mut c.w,
+                    )? {
+                        rc = wire::IOResult::WriteWouldBlock;
+                    }
+                }
+                wire::Rpc::StreamSend(id, sm, stream_files_bytes) => {
+                    let packed_path = sm.source_path.clone();
+                    let sf = wire::bytes_to_stream_files(&stream_files_bytes);
+                    let write_rc =
+                        stream_meta::package_unwrap(&sm, sf.stream.to_vec(), sf.offsets.to_vec());
+                    // We have been sent a stream file, lets sync the data slab
+                    self.db.complete_slab().unwrap();
+                    match write_rc {
+                        Ok(_) => {
+                            if wire::write_request(
+                                &mut c.c,
+                                &wire::Rpc::StreamSendComplete(id),
+                                wire::WriteChunk::None,
+                                &mut c.w,
+                            )? {
+                                rc = wire::IOResult::WriteWouldBlock;
+                            }
+                        }
+                        Err(e) => {
+                            let message = format!(
+                                "During stream write id={} for stream = {} we encountered {}",
+                                id, packed_path, e
+                            );
+                            if wire::write_request(
+                                &mut c.c,
+                                &wire::Rpc::Error(id, message),
+                                wire::WriteChunk::None,
+                                &mut c.w,
+                            )? {
+                                rc = wire::IOResult::WriteWouldBlock;
+                            }
+                        }
+                    }
+                }
+                wire::Rpc::ArchiveListReq(id) => {
+                    let streams = streams_get(&PathBuf::from("./streams"));
+                    match streams {
+                        Ok(streams) => {
+                            if wire::write_request(
+                                &mut c.c,
+                                &wire::Rpc::ArchiveListResp(id, streams),
+                                wire::WriteChunk::None,
+                                &mut c.w,
+                            )? {
+                                rc = wire::IOResult::WriteWouldBlock;
+                            }
+                        }
+                        Err(e) => {
+                            let message = format!("During list::streams_get we encountered {}", e);
+                            if wire::write_request(
+                                &mut c.c,
+                                &wire::Rpc::Error(id, message),
+                                wire::WriteChunk::None,
+                                &mut c.w,
+                            )? {
+                                rc = wire::IOResult::WriteWouldBlock;
+                            }
+                        }
+                    }
+                }
+                wire::Rpc::ArchiveConfig(id) => {
+                    let config = config::read_config(".");
+                    match config {
+                        Ok(config) => {
+                            if wire::write_request(
+                                &mut c.c,
+                                &wire::Rpc::ArchiveConfigResp(id, config),
+                                wire::WriteChunk::None,
+                                &mut c.w,
+                            )? {
+                                rc = wire::IOResult::WriteWouldBlock;
+                            }
+                        }
+                        Err(e) => {
+                            let message =
+                                format!("During wire::Rpc::ArchiveConfig we encountered {}", e);
+                            if wire::write_request(
+                                &mut c.c,
+                                &wire::Rpc::Error(id, message),
+                                wire::WriteChunk::None,
+                                &mut c.w,
+                            )? {
+                                rc = wire::IOResult::WriteWouldBlock;
+                            }
+                        }
+                    }
+                }
+                wire::Rpc::StreamConfig(id, stream_id) => {
+                    // Read up the stream config
+                    let stream_config = stream_meta::read_stream_config(&stream_id);
+
+                    match stream_config {
+                        Ok(stream_config) => {
+                            if wire::write_request(
+                                &mut c.c,
+                                &wire::Rpc::StreamConfigResp(id, Box::new(stream_config)),
+                                wire::WriteChunk::None,
+                                &mut c.w,
+                            )? {
+                                rc = wire::IOResult::WriteWouldBlock;
+                            }
+                        }
+                        Err(e) => {
+                            let message =   //println!("process_read entry!");
+                                format!("During wire::Rpc::StreamConfig we encountered {}", e);
+                            if wire::write_request(
+                                &mut c.c,
+                                &wire::Rpc::Error(id, message),
+                                wire::WriteChunk::None,
+                                &mut c.w,
+                            )? {
+                                rc = wire::IOResult::WriteWouldBlock;
+                            }
+                        }
+                    }
+                }
+                wire::Rpc::StreamRetrieve(id, stream_id) => {
+                    let stream_files = stream_meta::stream_id_to_stream_files(&stream_id);
+
+                    if let Err(e) = stream_files {
+                        let message =
+                            format!("During wire::Rpc::StreamRetrieve we encountered {}", e);
+                        if wire::write_request(
+                            &mut c.c,
+                            &wire::Rpc::Error(id, message),
+                            wire::WriteChunk::None,
+                            &mut c.w,
+                        )? {
+                            rc = wire::IOResult::WriteWouldBlock;
+                        }
+                    } else {
+                        let stream_files = stream_files.unwrap();
+
+                        if wire::write_request(
+                            &mut c.c,
+                            &wire::Rpc::StreamRetrieveResp(id, stream_files),
+                            wire::WriteChunk::None,
+                            &mut c.w,
+                        )? {
+                            rc = wire::IOResult::WriteWouldBlock;
+                        }
+                    }
+                }
+                wire::Rpc::RetrieveChunkReq(id, op_type) => {
+                    if let client::IdType::Unpack(s) = op_type {
+                        let p = s.partial.map(|partial| (partial.begin, partial.end));
+
+                        // How could this fail in normal operation?
+                        let (data, start, end) =
+                            self.db.data_get(s.slab, s.offset, s.nr_entries, p).unwrap();
+
+                        if wire::write_request(
+                            &mut c.c,
+                            &wire::Rpc::RetrieveChunkResp(id),
+                            wire::WriteChunk::ArcData(data, start, end),
+                            &mut c.w,
+                        )? {
+                            rc = wire::IOResult::WriteWouldBlock;
+                        }
+                    }
+                }
+                _ => {
+                    eprint!("What are we not handling! {:?}", d);
+                }
             }
-        } else {
-            // No more data to read, did we process anything?
+            c.bm.rezero();
+        } else if rc == IOResult::PeerGone {
+            return Err(anyhow!("Client closed connection"));
         }
 
         if !found_it.is_empty()
-            && wire::write(&mut c.c, wire::Rpc::HaveDataRespYes(found_it), &mut c.wb)?
+            && wire::write_request(
+                &mut c.c,
+                &wire::Rpc::HaveDataRespYes(found_it),
+                wire::WriteChunk::None,
+                &mut c.w,
+            )?
         {
-            rc = wire::IORequest::WouldBlock;
+            rc = wire::IOResult::WriteWouldBlock;
         }
 
         if !data_needed.is_empty()
-            && wire::write(&mut c.c, wire::Rpc::HaveDataRespNo(data_needed), &mut c.wb)?
+            && wire::write_request(
+                &mut c.c,
+                &wire::Rpc::HaveDataRespNo(data_needed),
+                wire::WriteChunk::None,
+                &mut c.w,
+            )?
         {
-            rc = wire::IORequest::WouldBlock;
+            rc = wire::IOResult::WriteWouldBlock;
         }
 
         Ok(rc)
@@ -362,6 +404,8 @@ impl Server {
                     || item_rdy.events & epoll::Events::EPOLLHUP.bits()
                         == epoll::Events::EPOLLHUP.bits()
                 {
+                    eprintln!("POLLERR");
+
                     let fd_to_remove = item_rdy.data as i32;
                     event.data = fd_to_remove as u64;
                     epoll::ctl(
@@ -372,6 +416,7 @@ impl Server {
                     )?;
 
                     clients.remove(&fd_to_remove.clone());
+                    eprintln!("Removed client due to error!");
                 } else if item_rdy.events & epoll::Events::EPOLLIN.bits()
                     == epoll::Events::EPOLLIN.bits()
                     && item_rdy.data != listen_fd as u64
@@ -386,7 +431,7 @@ impl Server {
                             clients.remove(&fd);
                         }
                         Ok(r) => {
-                            if r == wire::IORequest::WouldBlock {
+                            if r == wire::IOResult::WriteWouldBlock {
                                 event.events |= epoll::Events::EPOLLOUT.bits();
                                 event.data = fd as u64;
                                 epoll::ctl(
@@ -403,12 +448,14 @@ impl Server {
                 if item_rdy.events & epoll::Events::EPOLLOUT.bits()
                     == epoll::Events::EPOLLOUT.bits()
                 {
+                    eprintln!("POLLOUT!");
+
                     // We only get here if we got an would block on a write before
                     let fd: i32 = item_rdy.data as i32;
                     let c = clients.get_mut(&fd).unwrap();
 
-                    if !wire::write_buffer(&mut c.c, &mut c.wb)? && c.wb.is_empty() {
-                        // Buffer is empty, we'll turn off pollout
+                    if c.w.write(&mut c.c)? == IOResult::Ok {
+                        // We have no more pending data to write.
                         event = ipc::read_event(fd);
                         epoll::ctl(event_fd, epoll::ControlOptions::EPOLL_CTL_MOD, fd, event)?;
                     }

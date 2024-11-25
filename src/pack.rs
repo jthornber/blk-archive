@@ -543,7 +543,7 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>, server: Option<String>) ->
         env::set_current_dir(archive_dir)?;
     }
 
-    let input_file = Path::new(matches.get_one::<String>("INPUT").unwrap());
+    let input_file = Path::new(matches.get_one::<String>("INPUT").unwrap()).canonicalize()?;
     let input_name = input_file
         .file_name()
         .unwrap()

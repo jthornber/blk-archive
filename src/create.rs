@@ -25,9 +25,9 @@ fn create_sub_dir(root: &Path, sub: &str) -> Result<()> {
 
 fn write_config(
     root: &Path,
-    block_size: usize,
-    hash_cache_size_meg: usize,
-    data_cache_size_meg: usize,
+    block_size: u64,
+    hash_cache_size_meg: u64,
+    data_cache_size_meg: u64,
 ) -> Result<()> {
     let mut p = PathBuf::new();
     p.push(root);
@@ -87,7 +87,12 @@ pub fn run(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     let data_cache_size_meg = numeric_option::<usize>(matches, "DATA_CACHE_SIZE_MEG", 1024)?;
 
     fs::create_dir(dir)?;
-    write_config(dir, block_size, hash_cache_size_meg, data_cache_size_meg)?;
+    write_config(
+        dir,
+        block_size as u64,
+        hash_cache_size_meg as u64,
+        data_cache_size_meg as u64,
+    )?;
     create_sub_dir(dir, "data")?;
     create_sub_dir(dir, "streams")?;
     create_sub_dir(dir, "indexes")?;

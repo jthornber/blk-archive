@@ -60,12 +60,7 @@ struct Unpacker<D: UnpackDest> {
 
 impl<D: UnpackDest> Unpacker<D> {
     // Assumes current directory is the root of the archive.
-    fn new(
-        stream: &Path,
-        cache_nr_entries: usize,
-        dest: D,
-        remote: Option<Remote>,
-    ) -> Result<Self> {
+    fn new(stream: &Path, cache_nr_entries: u64, dest: D, remote: Option<Remote>) -> Result<Self> {
         let db = if remote.is_some() {
             None
         } else {
@@ -108,17 +103,20 @@ impl<D: UnpackDest> Unpacker<D> {
                 offset,
                 nr_entries,
             } => {
-                let data = if let Some(d) = data {
-                    d
+                if let Some(d) = data {
+                    amt_written = d.len() as u64;
+                    self.dest.handle_mapped(&d[..])?;
                 } else {
-                    self.db
-                        .as_mut()
-                        .unwrap()
-                        .data_get(*slab, *offset, *nr_entries, None)?
-                };
+                    // This is a bit ugly, but removes a data copy
+                    let (data, start, end) =
+                        self.db
+                            .as_mut()
+                            .unwrap()
+                            .data_get(*slab, *offset, *nr_entries, None)?;
 
-                amt_written = data.len() as u64;
-                self.dest.handle_mapped(&data[..])?;
+                    amt_written = (end - start) as u64;
+                    self.dest.handle_mapped(&data[start..end])?;
+                };
             }
             Partial {
                 begin,
@@ -127,20 +125,21 @@ impl<D: UnpackDest> Unpacker<D> {
                 offset,
                 nr_entries,
             } => {
-                let data = if let Some(d) = data {
-                    // When we requested the data across the wire we already handled the partial
-                    // aspect, we have been passed what is needed here
-                    d
+                if let Some(d) = data {
+                    amt_written = d.len() as u64;
+                    self.dest.handle_mapped(&d[..])?;
                 } else {
+                    // This is a bit ugly, but removes a data copy
                     let partial = Some((*begin, *end));
-                    self.db
-                        .as_mut()
-                        .unwrap()
-                        .data_get(*slab, *offset, *nr_entries, partial)?
-                };
+                    let (data, start, end) =
+                        self.db
+                            .as_mut()
+                            .unwrap()
+                            .data_get(*slab, *offset, *nr_entries, partial)?;
 
-                amt_written = data.len() as u64;
-                self.dest.handle_mapped(&data[..])?;
+                    amt_written = (end - start) as u64;
+                    self.dest.handle_mapped(&data[start..end])?;
+                };
             }
             Ref { .. } => {
                 // Can't get here.
@@ -164,9 +163,9 @@ impl<D: UnpackDest> Unpacker<D> {
             // Loop getting stream entries from stream order which is be filled via the thread
             // that is running the function `build_entries`
             loop {
-                let entries = remote.so.lock().unwrap().drain();
-                if !entries.0.is_empty() {
-                    for e in entries.0 {
+                let (entries, complete) = remote.so.lock().unwrap().drain();
+                if !entries.is_empty() {
+                    for e in entries {
                         amt_written += self.unpack_entry(&e.e, e.data)?;
                     }
                     let percentage = ((amt_written as f64 / total as f64) * 100.0) as u8;
@@ -176,7 +175,7 @@ impl<D: UnpackDest> Unpacker<D> {
                     //thread::sleep(Duration::from_millis(1));
                 }
 
-                if entries.1 {
+                if complete {
                     break;
                 }
 
@@ -287,9 +286,17 @@ fn build_entries(
                     let mut _so = so.lock().unwrap();
                     let id = _so.entry_start();
                     // Get a seq number and enqueue request
+
+                    let slab_info = client::SlabInfo {
+                        slab: *slab,
+                        offset: *offset,
+                        nr_entries: *nr_entries,
+                        partial: None,
+                    };
+
                     let data = client::Data {
                         id,
-                        t: client::IdType::Unpack(*slab, *offset, *nr_entries, None),
+                        t: client::IdType::Unpack(slab_info),
                         data: None,
                         entry: Some(*e),
                     };
@@ -303,17 +310,22 @@ fn build_entries(
                     offset,
                     nr_entries,
                 } => {
+                    let slab_info = client::SlabInfo {
+                        slab: *slab,
+                        offset: *offset,
+                        nr_entries: *nr_entries,
+                        partial: Some(client::Partial {
+                            begin: *begin,
+                            end: *end,
+                        }),
+                    };
+
                     let mut _so = so.lock().unwrap();
                     let id = _so.entry_start();
                     // Get a seq number and enqueue request
                     let data = client::Data {
                         id,
-                        t: client::IdType::Unpack(
-                            *slab,
-                            *offset,
-                            *nr_entries,
-                            Some((*begin, *end)),
-                        ),
+                        t: client::IdType::Unpack(slab_info),
                         data: None,
                         entry: Some(*e),
                     };
@@ -594,7 +606,8 @@ fn _retrieve_stream(
         if data.is_none() {
             return Err(anyhow!(format!("stream id = {} not found!", stream_id)));
         }
-        Ok(data.unwrap())
+        let t = data.unwrap();
+        Ok((t.stream, t.offsets))
     } else {
         panic!("We received the wrong response {:?} !", rc);
     }
@@ -638,7 +651,7 @@ fn unpack_common(
     output_file: &Path,
     stream_file: &Path,
     remote: Option<Remote>,
-    cache_nr_entries: usize,
+    cache_nr_entries: u64,
     output_size: u64,
 ) -> Result<()> {
     let output = create_open_output(create, output_file)?;

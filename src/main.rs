@@ -2,21 +2,18 @@ use anyhow::Result;
 use clap::ArgAction;
 use clap::{command, Arg, ArgGroup, ArgMatches, Command};
 use std::env;
-use std::mem;
 use std::path::Path;
 use std::process::exit;
 use std::sync::Arc;
 use thinp::report::*;
 
+use blk_archive::create;
 use blk_archive::dump_stream;
 use blk_archive::list;
 use blk_archive::output::Output;
 use blk_archive::pack;
-use blk_archive::unpack;
-use blk_archive::create;
-
 use blk_archive::server;
-use blk_archive::wire;
+use blk_archive::unpack;
 
 //-----------------------
 

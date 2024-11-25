@@ -1,14 +1,17 @@
 use anyhow::{Context, Result};
-use bincode::{Decode, Encode};
 use chrono::prelude::*;
 use rand::prelude::*;
 use rand_chacha::ChaCha20Rng;
-use serde_derive::{Deserialize, Serialize};
+use rkyv::{Archive, Deserialize, Serialize};
+use serde_derive::Deserialize as SDeserialize;
+use serde_derive::Serialize as SSerialize;
 use std::fs;
+use std::io;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::{Builder, TempDir};
 
+use crate::paths;
 use crate::slab::*;
 use crate::wire;
 
@@ -39,7 +42,14 @@ fn new_stream_path() -> Result<(String, PathBuf)> {
     // Can't get here
 }
 
-#[derive(Debug, Deserialize, Serialize, Encode, Decode, PartialEq)]
+#[derive(Archive, Deserialize, Serialize, Debug, PartialEq)]
+#[rkyv(
+    // This will generate a PartialEq impl between our unarchived
+    // and archived types
+    compare(PartialEq),
+    // Derives can be passed through to the generated type:
+    derive(Debug),
+)]
 pub struct StreamMetaInfo {
     pub stream_id: String,
     pub name: Option<String>,
@@ -58,7 +68,14 @@ pub struct StreamMeta {
     pub stream_file: SlabFile,
 }
 
-#[derive(Debug, Deserialize, Serialize, Encode, Decode, PartialEq, Clone)]
+#[derive(Archive, Deserialize, Serialize, Debug, PartialEq, Clone)]
+#[rkyv(
+    // This will generate a PartialEq impl between our unarchived
+    // and archived types
+    compare(PartialEq),
+    // Derives can be passed through to the generated type:
+    derive(Debug),
+)]
 pub struct StreamStats {
     pub size: u64,
     pub mapped_size: u64,
@@ -81,13 +98,19 @@ impl StreamStats {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Encode, Decode, PartialEq)]
 pub struct StreamNames {
     pub name: String,
     pub input_file: PathBuf,
 }
 
-#[derive(Debug, Deserialize, Serialize, Encode, Decode, PartialEq)]
+#[derive(SDeserialize, SSerialize, Archive, Deserialize, Serialize, Debug, PartialEq)]
+#[rkyv(
+    // This will generate a PartialEq impl between our unarchived
+    // and archived types
+    compare(PartialEq),
+    // Derives can be passed through to the generated type:
+    derive(Debug),
+)]
 pub struct StreamConfig {
     pub name: Option<String>,
     pub source_path: String,
@@ -181,18 +204,20 @@ pub fn write_file(file_name: &Path, contents: Vec<u8>) -> Result<()> {
 }
 
 pub fn package_unwrap(
-    sm: StreamMetaInfo,
+    sm: &StreamMetaInfo,
     stream_file: Vec<u8>,
     stream_offsets: Vec<u8>,
 ) -> Result<()> {
-    let stream_dir = std::env::current_dir()?.join("streams").join(sm.stream_id);
+    let stream_dir = std::env::current_dir()?
+        .join("streams")
+        .join(sm.stream_id.clone());
 
     std::fs::create_dir(stream_dir.clone())?;
 
     let stream_config = StreamConfig {
-        name: sm.name,
-        source_path: sm.source_path,
-        pack_time: sm.pack_time,
+        name: sm.name.clone(),
+        source_path: sm.source_path.clone(),
+        pack_time: sm.pack_time.clone(),
         size: sm.stats.size,
         mapped_size: sm.stats.mapped_size,
         packed_size: sm.stats.written + stream_file.len() as u64,
@@ -222,6 +247,26 @@ pub fn read_stream_config(stream_id: &str) -> Result<StreamConfig> {
     let config: StreamConfig =
         toml::from_str(&input).context("couldn't parse stream config file")?;
     Ok(config)
+}
+
+pub fn stream_id_to_stream_files(stream_id: &str) -> Result<Option<wire::StreamFiles>> {
+    let stream_data = fs::read(paths::stream_path(stream_id));
+
+    if let Err(e) = stream_data {
+        if e.kind() == io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(e.into());
+    }
+
+    let stream_data = stream_data.unwrap();
+    let stream_offset_data = fs::read(paths::stream_path_offsets(stream_id))
+        .context(format!("stream index not found for {}", stream_id))?;
+
+    Ok(Some(wire::StreamFiles {
+        stream: stream_data,
+        offsets: stream_offset_data,
+    }))
 }
 
 pub fn write_stream_config(dir_location: &Path, cfg: &StreamConfig) -> Result<()> {

@@ -1,17 +1,27 @@
 use anyhow::{Context, Result};
-use bincode::{Decode, Encode};
-use serde_derive::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use rkyv::{Archive, Deserialize, Serialize};
+
+use serde_derive::Deserialize as SDeserialize;
+use serde_derive::Serialize as SSerialize;
+
 //-----------------------------------------
 
-#[derive(Deserialize, Serialize, Encode, Decode, PartialEq)]
+#[derive(SDeserialize, SSerialize, Deserialize, Archive, Serialize, Debug, PartialEq)]
+#[rkyv(
+    // This will generate a PartialEq impl between our unarchived
+    // and archived types
+    compare(PartialEq),
+    // Derives can be passed through to the generated type:
+    derive(Debug),
+)]
 pub struct Config {
-    pub block_size: usize,
+    pub block_size: u64,
     pub splitter_alg: String,
-    pub hash_cache_size_meg: usize,
-    pub data_cache_size_meg: usize,
+    pub hash_cache_size_meg: u64,
+    pub data_cache_size_meg: u64,
 }
 
 pub fn read_config<P: AsRef<Path>>(root: P) -> Result<Config> {

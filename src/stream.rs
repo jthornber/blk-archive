@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use byteorder::{LittleEndian, WriteBytesExt};
 use nom::{combinator::fail, multi::*, number::complete::*, IResult};
 use num_enum::TryFromPrimitive;
+use rkyv::{Archive, Deserialize, Serialize};
 use serde_json::json;
 use serde_json::to_string_pretty;
 use std::collections::HashMap;
@@ -461,7 +462,14 @@ impl MapInstruction {
 
 pub type IVec = Vec<MapInstruction>;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Archive, Deserialize, Serialize, Debug, PartialEq, Clone, Copy)]
+#[rkyv(
+    // This will generate a PartialEq impl between our unarchived
+    // and archived types
+    compare(PartialEq),
+    // Derives can be passed through to the generated type:
+    derive(Debug),
+)]
 pub enum MapEntry {
     Fill {
         byte: u8,

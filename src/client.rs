@@ -1,5 +1,5 @@
 use anyhow::Result;
-use bincode::{Decode, Encode};
+use rkyv::{rancor::Error, Archive, Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::process;
@@ -12,7 +12,7 @@ use crate::ipc;
 use crate::ipc::*;
 use crate::stream::*;
 use crate::stream_orderer::*;
-use crate::wire;
+use crate::wire::{self, IOResult};
 
 pub struct Client {
     s: Box<dyn ReadAndWrite>,
@@ -30,13 +30,55 @@ pub struct ClientRequests {
     pub hashes_written: u64,
 }
 
-#[derive(PartialEq, Encode, Decode, Clone)]
-pub enum IdType {
-    Pack([u8; 32], u64),
-    Unpack(u32, u32, u32, Option<(u32, u32)>), // Slab, offset, number entries, (partial_begin, partial_end)
+#[derive(Archive, Deserialize, Serialize, Debug, PartialEq, Clone)]
+#[rkyv(
+    // This will generate a PartialEq impl between our unarchived
+    // and archived types
+    compare(PartialEq),
+    // Derives can be passed through to the generated type:
+    derive(Debug),
+)]
+pub struct Partial {
+    pub begin: u32,
+    pub end: u32,
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(Archive, Deserialize, Serialize, Debug, PartialEq, Clone)]
+#[rkyv(
+    // This will generate a PartialEq impl between our unarchived
+    // and archived types
+    compare(PartialEq),
+    // Derives can be passed through to the generated type:
+    derive(Debug),
+)]
+pub struct SlabInfo {
+    pub slab: u32,
+    pub offset: u32,
+    pub nr_entries: u32,
+    pub partial: Option<Partial>,
+}
+
+#[derive(Archive, Deserialize, Serialize, Debug, PartialEq, Clone)]
+#[rkyv(
+    // This will generate a PartialEq impl between our unarchived
+    // and archived types
+    compare(PartialEq),
+    // Derives can be passed through to the generated type:
+    derive(Debug),
+)]
+pub enum IdType {
+    Pack([u8; 32], u64),
+    Unpack(SlabInfo), // Slab, offset, number entries, (partial_begin, partial_end)
+}
+
+#[derive(Archive, Deserialize, Serialize, Debug, PartialEq, Clone)]
+#[rkyv(
+    // This will generate a PartialEq impl between our unarchived
+    // and archived types
+    compare(PartialEq),
+    // Derives can be passed through to the generated type:
+    derive(Debug),
+)]
 pub struct Data {
     pub id: u64,
     pub t: IdType,
@@ -116,32 +158,40 @@ impl Client {
         })
     }
 
-    fn process_request_queue(&mut self, w_b: &mut VecDeque<u8>) -> Result<wire::IORequest> {
+    fn process_request_queue(
+        &mut self,
+        w_b: &mut wire::OutstandingWrites,
+    ) -> Result<wire::IOResult> {
         // Empty the request queue and send as one packet!
-        let mut rc = wire::IORequest::Ok;
+        let mut rc = wire::IOResult::Ok;
         let mut req = self.req_q.lock().unwrap();
-        let mut pack_entries: Vec<(u64, [u8; 32])> = Vec::new();
+        let mut pack_entries = Vec::new();
         let mut should_exit = false;
-        while let Some(ref e) = req.remove() {
+        while let Some(e) = req.remove() {
             if e.id == u64::MAX {
                 should_exit = true;
-                rc = wire::IORequest::Exit;
+                rc = wire::IOResult::Exit;
             } else {
                 // We need to
                 let t = &e.t;
                 match t {
                     IdType::Pack(hash, _len) => {
                         let id = e.id;
-                        pack_entries.push((id, *hash));
-                        self.data_inflight.insert(id, e.clone());
+                        pack_entries.push(wire::DataReq { id, hash: *hash });
+                        self.data_inflight.insert(id, e);
                     }
-                    IdType::Unpack(_slab, _offset, _nr, _partial) => {
+                    IdType::Unpack(_s) => {
                         let id = e.id;
                         let t = e.t.clone();
-                        self.data_inflight.insert(e.id, e.clone());
-                        let rpc_request = wire::Rpc::RetrieveChunkReq(id, Box::new(t));
-                        if wire::write(&mut self.s, rpc_request, w_b)? {
-                            rc = wire::IORequest::WouldBlock;
+                        self.data_inflight.insert(e.id, e);
+                        let rpc_request = wire::Rpc::RetrieveChunkReq(id, t);
+                        if wire::write_request(
+                            &mut self.s,
+                            &rpc_request,
+                            wire::WriteChunk::None,
+                            w_b,
+                        )? {
+                            rc = wire::IOResult::WriteWouldBlock;
                         }
                     }
                 }
@@ -149,8 +199,8 @@ impl Client {
         }
         if !pack_entries.is_empty() {
             let rpc_request = wire::Rpc::HaveDataReq(pack_entries);
-            if wire::write(&mut self.s, rpc_request, w_b)? {
-                rc = wire::IORequest::WouldBlock;
+            if wire::write_request(&mut self.s, &rpc_request, wire::WriteChunk::None, w_b)? {
+                rc = wire::IOResult::WriteWouldBlock;
             }
 
             if should_exit {
@@ -162,12 +212,12 @@ impl Client {
             match e.c {
                 Command::Cmd(rpc) => {
                     self.cmds_inflight.insert(wire::id_get(&rpc), e.h.clone());
-                    if wire::write(&mut self.s, *rpc, w_b)? {
-                        rc = wire::IORequest::WouldBlock;
+                    if wire::write_request(&mut self.s, &rpc, wire::WriteChunk::None, w_b)? {
+                        rc = wire::IOResult::WriteWouldBlock;
                     }
                 }
                 Command::Exit => {
-                    rc = wire::IORequest::Exit;
+                    rc = wire::IOResult::Exit;
                     e.h.done(None);
                 }
             }
@@ -178,115 +228,128 @@ impl Client {
 
     fn process_read(
         &mut self,
-        buff: &mut VecDeque<u8>,
-        w_b: &mut VecDeque<u8>,
-    ) -> Result<wire::IORequest> {
-        let mut rc = wire::IORequest::Ok;
+        r: &mut wire::BufferMeta,
+        w: &mut wire::OutstandingWrites,
+    ) -> Result<wire::IOResult> {
+        let mut rc = wire::read_request(&mut self.s, r)?;
 
-        if let Some(cmds) = wire::read_using_buffer(&mut self.s, buff)? {
-            for p in cmds {
-                match p {
-                    wire::Rpc::RetrieveChunkResp(id, data) => {
-                        let removed = self.data_inflight.remove(&id).unwrap();
-                        let mut stream = self.so.lock().unwrap();
-                        if let IdType::Unpack(_slab, _offset, _nr, _partial) = removed.t {
-                            stream.entry_complete(id, removed.entry.unwrap(), None, Some(data));
-                        }
-                    }
-                    wire::Rpc::HaveDataRespYes(y) => {
-                        // Server already had data, build the stream
-                        let mut stream = self.so.lock().unwrap();
-                        for (id, location) in y {
-                            let e = MapEntry::Data {
-                                slab: location.0,
-                                offset: location.1,
-                                nr_entries: 1,
-                            };
-                            let removed = self.data_inflight.remove(&id).unwrap();
+        if rc == wire::IOResult::Ok {
+            let arpc = rkyv::access::<wire::ArchivedRpc, Error>(&r.buff[r.meta_start..r.meta_end])
+                .unwrap();
+            let d = rkyv::deserialize::<wire::Rpc, Error>(arpc).unwrap();
 
-                            match removed.t {
-                                IdType::Pack(_hash, len) => {
-                                    stream.entry_complete(id, e, Some(len), None);
-                                }
-                                _ => {
-                                    panic!("We are expecting only Pack type!");
-                                }
-                            }
-                        }
-                    }
-                    wire::Rpc::HaveDataRespNo(to_send) => {
-                        // Server does not have data, lets send it
-                        for id in to_send {
-                            if let Some(data) = self.data_inflight.get_mut(&id) {
-                                // We remove the data from the structure to hopefully save some
-                                // data sitting in memory
-                                if let IdType::Pack(hash, _len) = data.t {
-                                    let d = data.data.take().unwrap();
-                                    let pack_req = wire::Rpc::PackReq(data.id, hash, d);
-                                    if wire::write(&mut self.s, pack_req, w_b)? {
-                                        rc = wire::IORequest::WouldBlock;
-                                    }
-                                }
-                            } else {
-                                panic!("How does this happen? {}", id);
-                            }
-                        }
-                    }
-                    wire::Rpc::PackResp(id, ((slab, offset), wrote, hashes_written)) => {
-                        {
-                            let mut rq = self.req_q.lock().unwrap();
-                            rq.data_written += wrote;
-                            rq.hashes_written += hashes_written;
-                        }
-                        let mut stream = self.so.lock().unwrap();
-                        let e = MapEntry::Data {
-                            slab,
-                            offset,
-                            nr_entries: 1,
-                        };
-                        let removed = self.data_inflight.remove(&id).unwrap();
-
-                        if let IdType::Pack(_hash, len) = removed.t {
-                            stream.entry_complete(id, e, Some(len), None);
-                        }
-                    }
-                    wire::Rpc::StreamSendComplete(id) => {
-                        self.cmds_inflight.remove(&id).unwrap().done(None);
-                    }
-                    wire::Rpc::ArchiveListResp(id, archive_list) => {
-                        // This seems wrong, to have a Archive Resp and craft another to return?
-                        self.cmds_inflight
-                            .remove(&id)
-                            .unwrap()
-                            .done(Some(wire::Rpc::ArchiveListResp(id, archive_list)));
-                    }
-                    wire::Rpc::ArchiveConfigResp(id, config) => {
-                        self.cmds_inflight
-                            .remove(&id)
-                            .unwrap()
-                            .done(Some(wire::Rpc::ArchiveConfigResp(id, config)));
-                    }
-                    wire::Rpc::StreamRetrieveResp(id, data) => {
-                        self.cmds_inflight
-                            .remove(&id)
-                            .unwrap()
-                            .done(Some(wire::Rpc::StreamRetrieveResp(id, data)));
-                    }
-                    wire::Rpc::StreamConfigResp(id, config) => {
-                        self.cmds_inflight
-                            .remove(&id)
-                            .unwrap()
-                            .done(Some(wire::Rpc::StreamConfigResp(id, config)));
-                    }
-                    wire::Rpc::Error(_id, msg) => {
-                        eprintln!("Unexpected error, server reported: {}", msg);
-                        process::exit(2);
-                    }
-                    _ => {
-                        eprint!("What are we not handling! {:?}", p);
+            match d {
+                wire::Rpc::RetrieveChunkResp(id) => {
+                    let removed = self.data_inflight.remove(&id).unwrap();
+                    let mut stream = self.so.lock().unwrap();
+                    if let IdType::Unpack(_s) = removed.t {
+                        // The code can handle responses out of order, but the current implementation
+                        // handles things in order.  Thus, when we receive this chunk of data for
+                        // the unpack operation if we are caught up with processing the entries in
+                        // the stream order, we could simply write this data to the output file/
+                        // device which would prevent us from having to allocate memory here.
+                        let mut data = Vec::with_capacity(r.data_len() as usize);
+                        data.extend_from_slice(&r.buff[r.data_start..r.data_end]);
+                        stream.entry_complete(id, removed.entry.unwrap(), None, Some(data));
                     }
                 }
+                wire::Rpc::HaveDataRespYes(y) => {
+                    // Server already had data, build the stream
+                    let mut stream = self.so.lock().unwrap();
+                    for s in y {
+                        let e = MapEntry::Data {
+                            slab: s.slab,
+                            offset: s.offset,
+                            nr_entries: 1,
+                        };
+                        let removed = self.data_inflight.remove(&s.id).unwrap();
+
+                        match removed.t {
+                            IdType::Pack(_hash, len) => {
+                                stream.entry_complete(s.id, e, Some(len), None);
+                            }
+                            _ => {
+                                panic!("We are expecting only Pack type!");
+                            }
+                        }
+                    }
+                }
+                wire::Rpc::HaveDataRespNo(to_send) => {
+                    // Server does not have data, lets send it
+                    for id in to_send {
+                        if let Some(data) = self.data_inflight.get_mut(&id) {
+                            if let IdType::Pack(hash, _len) = data.t {
+                                let d = data.data.take().unwrap();
+                                let pack_req = wire::Rpc::PackReq(data.id, hash);
+                                if wire::write_request(
+                                    &mut self.s,
+                                    &pack_req,
+                                    wire::WriteChunk::Data(d),
+                                    w,
+                                )? {
+                                    rc = wire::IOResult::WriteWouldBlock;
+                                }
+                            }
+                        } else {
+                            panic!("How does this happen? {}", id);
+                        }
+                    }
+                }
+                wire::Rpc::PackResp(id, p) => {
+                    {
+                        let mut rq = self.req_q.lock().unwrap();
+                        rq.data_written += p.data_written;
+                        rq.hashes_written += p.hash_written;
+                    }
+                    let mut stream = self.so.lock().unwrap();
+                    let e = MapEntry::Data {
+                        slab: p.slab,
+                        offset: p.offset,
+                        nr_entries: 1,
+                    };
+                    let removed = self.data_inflight.remove(&id).unwrap();
+
+                    if let IdType::Pack(_hash, len) = removed.t {
+                        stream.entry_complete(id, e, Some(len), None);
+                    }
+                }
+                wire::Rpc::StreamSendComplete(id) => {
+                    self.cmds_inflight.remove(&id).unwrap().done(None);
+                }
+                wire::Rpc::ArchiveListResp(id, archive_list) => {
+                    // This seems wrong, to have a Archive Resp and craft another to return?
+                    self.cmds_inflight
+                        .remove(&id)
+                        .unwrap()
+                        .done(Some(wire::Rpc::ArchiveListResp(id, archive_list)));
+                }
+                wire::Rpc::ArchiveConfigResp(id, config) => {
+                    self.cmds_inflight
+                        .remove(&id)
+                        .unwrap()
+                        .done(Some(wire::Rpc::ArchiveConfigResp(id, config)));
+                }
+                wire::Rpc::StreamRetrieveResp(id, data) => {
+                    self.cmds_inflight
+                        .remove(&id)
+                        .unwrap()
+                        .done(Some(wire::Rpc::StreamRetrieveResp(id, data)));
+                }
+                wire::Rpc::StreamConfigResp(id, config) => {
+                    self.cmds_inflight
+                        .remove(&id)
+                        .unwrap()
+                        .done(Some(wire::Rpc::StreamConfigResp(id, config)));
+                }
+                wire::Rpc::Error(_id, msg) => {
+                    eprintln!("Unexpected error, server reported: {}", msg);
+                    process::exit(2);
+                }
+                _ => {
+                    eprint!("What are we not handling! {:?}", d);
+                }
             }
+            r.rezero();
         }
 
         Ok(rc)
@@ -318,8 +381,8 @@ impl Client {
 
         epoll::ctl(event_fd, epoll::ControlOptions::EPOLL_CTL_ADD, fd, event)?;
 
-        let mut read_buffer: VecDeque<u8> = VecDeque::new();
-        let mut wb: VecDeque<u8> = VecDeque::new();
+        let mut r = wire::BufferMeta::new();
+        let mut w = wire::OutstandingWrites::new();
 
         loop {
             let mut events = [epoll::Event::new(epoll::Events::empty(), 0); 10];
@@ -345,14 +408,14 @@ impl Client {
 
                 if item_rdy.events & epoll::Events::EPOLLIN.bits() == epoll::Events::EPOLLIN.bits()
                 {
-                    let read_result = self.process_read(&mut read_buffer, &mut wb);
+                    let read_result = self.process_read(&mut r, &mut w);
                     match read_result {
                         Err(e) => {
                             eprintln!("Error on read, exiting! {:?}", e);
                             return Err(e);
                         }
                         Ok(r) => {
-                            if r == wire::IORequest::WouldBlock {
+                            if r == wire::IOResult::WriteWouldBlock {
                                 Client::_enable_poll_out(event_fd, fd, &mut poll_out)?;
                             }
                         }
@@ -361,8 +424,7 @@ impl Client {
 
                 if item_rdy.events & epoll::Events::EPOLLOUT.bits()
                     == epoll::Events::EPOLLOUT.bits()
-                    && !wire::write_buffer(&mut self.s, &mut wb)?
-                    && wb.is_empty()
+                    && w.write(&mut self.s)? == IOResult::Ok
                 {
                     poll_out = false;
                     event = ipc::read_event(event.data as i32);
@@ -380,10 +442,10 @@ impl Client {
                 break;
             }
 
-            let rc = self.process_request_queue(&mut wb)?;
-            if rc == wire::IORequest::Exit {
+            let rc = self.process_request_queue(&mut w)?;
+            if rc == wire::IOResult::Exit {
                 break;
-            } else if rc == wire::IORequest::WouldBlock {
+            } else if rc == wire::IOResult::WriteWouldBlock {
                 Client::_enable_poll_out(event_fd, fd, &mut poll_out)?;
             }
         }
