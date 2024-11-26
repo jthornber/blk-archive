@@ -47,7 +47,7 @@ struct Remote {
     socket_thread: Option<JoinHandle<std::result::Result<(), anyhow::Error>>>,
     entry_thread: Option<JoinHandle<std::result::Result<(), anyhow::Error>>>,
     _td: TempDir,
-    so: Arc<Mutex<StreamOrder>>,
+    so: StreamOrder,
 }
 
 struct Unpacker<D: UnpackDest> {
@@ -163,16 +163,13 @@ impl<D: UnpackDest> Unpacker<D> {
             // Loop getting stream entries from stream order which is be filled via the thread
             // that is running the function `build_entries`
             loop {
-                let (entries, complete) = remote.so.lock().unwrap().drain();
+                let (entries, complete) = remote.so.drain(true);
                 if !entries.is_empty() {
                     for e in entries {
                         amt_written += self.unpack_entry(&e.e, e.data)?;
                     }
                     let percentage = ((amt_written as f64 / total as f64) * 100.0) as u8;
                     report.progress(percentage);
-                } else {
-                    //TODO: Change this to use a CondVar
-                    //thread::sleep(Duration::from_millis(1));
                 }
 
                 if complete {
@@ -265,7 +262,7 @@ impl<D: UnpackDest> Unpacker<D> {
 fn build_entries(
     rq: Arc<Mutex<client::ClientRequests>>,
     stream: PathBuf,
-    so: Arc<Mutex<StreamOrder>>,
+    so: StreamOrder,
 ) -> Result<()> {
     use MapEntry::*;
     let mut stream_file = SlabFileBuilder::open(&stream).build()?;
@@ -283,8 +280,7 @@ fn build_entries(
                     offset,
                     nr_entries,
                 } => {
-                    let mut _so = so.lock().unwrap();
-                    let id = _so.entry_start();
+                    let id = so.entry_start();
                     // Get a seq number and enqueue request
 
                     let slab_info = client::SlabInfo {
@@ -320,8 +316,7 @@ fn build_entries(
                         }),
                     };
 
-                    let mut _so = so.lock().unwrap();
-                    let id = _so.entry_start();
+                    let id = so.entry_start();
                     // Get a seq number and enqueue request
                     let data = client::Data {
                         id,
@@ -332,11 +327,7 @@ fn build_entries(
                     let mut rq = rq.lock().unwrap();
                     rq.handle_data(data);
                 }
-                _ => {
-                    let mut _so = so.lock().unwrap();
-                    let id = _so.entry_start();
-                    _so.entry_complete(id, *e, None, None);
-                }
+                _ => so.entry_add(*e, None, None),
             }
         }
     }
@@ -696,7 +687,7 @@ pub fn run_receive(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     let create = matches.get_one::<bool>("CREATE").unwrap();
     let server = matches.get_one::<String>("SERVER").unwrap();
 
-    let so = Arc::new(Mutex::new(StreamOrder::new()?));
+    let so = StreamOrder::new();
     let mut client = client::Client::new(server.to_string(), so.clone())?;
     let rq = client.get_request_queue();
     // Start a thread to handle client communication

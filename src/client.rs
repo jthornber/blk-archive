@@ -18,7 +18,7 @@ pub struct Client {
     s: Box<dyn ReadAndWrite>,
     data_inflight: HashMap<u64, Data>, // Data items waiting to complete
     cmds_inflight: HashMap<u64, HandShake>,
-    so: Arc<Mutex<StreamOrder>>,
+    so: StreamOrder,
     req_q: Arc<Mutex<ClientRequests>>,
 }
 
@@ -146,7 +146,7 @@ pub fn client_thread_end(client_req: &Mutex<ClientRequests>) {
 }
 
 impl Client {
-    pub fn new(server: String, so: Arc<Mutex<StreamOrder>>) -> Result<Self> {
+    pub fn new(server: String, so: StreamOrder) -> Result<Self> {
         let s = create_connected_socket(server)?;
 
         Ok(Self {
@@ -241,7 +241,6 @@ impl Client {
             match d {
                 wire::Rpc::RetrieveChunkResp(id) => {
                     let removed = self.data_inflight.remove(&id).unwrap();
-                    let mut stream = self.so.lock().unwrap();
                     if let IdType::Unpack(_s) = removed.t {
                         // The code can handle responses out of order, but the current implementation
                         // handles things in order.  Thus, when we receive this chunk of data for
@@ -250,12 +249,12 @@ impl Client {
                         // device which would prevent us from having to allocate memory here.
                         let mut data = Vec::with_capacity(r.data_len() as usize);
                         data.extend_from_slice(&r.buff[r.data_start..r.data_end]);
-                        stream.entry_complete(id, removed.entry.unwrap(), None, Some(data));
+                        self.so
+                            .entry_complete(id, removed.entry.unwrap(), None, Some(data));
                     }
                 }
                 wire::Rpc::HaveDataRespYes(y) => {
                     // Server already had data, build the stream
-                    let mut stream = self.so.lock().unwrap();
                     for s in y {
                         let e = MapEntry::Data {
                             slab: s.slab,
@@ -266,7 +265,7 @@ impl Client {
 
                         match removed.t {
                             IdType::Pack(_hash, len) => {
-                                stream.entry_complete(s.id, e, Some(len), None);
+                                self.so.entry_complete(s.id, e, Some(len), None);
                             }
                             _ => {
                                 panic!("We are expecting only Pack type!");
@@ -301,7 +300,7 @@ impl Client {
                         rq.data_written += p.data_written;
                         rq.hashes_written += p.hash_written;
                     }
-                    let mut stream = self.so.lock().unwrap();
+
                     let e = MapEntry::Data {
                         slab: p.slab,
                         offset: p.offset,
@@ -310,7 +309,7 @@ impl Client {
                     let removed = self.data_inflight.remove(&id).unwrap();
 
                     if let IdType::Pack(_hash, len) = removed.t {
-                        stream.entry_complete(id, e, Some(len), None);
+                        self.so.entry_complete(id, e, Some(len), None);
                     }
                 }
                 wire::Rpc::StreamSendComplete(id) => {
@@ -488,7 +487,7 @@ pub fn rpc_invoke(rq: &Mutex<ClientRequests>, rpc: wire::Rpc) -> Result<Option<w
 }
 
 pub fn one_rpc(server: &str, rpc: wire::Rpc) -> Result<Option<wire::Rpc>> {
-    let so = Arc::new(Mutex::new(StreamOrder::new()?));
+    let so = StreamOrder::new();
 
     let mut client = Client::new(server.to_string(), so.clone())?;
     let rq = client.get_request_queue();

@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::thread::JoinHandle;
-use std::time::Duration;
 
 use crate::chunkers::*;
 use crate::client::*;
@@ -48,7 +47,7 @@ struct DedupHandler {
     pub stream_meta: stream_meta::StreamMeta,
     mapping_builder: Arc<Mutex<dyn Builder>>,
     pub stats: stream_meta::StreamStats,
-    so: Arc<Mutex<StreamOrder>>,
+    so: StreamOrder,
     transport: Tp,
 }
 
@@ -60,7 +59,7 @@ impl DedupHandler {
         mapping_builder: Arc<Mutex<dyn Builder>>,
         server_addr: Option<String>,
     ) -> Result<Self> {
-        let so = Arc::new(Mutex::new(StreamOrder::new()?));
+        let so = StreamOrder::new();
         let mut sending = false;
 
         let tp: Tp = if let Some(s_conn) = server_addr {
@@ -96,19 +95,19 @@ impl DedupHandler {
         builder.next(e, len, &mut self.stream_buf)
     }
 
-    fn process_stream(&mut self) -> Result<bool> {
+    fn process_stream(&mut self, wait: bool) -> Result<bool> {
         let mut me: MapEntry;
         let mut len: u64;
 
-        let rc = self.so.lock().unwrap().drain();
+        let (entries, complete) = self.so.drain(wait);
 
-        for e in rc.0 {
+        for e in entries {
             me = e.e;
             len = e.len.unwrap();
             self.process_stream_entry(&me, len)?;
             self.maybe_complete_stream()?
         }
-        Ok(rc.1)
+        Ok(complete)
     }
 
     fn maybe_complete_stream(&mut self) -> Result<()> {
@@ -121,17 +120,11 @@ impl DedupHandler {
     }
 
     fn get_next_stream_id(&self) -> u64 {
-        let mut so = self.so.lock().unwrap();
-        so.entry_start()
+        self.so.entry_start()
     }
 
     fn enqueue_entry(&mut self, e: MapEntry, len: u64) -> Result<()> {
-        {
-            let mut so = self.so.lock().unwrap();
-            let id = so.entry_start();
-            so.entry_complete(id, e, Some(len), None);
-        }
-        //self.process_stream()?;
+        self.so.entry_add(e, Some(len), None);
         Ok(())
     }
 
@@ -198,7 +191,7 @@ impl IoVecHandler for DedupHandler {
             }
         }
 
-        self.process_stream()?;
+        self.process_stream(false)?;
 
         Ok(())
     }
@@ -209,9 +202,7 @@ impl IoVecHandler for DedupHandler {
         // TODO: Make this handle errors, like if we end up hanging forever
         let h: HandShake;
         loop {
-            if !self.process_stream()? {
-                thread::sleep(Duration::from_millis(100));
-            } else {
+            if self.process_stream(true)? {
                 break;
             }
         }
@@ -533,10 +524,6 @@ fn get_delta_args(matches: &ArgMatches) -> Result<Option<(String, PathBuf)>> {
 }
 
 pub fn run(matches: &ArgMatches, output: Arc<Output>, server: Option<String>) -> Result<()> {
-    // TODO we need to remove this and move it to the server side.  Replace with creating a temp.
-    // directory and stream file and when successfully done, we'll then transfer that to the server
-    // which may or may not be the same machine
-
     if server.is_none() {
         let archive_dir =
             Path::new(matches.get_one::<String>("ARCHIVE").unwrap()).canonicalize()?;
