@@ -49,11 +49,10 @@ pub fn is_thin_device<P: AsRef<Path>>(path: P) -> Result<bool> {
     // Get the major:minor of the device at the given path
     let mut dm = DM::new()?;
     let rdev = metadata.rdev();
-    let thin_major = (rdev >> 8) as u32;
-    let thin_minor = (rdev & 0xff) as u32;
+    let thin_dev = Device::from(rdev);
     let dm_devs = collect_dm_devs(&mut dm)?;
 
-    let dm_name = dm_devs.get(&(thin_major, thin_minor));
+    let dm_name = dm_devs.get(&(thin_dev.major, thin_dev.minor));
     if dm_name.is_none() {
         // Not a dm device
         return Ok(false);
@@ -336,9 +335,8 @@ fn get_thin_details<P: AsRef<Path>>(thin: P, dm_devs: &DevMap, dm: &mut DM) -> R
 
     // Get the major:minor of the device at the given path
     let rdev = metadata.rdev();
-    let thin_major = (rdev >> 8) as u32;
-    let thin_minor = (rdev & 0xff) as u32;
-    let thin_name = dm_devs.get(&(thin_major, thin_minor)).unwrap().clone();
+    let thin_dev = Device::from(rdev);
+    let thin_name = dm_devs.get(&(thin_dev.major, thin_dev.minor)).unwrap().clone();
     let thin_id = DevId::Name(&thin_name);
 
     let thin_args = get_table(dm, &thin_id, "thin")?;
