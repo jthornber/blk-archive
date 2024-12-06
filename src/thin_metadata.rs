@@ -336,7 +336,10 @@ fn get_thin_details<P: AsRef<Path>>(thin: P, dm_devs: &DevMap, dm: &mut DM) -> R
     // Get the major:minor of the device at the given path
     let rdev = metadata.rdev();
     let thin_dev = Device::from(rdev);
-    let thin_name = dm_devs.get(&(thin_dev.major, thin_dev.minor)).unwrap().clone();
+    let thin_name = dm_devs
+        .get(&(thin_dev.major, thin_dev.minor))
+        .ok_or_else(|| anyhow!("thin is not a DM device"))?
+        .clone();
     let thin_id = DevId::Name(&thin_name);
 
     let thin_args = get_table(dm, &thin_id, "thin")?;
