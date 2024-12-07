@@ -49,11 +49,10 @@ pub fn is_thin_device<P: AsRef<Path>>(path: P) -> Result<bool> {
     // Get the major:minor of the device at the given path
     let mut dm = DM::new()?;
     let rdev = metadata.rdev();
-    let thin_major = (rdev >> 8) as u32;
-    let thin_minor = (rdev & 0xff) as u32;
+    let thin_dev = Device::from(rdev);
     let dm_devs = collect_dm_devs(&mut dm)?;
 
-    let dm_name = dm_devs.get(&(thin_major, thin_minor));
+    let dm_name = dm_devs.get(&(thin_dev.major, thin_dev.minor));
     if dm_name.is_none() {
         // Not a dm device
         return Ok(false);
@@ -336,9 +335,11 @@ fn get_thin_details<P: AsRef<Path>>(thin: P, dm_devs: &DevMap, dm: &mut DM) -> R
 
     // Get the major:minor of the device at the given path
     let rdev = metadata.rdev();
-    let thin_major = (rdev >> 8) as u32;
-    let thin_minor = (rdev & 0xff) as u32;
-    let thin_name = dm_devs.get(&(thin_major, thin_minor)).unwrap().clone();
+    let thin_dev = Device::from(rdev);
+    let thin_name = dm_devs
+        .get(&(thin_dev.major, thin_dev.minor))
+        .ok_or_else(|| anyhow!("thin is not a DM device"))?
+        .clone();
     let thin_id = DevId::Name(&thin_name);
 
     let thin_args = get_table(dm, &thin_id, "thin")?;
@@ -395,44 +396,14 @@ pub fn read_thin_mappings<P: AsRef<Path>>(thin: P) -> Result<ThinInfo> {
 
 //---------------------------------
 
-fn get_thin_name<P: AsRef<Path>>(thin: P, dm_devs: &DevMap) -> Result<DmNameBuf> {
-    let thin = OpenOptions::new()
-        .read(true)
-        .write(false)
-        .create(false)
-        // .custom_flags(nix::fcntl::OFlag::O_EXCL as i32)
-        .open(thin)?;
-
-    let metadata = thin.metadata()?;
-
-    if !metadata.file_type().is_block_device() {
-        return Err(anyhow!("Old thin is not a block device"));
-    }
-
-    // Get the major:minor of the device at the given path
-    let rdev = metadata.rdev();
-    let thin_major = (rdev >> 8) as u32;
-    let thin_minor = (rdev & 0xff) as u32;
-    Ok(dm_devs.get(&(thin_major, thin_minor)).unwrap().clone())
-}
-
-fn get_thin_details_(thin_id: &DevId, dm: &mut DM) -> Result<ThinDetails> {
-    let thin_args = get_table(dm, thin_id, "thin")?;
-    let (_, thin_details) =
-        parse_thin_table(&thin_args).map_err(|_| anyhow!("couldn't parse thin table"))?;
-    Ok(thin_details)
-}
-
 pub fn read_thin_delta<P: AsRef<Path>>(old_thin: P, new_thin: P) -> Result<DeltaInfo> {
     let mut dm = DM::new()?;
     let dm_devs = collect_dm_devs(&mut dm)?;
 
-    let old_name =
-        get_thin_name(old_thin, &dm_devs).context("unable to identify --delta-device")?;
-    let new_name = get_thin_name(new_thin, &dm_devs).context("unable to identify input file")?;
-
-    let old_thin_details = get_thin_details_(&DevId::Name(&old_name), &mut dm)?;
-    let new_thin_details = get_thin_details_(&DevId::Name(&new_name), &mut dm)?;
+    let old_thin_details = get_thin_details(old_thin, &dm_devs, &mut dm)
+        .context("unable to identify --delta-device")?;
+    let new_thin_details =
+        get_thin_details(new_thin, &dm_devs, &mut dm).context("unable to identify input file")?;
 
     if old_thin_details.pool_minor != new_thin_details.pool_minor {
         return Err(anyhow!("thin devices are not from the same pool"));

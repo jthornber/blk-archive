@@ -22,7 +22,6 @@ pub struct ContentSensitiveSplitter {
     unconsumed_len: u64,
     blocks: VecDeque<Vec<u8>>,
 
-    leading_c: Cursor,
     consume_c: Cursor,
 }
 
@@ -41,39 +40,8 @@ impl ContentSensitiveSplitter {
             unconsumed_len: 0,
             blocks: VecDeque::new(),
 
-            leading_c: Cursor::default(),
             consume_c: Cursor::default(),
         }
-    }
-
-    fn eof(&self) -> bool {
-        self.leading_c.block >= self.blocks.len()
-    }
-
-    fn contiguous_size(&self, c: &Cursor) -> usize {
-        let b = &self.blocks[c.block];
-        b.len() - c.offset
-    }
-
-    fn inc_cursor(blocks: &VecDeque<Vec<u8>>, c: &mut Cursor, mut amt: usize) {
-        while amt > 0 {
-            let b = &blocks[c.block];
-
-            if c.offset < b.len() {
-                let len = std::cmp::min(b.len() - c.offset, amt);
-                c.offset += len;
-                amt -= len;
-            }
-
-            if c.offset == b.len() {
-                c.offset = 0;
-                c.block += 1;
-            }
-        }
-    }
-
-    fn ref_chunk<'a>(blocks: &'a VecDeque<Vec<u8>>, c: &Cursor, len: usize) -> &'a [u8] {
-        &blocks[c.block][c.offset..(c.offset + len)]
     }
 
     fn drop_old_blocks(&mut self) {
@@ -83,7 +51,6 @@ impl ContentSensitiveSplitter {
         }
 
         self.consume_c.block -= first_used;
-        self.leading_c.block -= first_used;
     }
 
     fn consume(&mut self, len: usize) -> IoVec {
@@ -180,22 +147,14 @@ impl ContentSensitiveSplitter {
 
 impl Splitter for ContentSensitiveSplitter {
     fn next_data(&mut self, buffer: Vec<u8>, handler: &mut dyn IoVecHandler) -> Result<()> {
+        let consumes = self.next_data_(&buffer);
+
+        let len = buffer.len();
         self.blocks.push_back(buffer);
+        self.unconsumed_len += len as u64;
 
-        while !self.eof() {
-            let len = self.contiguous_size(&self.leading_c);
-
-            let mut blocks = VecDeque::new();
-            std::mem::swap(&mut self.blocks, &mut blocks);
-            let consumes = self.next_data_(Self::ref_chunk(&blocks, &self.leading_c, len));
-            std::mem::swap(&mut self.blocks, &mut blocks);
-
-            self.unconsumed_len += len as u64;
-
-            for consume_len in consumes {
-                handler.handle_data(&self.consume(consume_len))?;
-            }
-            Self::inc_cursor(&self.blocks, &mut self.leading_c, len);
+        for consume_len in consumes {
+            handler.handle_data(&self.consume(consume_len))?;
         }
 
         self.drop_old_blocks();
@@ -209,7 +168,6 @@ impl Splitter for ContentSensitiveSplitter {
             self.drop_old_blocks();
         }
 
-        self.leading_c = Cursor::default();
         self.consume_c = Cursor::default();
 
         Ok(())
