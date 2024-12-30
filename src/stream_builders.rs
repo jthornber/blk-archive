@@ -306,10 +306,7 @@ impl DeltaBuilder {
         let mut maybe_entry = self.old_entry.take();
 
         if maybe_entry.is_none() {
-            maybe_entry = match self.old_entries.next() {
-                Some(re) => Some(re?),
-                None => None,
-            };
+            maybe_entry = self.old_entries.next().transpose()?;
         }
 
         Ok(maybe_entry)
