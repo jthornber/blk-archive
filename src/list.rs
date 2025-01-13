@@ -19,7 +19,7 @@ fn fmt_time(t: &chrono::DateTime<FixedOffset>) -> String {
 }
 
 pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
-    let archive_dir = Path::new(matches.value_of("ARCHIVE").unwrap()).canonicalize()?;
+    let archive_dir = Path::new(matches.get_one::<String>("ARCHIVE").unwrap()).canonicalize()?;
 
     env::set_current_dir(&archive_dir)?;
 
