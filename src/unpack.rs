@@ -478,7 +478,6 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
         let config = config::read_config(".")?;
         let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
 
-        report.set_title(&format!("Unpacking {} ...", output_file.display()));
         if is_thin_device(output_file)? {
             let mappings = read_thin_mappings(output_file)?;
             let block_size = mappings.data_block_size as u64 * 512;
