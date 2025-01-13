@@ -608,10 +608,6 @@ impl VerifyDest {
             None => Err(self.fail("archived stream longer than input")),
         }
     }
-
-    fn more_data(&self) -> bool {
-        self.chunk.is_some()
-    }
 }
 
 impl UnpackDest for VerifyDest {
@@ -661,7 +657,7 @@ impl UnpackDest for VerifyDest {
     }
 
     fn complete(&mut self) -> Result<()> {
-        if self.more_data() {
+        if self.chunk.is_some() || self.input_it.next().is_some() {
             return Err(anyhow!("archived stream is too short"));
         }
         Ok(())
