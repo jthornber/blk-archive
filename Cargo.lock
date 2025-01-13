@@ -177,7 +177,7 @@ dependencies = [
  "num_enum",
  "rand",
  "rand_chacha",
- "roaring 0.9.0",
+ "roaring",
  "serde",
  "serde_derive",
  "serde_json",
@@ -993,27 +993,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
 
 [[package]]
-name = "retain_mut"
-version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4389f1d5789befaf6029ebd9f7dac4af7f7e3d61b69d4f30e2ac02b57e7712b0"
-
-[[package]]
 name = "retry"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9166d72162de3575f950507683fac47e30f6f2c3836b71b7fbc61aa517c9c5f4"
-
-[[package]]
-name = "roaring"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd539cab4e32019956fe7e0cf160bb6d4802f4be2b52c4253d76d3bb0f85a5f7"
-dependencies = [
- "bytemuck",
- "byteorder",
- "retain_mut",
-]
 
 [[package]]
 name = "roaring"
@@ -1187,7 +1170,7 @@ dependencies = [
  "quick-xml",
  "rand",
  "rangemap",
- "roaring 0.10.10",
+ "roaring",
  "safemem",
  "thiserror",
  "threadpool",
