@@ -153,7 +153,7 @@ impl<D: UnpackDest> Unpacker<D> {
         Ok(())
     }
 
-    pub fn unpack(&mut self, report: &Arc<Report>) -> Result<()> {
+    fn unpack(&mut self, report: &Arc<Report>) -> Result<()> {
         report.progress(0);
 
         let nr_slabs = self.stream_file.get_nr_slabs();
