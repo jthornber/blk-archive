@@ -440,7 +440,7 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
         .context("Bad archive dir")?;
     let output_file = Path::new(matches.get_one::<String>("OUTPUT").unwrap());
     let stream = matches.get_one::<String>("STREAM").unwrap();
-    let create = matches.contains_id("CREATE");
+    let create = matches.get_flag("CREATE");
 
     let output = if create {
         fs::OpenOptions::new()
