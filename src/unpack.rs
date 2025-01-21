@@ -153,7 +153,7 @@ impl<D: UnpackDest> Unpacker<D> {
         Ok(())
     }
 
-    pub fn unpack(&mut self, report: &Arc<Report>) -> Result<()> {
+    fn unpack(&mut self, report: &Arc<Report>) -> Result<()> {
         report.progress(0);
 
         let nr_slabs = self.stream_file.get_nr_slabs();
@@ -440,7 +440,7 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
         .context("Bad archive dir")?;
     let output_file = Path::new(matches.get_one::<String>("OUTPUT").unwrap());
     let stream = matches.get_one::<String>("STREAM").unwrap();
-    let create = matches.contains_id("CREATE");
+    let create = matches.get_flag("CREATE");
 
     let output = if create {
         fs::OpenOptions::new()
@@ -478,7 +478,6 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
         let config = config::read_config(".")?;
         let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
 
-        report.set_title(&format!("Unpacking {} ...", output_file.display()));
         if is_thin_device(output_file)? {
             let mappings = read_thin_mappings(output_file)?;
             let block_size = mappings.data_block_size as u64 * 512;
@@ -609,10 +608,6 @@ impl VerifyDest {
             None => Err(self.fail("archived stream longer than input")),
         }
     }
-
-    fn more_data(&self) -> bool {
-        self.chunk.is_some()
-    }
 }
 
 impl UnpackDest for VerifyDest {
@@ -662,7 +657,7 @@ impl UnpackDest for VerifyDest {
     }
 
     fn complete(&mut self) -> Result<()> {
-        if self.more_data() {
+        if self.chunk.is_some() || self.input_it.next().is_some() {
             return Err(anyhow!("archived stream is too short"));
         }
         Ok(())

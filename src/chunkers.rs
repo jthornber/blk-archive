@@ -72,11 +72,7 @@ impl Iterator for ThickChunker {
     type Item = Result<Chunk>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.next_chunk() {
-            Err(e) => Some(Err(e)),
-            Ok(None) => None,
-            Ok(Some(c)) => Some(Ok(c)),
-        }
+        self.next_chunk().transpose()
     }
 }
 

@@ -5,6 +5,8 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::paths::*;
+
 //-----------------------------------------
 
 #[derive(Deserialize, Serialize)]
@@ -37,12 +39,8 @@ pub struct StreamConfig {
     pub thin_id: Option<u32>,
 }
 
-fn stream_cfg_path(stream_id: &str) -> PathBuf {
-    ["streams", stream_id, "config.toml"].iter().collect()
-}
-
 pub fn read_stream_config(stream_id: &str) -> Result<StreamConfig> {
-    let p = stream_cfg_path(stream_id);
+    let p = stream_config(stream_id);
     let input =
         fs::read_to_string(&p).with_context(|| format!("couldn't read stream config '{:?}", &p))?;
     let config: StreamConfig =
@@ -51,7 +49,7 @@ pub fn read_stream_config(stream_id: &str) -> Result<StreamConfig> {
 }
 
 pub fn write_stream_config(stream_id: &str, cfg: &StreamConfig) -> Result<()> {
-    let p = stream_cfg_path(stream_id);
+    let p = stream_config(stream_id);
     let mut output = fs::OpenOptions::new()
         .read(false)
         .write(true)

@@ -146,7 +146,7 @@ impl ContentSensitiveSplitter {
 }
 
 impl Splitter for ContentSensitiveSplitter {
-    fn next_data(&mut self, buffer: Vec<u8>, handler: &mut dyn IoVecHandler) -> Result<()> {
+    fn next_data(&mut self, buffer: Vec<u8>, handler: &mut impl IoVecHandler) -> Result<()> {
         let consumes = self.next_data_(&buffer);
 
         let len = buffer.len();
@@ -161,7 +161,7 @@ impl Splitter for ContentSensitiveSplitter {
         Ok(())
     }
 
-    fn next_break(&mut self, handler: &mut dyn IoVecHandler) -> Result<()> {
+    fn next_break(&mut self, handler: &mut impl IoVecHandler) -> Result<()> {
         let iov = self.consume_all();
         if !iov.is_empty() {
             handler.handle_data(&iov)?;
@@ -173,7 +173,7 @@ impl Splitter for ContentSensitiveSplitter {
         Ok(())
     }
 
-    fn complete(mut self, handler: &mut dyn IoVecHandler) -> Result<()> {
+    fn complete(mut self, handler: &mut impl IoVecHandler) -> Result<()> {
         self.next_break(handler)?;
         handler.complete()?;
         Ok(())

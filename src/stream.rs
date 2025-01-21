@@ -544,7 +544,7 @@ impl VMState {
     // Finds the register that would take the fewest bytes to encode.
     // This doesn't consider the top of the stack (index 0).
     // FIXME: so slow
-    fn nearest_register(&mut self, slab: u32, offset: u32) -> usize {
+    fn nearest_register(&self, slab: u32, offset: u32) -> usize {
         let target = Register { slab, offset };
         let mut index = 0;
         let mut min_cost = Self::distance_cost(self.stack.get(index), &target);
