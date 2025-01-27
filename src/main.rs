@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::{command, Arg, ArgMatches, Command};
+use clap::{command, Arg, ArgAction, ArgMatches, Command};
 use std::env;
 use std::process::exit;
 use std::sync::Arc;
@@ -47,8 +47,8 @@ fn main_() -> Result<()> {
         .required(false)
         .long("json")
         .short('j')
-        .value_name("JSON")
-        .num_args(1);
+        .action(ArgAction::SetTrue)
+        .global(true);
 
     let matches = command!()
         .arg(json)
