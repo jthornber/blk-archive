@@ -1,6 +1,8 @@
 use anyhow::{anyhow, Context, Result};
+use chrono::prelude::*;
 use clap::ArgMatches;
 use io::{Read, Seek, Write};
+use size_display::Size;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
@@ -80,7 +82,6 @@ impl<D: UnpackDest> Unpacker<D> {
 
     fn unpack_entry(&mut self, e: &MapEntry) -> Result<()> {
         use MapEntry::*;
-
         match e {
             Fill { byte, len } => {
                 assert!(self.partial.is_none());
@@ -153,11 +154,13 @@ impl<D: UnpackDest> Unpacker<D> {
         Ok(())
     }
 
-    fn unpack(&mut self, report: &Arc<Report>) -> Result<()> {
+    fn unpack(&mut self, report: &Arc<Report>, total: u64) -> Result<()> {
         report.progress(0);
 
         let nr_slabs = self.stream_file.get_nr_slabs();
         let mut unpacker = stream::MappingUnpacker::default();
+
+        let start_time: DateTime<Utc> = Utc::now();
 
         for s in 0..nr_slabs {
             let stream_data = self.stream_file.read(s as u32)?;
@@ -177,6 +180,16 @@ impl<D: UnpackDest> Unpacker<D> {
                 }
             }
         }
+
+        let end_time: DateTime<Utc> = Utc::now();
+        let elapsed = end_time - start_time;
+        let elapsed = elapsed.num_milliseconds() as f64 / 1000.0;
+
+        report.info(&format!(
+            "speed            : {:.2}/s",
+            Size((total as f64 / elapsed) as u64)
+        ));
+
         self.dest.complete()?;
         report.progress(100);
 
@@ -457,6 +470,7 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
             .context("Couldn't open output")?
     };
     env::set_current_dir(archive_dir)?;
+    let stream_cfg = config::read_stream_config(stream)?;
 
     report.set_title(&format!("Unpacking {} ...", output_file.display()));
     if create {
@@ -465,10 +479,9 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
 
         let dest = ThickDest { output };
         let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
-        u.unpack(&report)
+        u.unpack(&report, stream_cfg.size)
     } else {
         // Check the size matches the stream size.
-        let stream_cfg = config::read_stream_config(stream)?;
         let stream_size = stream_cfg.size;
         let output_size = thinp::file_utils::file_size(output_file)?;
         if output_size != stream_size {
@@ -495,11 +508,11 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
                 writes_avoided: 0,
             };
             let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
-            u.unpack(&report)
+            u.unpack(&report, stream_size)
         } else {
             let dest = ThickDest { output };
             let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
-            u.unpack(&report)
+            u.unpack(&report, stream_size)
         }
     }
 }
@@ -702,6 +715,8 @@ pub fn run_verify(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     let config = config::read_config(".")?;
     let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
 
+    let stream_cfg = config::read_stream_config(stream)?;
+
     report.set_title(&format!(
         "Verifying {} and {} match ...",
         input_file.display(),
@@ -715,7 +730,7 @@ pub fn run_verify(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     };
 
     let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
-    u.unpack(&report)
+    u.unpack(&report, stream_cfg.size)
 }
 
 //-----------------------------------------
