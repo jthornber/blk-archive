@@ -15,7 +15,7 @@ use blk_archive::unpack;
 //-----------------------
 
 fn mk_report(matches: &ArgMatches) -> Arc<Report> {
-    if matches.contains_id("JSON") {
+    if matches.get_flag("JSON") {
         Arc::new(mk_quiet_report())
     } else if atty::is(atty::Stream::Stdout) {
         Arc::new(mk_progress_bar_report())
@@ -175,7 +175,7 @@ fn main_() -> Result<()> {
     report.set_level(LogLevel::Info);
     let output = Arc::new(Output {
         report: report.clone(),
-        json: matches.contains_id("JSON"),
+        json: matches.get_flag("JSON"),
     });
     match matches.subcommand() {
         Some(("create", sub_matches)) => {
