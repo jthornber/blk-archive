@@ -54,6 +54,7 @@ pub fn write_stream_config(stream_id: &str, cfg: &StreamConfig) -> Result<()> {
         .read(false)
         .write(true)
         .create(true)
+        .truncate(true)
         .open(p)?;
     let yaml = serde_yaml::to_string(cfg).unwrap();
     output.write_all(yaml.as_bytes())?;

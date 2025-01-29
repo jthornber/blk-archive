@@ -17,7 +17,6 @@ use crate::stack::*;
 //-----------------------------------------
 
 /// Sign extends a given number of bits.
-
 fn sign_extend(x: i32, nbits: u32) -> i32 {
     let n = std::mem::size_of_val(&x) as u32 * 8 - nbits;
     x.wrapping_shl(n).wrapping_shr(n)
