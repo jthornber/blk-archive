@@ -3,20 +3,19 @@ use chrono::prelude::*;
 use clap::ArgMatches;
 use io::{Read, Seek, Write};
 use size_display::Size;
-use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use thinp::report::*;
 
 use crate::chunkers::*;
 use crate::config;
-use crate::hash_index::*;
-use crate::pack::SLAB_SIZE_TARGET;
+use crate::db;
+use crate::db::SLAB_SIZE_TARGET;
 use crate::paths::*;
 use crate::run_iter::*;
 use crate::slab::*;
@@ -35,14 +34,8 @@ trait UnpackDest {
 }
 
 struct Unpacker<D: UnpackDest> {
-    data_file: SlabFile,
-    hashes_file: SlabFile,
     stream_file: SlabFile,
-
-    // FIXME: make this an lru cache
-    slabs: BTreeMap<u32, Arc<ByIndex>>,
-    partial: Option<(u32, u32)>,
-
+    db: db::Db,
     dest: D,
 }
 
@@ -52,39 +45,22 @@ impl<D: UnpackDest> Unpacker<D> {
         let data_file = SlabFileBuilder::open(data_path())
             .cache_nr_entries(cache_nr_entries)
             .build()?;
-        let hashes_file = SlabFileBuilder::open(hashes_path()).build()?;
+        let hashes_file = Arc::new(Mutex::new(
+            SlabFileBuilder::open(stream_path(stream)).build()?,
+        ));
         let stream_file = SlabFileBuilder::open(stream_path(stream)).build()?;
 
         Ok(Self {
-            data_file,
-            hashes_file,
             stream_file,
-            slabs: BTreeMap::new(),
-            partial: None,
+            db: db::Db::new(data_file, hashes_file, cache_nr_entries)?,
             dest,
         })
-    }
-
-    fn read_info(&mut self, slab: u32) -> Result<ByIndex> {
-        let hashes = self.hashes_file.read(slab)?;
-        ByIndex::new(hashes)
-    }
-
-    fn get_info(&mut self, slab: u32) -> Result<Arc<ByIndex>> {
-        if let Some(info) = self.slabs.get(&slab) {
-            Ok(info.clone())
-        } else {
-            let info = Arc::new(self.read_info(slab)?);
-            self.slabs.insert(slab, info.clone());
-            Ok(info)
-        }
     }
 
     fn unpack_entry(&mut self, e: &MapEntry) -> Result<()> {
         use MapEntry::*;
         match e {
             Fill { byte, len } => {
-                assert!(self.partial.is_none());
                 // len may be very big, so we have to be prepared to write in chunks.
                 // FIXME: if we're writing to a file would this be zeroes anyway?  fallocate?
                 const MAX_BUFFER: u64 = 16 * 1024 * 1024;
@@ -97,7 +73,6 @@ impl<D: UnpackDest> Unpacker<D> {
                 }
             }
             Unmapped { len } => {
-                assert!(self.partial.is_none());
                 self.dest.handle_unmapped(*len)?;
             }
             Data {
@@ -105,30 +80,8 @@ impl<D: UnpackDest> Unpacker<D> {
                 offset,
                 nr_entries,
             } => {
-                let info = self.get_info(*slab)?;
-
-                let (data_begin, data_end) = if *nr_entries == 1 {
-                    let (data_begin, data_end, _expected_hash) =
-                        info.get(*offset as usize).unwrap();
-                    (*data_begin as usize, *data_end as usize)
-                } else {
-                    let (data_begin, _data_end, _expected_hash) =
-                        info.get(*offset as usize).unwrap();
-                    let (_data_begin, data_end, _expected_hash) = info
-                        .get((*offset as usize) + (*nr_entries as usize) - 1)
-                        .unwrap();
-                    (*data_begin as usize, *data_end as usize)
-                };
-
-                let data = self.data_file.read(*slab)?;
-                if let Some((begin, end)) = self.partial {
-                    let data_end = data_begin + end as usize;
-                    let data_begin = data_begin + begin as usize;
-                    self.dest.handle_mapped(&data[data_begin..data_end])?;
-                    self.partial = None;
-                } else {
-                    self.dest.handle_mapped(&data[data_begin..data_end])?;
-                }
+                let (data, start, end) = self.db.data_get(*slab, *offset, *nr_entries, None)?;
+                self.dest.handle_mapped(&data[start..end])?;
             }
             Partial {
                 begin,
@@ -137,13 +90,9 @@ impl<D: UnpackDest> Unpacker<D> {
                 offset,
                 nr_entries,
             } => {
-                assert!(self.partial.is_none());
-                self.partial = Some((*begin, *end));
-                self.unpack_entry(&MapEntry::Data {
-                    slab: *slab,
-                    offset: *offset,
-                    nr_entries: *nr_entries,
-                })?;
+                let partial = Some((*begin, *end));
+                let (data, start, end) = self.db.data_get(*slab, *offset, *nr_entries, partial)?;
+                self.dest.handle_mapped(&data[start..end])?;
             }
             Ref { .. } => {
                 // Can't get here.
