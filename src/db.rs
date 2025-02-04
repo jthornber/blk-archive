@@ -103,25 +103,37 @@ impl Db {
         })
     }
 
-    fn rebuild_index(&mut self, new_capacity: usize) -> Result<()> {
-        let mut seen = CuckooFilter::with_capacity(new_capacity);
+    fn rebuild_index(&mut self, mut new_capacity: usize) -> Result<()> {
+        loop {
+            let mut seen = CuckooFilter::with_capacity(new_capacity);
+            let mut resize_needed = false;
 
-        // Scan the hashes file.
-        let mut hashes_file = self.hashes_file.lock().unwrap();
-        let nr_slabs = hashes_file.get_nr_slabs();
-        for s in 0..nr_slabs {
-            let buf = hashes_file.read(s as u32)?;
-            let hi = ByHash::new(buf)?;
-            for i in 0..hi.len() {
-                let h = hi.get(i);
-                let mini_hash = hash_le_u64(h);
-                seen.test_and_set(mini_hash, s as u32)?;
+            // Lock the hashes file and iterate through slabs.
+            let mut hashes_file = self.hashes_file.lock().unwrap();
+            for s in 0..hashes_file.get_nr_slabs() {
+                let buf = hashes_file.read(s as u32)?;
+                let hi = ByHash::new(buf)?;
+
+                for i in 0..hi.len() {
+                    let h = hi.get(i);
+                    let mini_hash = hash_le_u64(h);
+                    if seen.test_and_set(mini_hash, s as u32).is_err() {
+                        new_capacity *= 2;
+                        resize_needed = true;
+                        break;
+                    }
+                }
+
+                if resize_needed {
+                    break;
+                }
+            }
+
+            if !resize_needed {
+                std::mem::swap(&mut seen, &mut self.seen);
+                return Ok(());
             }
         }
-
-        std::mem::swap(&mut seen, &mut self.seen);
-
-        Ok(())
     }
 
     fn maybe_complete_data(&mut self, target: usize) -> Result<()> {
@@ -149,11 +161,14 @@ impl Db {
             return Ok(location);
         }
 
-        // Add entry to cuckoo filter, not checking return value as we could get an "PossiblyPresent"
-        // when its not really present.  Cuckoo filters have the following behavior which is
-        // "possibly in set" or "definitely not in set"
-        //
-        self.seen.test_and_set(hash_le_u64(&h), self.current_slab)?;
+        // Add entry to cuckoo filter, not checking return value as we could get indication that
+        // it's "PossiblyPresent" when our logical expectation is "Inserted".
+        let ts_result = self.seen.test_and_set(hash_le_u64(&h), self.current_slab);
+        if ts_result.is_err() {
+            // Exceeded capacity, rebuild with more capacity.
+            let s = self.seen.capacity() * 2;
+            self.rebuild_index(s)?;
+        }
 
         let r = (self.current_slab, self.current_entries as u32);
         for v in iov {
