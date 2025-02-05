@@ -46,7 +46,7 @@ impl<D: UnpackDest> Unpacker<D> {
             .cache_nr_entries(cache_nr_entries)
             .build()?;
         let hashes_file = Arc::new(Mutex::new(
-            SlabFileBuilder::open(stream_path(stream)).build()?,
+            SlabFileBuilder::open(hashes_path()).build()?,
         ));
         let stream_file = SlabFileBuilder::open(stream_path(stream)).build()?;
 
