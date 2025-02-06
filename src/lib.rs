@@ -1,9 +1,9 @@
+pub mod archive;
 pub mod chunkers;
 pub mod config;
 pub mod content_sensitive_splitter;
 pub mod create;
 pub mod cuckoo_filter;
-pub mod db;
 pub mod dump_stream;
 pub mod hash;
 pub mod hash_index;

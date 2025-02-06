@@ -12,10 +12,10 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use thinp::report::*;
 
+use crate::archive;
+use crate::archive::SLAB_SIZE_TARGET;
 use crate::chunkers::*;
 use crate::config;
-use crate::db;
-use crate::db::SLAB_SIZE_TARGET;
 use crate::paths::*;
 use crate::run_iter::*;
 use crate::slab::*;
@@ -35,7 +35,7 @@ trait UnpackDest {
 
 struct Unpacker<D: UnpackDest> {
     stream_file: SlabFile,
-    db: db::Db,
+    archive: archive::Data,
     dest: D,
 }
 
@@ -52,7 +52,7 @@ impl<D: UnpackDest> Unpacker<D> {
 
         Ok(Self {
             stream_file,
-            db: db::Db::new(data_file, hashes_file, cache_nr_entries)?,
+            archive: archive::Data::new(data_file, hashes_file, cache_nr_entries)?,
             dest,
         })
     }
@@ -80,7 +80,8 @@ impl<D: UnpackDest> Unpacker<D> {
                 offset,
                 nr_entries,
             } => {
-                let (data, start, end) = self.db.data_get(*slab, *offset, *nr_entries, None)?;
+                let (data, start, end) =
+                    self.archive.data_get(*slab, *offset, *nr_entries, None)?;
                 self.dest.handle_mapped(&data[start..end])?;
             }
             Partial {
@@ -91,7 +92,9 @@ impl<D: UnpackDest> Unpacker<D> {
                 nr_entries,
             } => {
                 let partial = Some((*begin, *end));
-                let (data, start, end) = self.db.data_get(*slab, *offset, *nr_entries, partial)?;
+                let (data, start, end) =
+                    self.archive
+                        .data_get(*slab, *offset, *nr_entries, partial)?;
                 self.dest.handle_mapped(&data[start..end])?;
             }
             Ref { .. } => {

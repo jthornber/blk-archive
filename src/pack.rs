@@ -12,10 +12,10 @@ use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::archive::*;
 use crate::chunkers::*;
 use crate::config;
 use crate::content_sensitive_splitter::*;
-use crate::db::*;
 use crate::hash::*;
 use crate::iovec::*;
 use crate::output::Output;
@@ -74,14 +74,14 @@ struct DedupHandler {
     data_written: u64,
     mapped_size: u64,
     fill_size: u64,
-    db: Db,
+    archive: Data,
 }
 
 impl DedupHandler {
     fn new(
         stream_file: SlabFile,
         mapping_builder: Arc<Mutex<dyn Builder>>,
-        db: Db,
+        archive: Data,
     ) -> Result<Self> {
         Ok(Self {
             nr_chunks: 0,
@@ -92,7 +92,7 @@ impl DedupHandler {
             data_written: 0,
             mapped_size: 0,
             fill_size: 0,
-            db,
+            archive,
         })
     }
 
@@ -124,14 +124,14 @@ impl DedupHandler {
         Ok(())
     }
 
-    fn db_sizes(&mut self) -> (u64, u64) {
-        self.db.file_sizes()
+    fn archive_file_sizes(&mut self) -> (u64, u64) {
+        self.archive.file_sizes()
     }
 
     // TODO: Is there a better way to handle this and what are the ramifications with
     // client server with multiple clients and one server?
     fn ensure_extra_capacity(&mut self, blocks: usize) -> Result<()> {
-        self.db.ensure_extra_capacity(blocks)
+        self.archive.ensure_extra_capacity(blocks)
     }
 }
 
@@ -153,9 +153,9 @@ impl IoVecHandler for DedupHandler {
             self.maybe_complete_stream()?;
         } else {
             let h = hash_256_iov(iov);
-            // Note: db.add_data_entry returns existing entry if present, else returns newly inserted
+            // Note: add_data_entry returns existing entry if present, else returns newly inserted
             // entry.
-            let entry_location = self.db.data_add(h, iov, len)?;
+            let entry_location = self.archive.data_add(h, iov, len)?;
             let me = MapEntry::Data {
                 slab: entry_location.0,
                 offset: entry_location.1,
@@ -275,11 +275,11 @@ impl Packer {
             / std::mem::size_of::<Hash256>())
             / hashes_per_slab;
 
-        let db = Db::new(data_file, hashes_file, slab_capacity)?;
+        let ad: Data = Data::new(data_file, hashes_file, slab_capacity)?;
 
-        let mut handler = DedupHandler::new(stream_file, self.mapping_builder.clone(), db)?;
+        let mut handler = DedupHandler::new(stream_file, self.mapping_builder.clone(), ad)?;
 
-        let start_sizes = handler.db_sizes();
+        let start_sizes = handler.archive_file_sizes();
 
         handler.ensure_extra_capacity(self.mapped_size as usize / self.block_size)?;
 
@@ -315,7 +315,7 @@ impl Packer {
         let elapsed = end_time - start_time;
         let elapsed = elapsed.num_milliseconds() as f64 / 1000.0;
 
-        let end_sizes = handler.db_sizes();
+        let end_sizes = handler.archive_file_sizes();
         let data_written = end_sizes.0 - start_sizes.0;
         let hashes_written = end_sizes.1 - start_sizes.1;
 
