@@ -1,37 +1,41 @@
 #!/usr/bin/bash
 
-# Install all the dependencies
-export DEBIAN_FRONTEND="noninteractive"
-apt-get update -y || exit 1
+if [ -e "/etc/debian_version" ];then
+    # Install all the dependencies
+    export DEBIAN_FRONTEND="noninteractive"
+    apt-get update -y || exit 1
 
-apt-get install git gcc clang-tools libdevmapper-dev pkg-config mount python3 python3-toml python3-pudb python3-numpy -y || exit 1
+    apt-get install git gcc clang-tools libdevmapper-dev pkg-config mount python3 python3-toml python3-pudb python3-numpy -y || exit 1
 
-# install rust via rustup as packages are too old on ubuntu
-curl https://sh.rustup.rs -sSf | sh -s -- -y || exit 1
+    # install rust via rustup as packages are too old on ubuntu
+    curl https://sh.rustup.rs -sSf | sh -s -- -y || exit 1
 
-# Get rust tools in path
-source "$HOME/.cargo/env" || exit 1
+    # Get rust tools in path
+    source "$HOME/.cargo/env" || exit 1
+fi
 
-cargo build || exit 1
+cargo build --release || exit 1
 
 # Run the rust tests
 cargo test || exit 1
 
-export PATH=$PATH:`pwd`/target/debug
+new_path=$PATH:$(pwd)/target/release
+export PATH=$new_path
 
 if [ ! -d dmtest-python ]; then
     git clone https://github.com/jthornber/dmtest-python.git || exit 1
 fi
 
-# Create the block devices
-truncate -s 1T /block1.img || exit 1
-truncate -s 1T /block2.img || exit 1
-truncate -s 1T /block3.img || exit 1
+# Create the block devices if they don't already exist
+if [ ! -d /block1.img ]; then
+    truncate -s 1T /block1.img || exit 1
+    truncate -s 1T /block2.img || exit 1
+    truncate -s 1T /block3.img || exit 1
 
-loop1=$(losetup -f --show /block1.img)
-loop2=$(losetup -f --show /block2.img)
-loop3=$(losetup -f --show /block3.img)
-
+    loop1=$(losetup -f --show /block1.img)
+    loop2=$(losetup -f --show /block2.img)
+    loop3=$(losetup -f --show /block3.img)
+fi
 
 # Unable to run rolling linux test as we don't have enough disk space in the CI VMs.
 
