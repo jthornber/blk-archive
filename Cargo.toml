@@ -34,5 +34,8 @@ udev = "0.9.1"
 walkdir = "2"
 zstd = "0.13.2"
 
+[dev-dependencies]
+tempfile = "3.16"
+
 [profile.release]
 debug = 1

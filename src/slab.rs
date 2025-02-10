@@ -13,6 +13,9 @@ use threadpool::ThreadPool;
 use crate::hash::*;
 use crate::lru::*;
 
+#[cfg(test)]
+mod tests;
+
 //------------------------------------------------
 
 struct DataCache {
