@@ -49,5 +49,12 @@ echo "disable_by_id_check = true" >> config.toml
 
 export DMTEST_RESULT_SET=unit-test
 ./dmtest health || exit 1
-./dmtest run blk-archive/unit/combinations || exit 1
+./dmtest run blk-archive/unit/combinations
+
+rc=$?
+if [ $rc -ne 0 ]; then
+    ./dmtest log /blk-archive/unit/combinations
+    exit 1
+fi
+exit 0
 
