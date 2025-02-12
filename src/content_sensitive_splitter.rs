@@ -203,9 +203,10 @@ mod splitter_tests {
 
     fn corrupt(buf: &mut [u8], len: usize) {
         let offset = rand::thread_rng().gen_range(0..(buf.len() - len));
-        for i in offset..(offset + len) {
-            buf[i] = rand::thread_rng().gen_range(0..256) as u8;
-        }
+        buf.iter_mut()
+            .skip(offset)
+            .take(len)
+            .for_each(|v| *v = rand::thread_rng().gen_range(0..256) as u8);
     }
 
     fn prep_data() -> Vec<u8> {
@@ -242,11 +243,11 @@ mod splitter_tests {
         }
     }
 
-    impl<'a, W: Write> IoVecHandler for CatHandler<'a, W> {
+    impl<W: Write> IoVecHandler for CatHandler<'_, W> {
         fn handle_data(&mut self, iov: &IoVec) -> Result<()> {
             for v in iov {
                 println!("{:?}", v);
-                self.output.write(v)?;
+                self.output.write_all(v)?;
             }
 
             Ok(())
@@ -259,40 +260,23 @@ mod splitter_tests {
 
     //-----------
 
+    #[derive(Default)]
     struct Entry {
         hits: usize,
         len: usize,
         zero: bool,
     }
 
-    impl Default for Entry {
-        fn default() -> Self {
-            Self {
-                hits: 0,
-                len: 0,
-                zero: false,
-            }
-        }
-    }
-
+    #[derive(Default)]
     struct TestHandler {
         nr_chunks: usize,
         hashes: BTreeMap<Hash256, Entry>,
     }
 
-    impl Default for TestHandler {
-        fn default() -> Self {
-            Self {
-                nr_chunks: 0,
-                hashes: BTreeMap::new(),
-            }
-        }
-    }
-
     impl TestHandler {
         fn histogram(&self) -> BTreeMap<usize, (u32, u32)> {
             let mut r = BTreeMap::new();
-            for (_, Entry { hits, zero, .. }) in &self.hashes {
+            for Entry { hits, zero, .. } in self.hashes.values() {
                 let e = r.entry(*hits).or_insert((0, 0));
                 e.0 += 1;
                 if *zero {
@@ -304,7 +288,7 @@ mod splitter_tests {
 
         fn lengths(&self) -> BTreeMap<usize, usize> {
             let mut r = BTreeMap::new();
-            for (_, Entry { len, .. }) in &self.hashes {
+            for Entry { len, .. } in self.hashes.values() {
                 let e = r.entry(*len).or_insert(0);
                 *e += 1;
             }
@@ -313,7 +297,7 @@ mod splitter_tests {
 
         fn unique_len(&self) -> usize {
             let mut total = 0;
-            for (_, Entry { hits, len, .. }) in &self.hashes {
+            for Entry { hits, len, .. } in self.hashes.values() {
                 if *hits == 1 {
                     total += len;
                 }
@@ -333,10 +317,7 @@ mod splitter_tests {
                 hasher.update(&v[..]);
             }
 
-            let e = self
-                .hashes
-                .entry(hasher.finalize())
-                .or_insert(Entry::default());
+            let e = self.hashes.entry(hasher.finalize()).or_default();
 
             e.hits += 1;
             e.len = len;

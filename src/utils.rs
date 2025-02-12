@@ -52,9 +52,9 @@ mod util_tests {
         for i in 0..268435456 {
             let z = round_pow2(i);
             if i as u64 == z {
-                assert!(is_pow2(i as usize) == true);
+                assert!(is_pow2(i as usize));
             } else {
-                assert!(is_pow2(i as usize) == false);
+                assert!(!is_pow2(i as usize));
             }
         }
     }

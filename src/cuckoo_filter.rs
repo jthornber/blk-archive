@@ -305,7 +305,7 @@ mod cuckoo_tests {
 
     #[test]
     fn test_create() {
-        let _cf = CuckooFilter::with_capacity(1000_000);
+        let _cf = CuckooFilter::with_capacity(1_000_000);
     }
 
     #[test]
@@ -339,7 +339,7 @@ mod cuckoo_tests {
         for v in &values {
             match cf.test_and_set(*v, *v as u32).expect("test_and_set failed") {
                 InsertResult::Inserted => {
-                    assert!(false);
+                    unreachable!();
                 }
                 InsertResult::PossiblyPresent(slab) => {
                     if slab == *v as u32 {

@@ -435,7 +435,7 @@ mod stream_tests {
             for e in &t {
                 let len = 16; // FIXME: assume all entries are 16 bytes in length
                 builder
-                    .next(&e, len, &mut buf)
+                    .next(e, len, &mut buf)
                     .expect("builder.next() failed");
             }
             builder
