@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 pub const SLAB_SIZE_TARGET: usize = 4 * 1024 * 1024;
 
-pub struct Db {
+pub struct Data {
     seen: CuckooFilter,
     hashes: lru::LruCache<u32, ByHash>,
 
@@ -44,7 +44,7 @@ pub fn complete_slab(slab: &mut SlabFile, buf: &mut Vec<u8>, threshold: usize) -
     }
 }
 
-impl Db {
+impl Data {
     pub fn new(
         data_file: SlabFile,
         hashes_file: Arc<Mutex<SlabFile>>,
@@ -262,21 +262,21 @@ impl Db {
 
     fn sync_and_close(&mut self) {
         self.maybe_complete_data(0)
-            .expect("db.drop: maybe_complete_data error!");
+            .expect("Data.drop: maybe_complete_data error!");
         let mut hashes_file = self.hashes_file.lock().unwrap();
         hashes_file
             .close()
-            .expect("db.drop: hashes_file.close() error!");
+            .expect("Data.drop: hashes_file.close() error!");
         self.data_file
             .close()
-            .expect("db.drop: data_file.close() error!");
+            .expect("Data.drop: data_file.close() error!");
         self.seen
             .write(paths::index_path())
-            .expect("db.drop: seen.write() error!");
+            .expect("Data.drop: seen.write() error!");
     }
 }
 
-impl Drop for Db {
+impl Drop for Data {
     fn drop(&mut self) {
         self.sync_and_close();
     }
