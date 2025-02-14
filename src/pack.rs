@@ -155,12 +155,15 @@ impl IoVecHandler for DedupHandler {
             let h = hash_256_iov(iov);
             // Note: add_data_entry returns existing entry if present, else returns newly inserted
             // entry.
-            let entry_location = self.archive.data_add(h, iov, len)?;
+            let (entry_location, inserted) = self.archive.data_add(h, iov, len)?;
             let me = MapEntry::Data {
                 slab: entry_location.0,
                 offset: entry_location.1,
                 nr_entries: 1,
             };
+            if inserted {
+                self.data_written += len;
+            }
             self.add_stream_entry(&me, len)?;
             self.maybe_complete_stream()?;
         }
