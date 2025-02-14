@@ -154,11 +154,11 @@ impl Data {
     }
 
     // Returns the (slab, entry) for the IoVec which may/may not already exist.
-    pub fn data_add(&mut self, h: Hash256, iov: &IoVec, len: u64) -> Result<(u32, u32)> {
+    pub fn data_add(&mut self, h: Hash256, iov: &IoVec, len: u64) -> Result<((u32, u32), bool)> {
         // There is an inherent race condition between checking if we have it and adding it,
         // check before we add when this functionality ends up on a server side.
         if let Some(location) = self.is_known(&h)? {
-            return Ok(location);
+            return Ok((location, false));
         }
 
         // Add entry to cuckoo filter, not checking return value as we could get indication that
@@ -177,7 +177,7 @@ impl Data {
         self.current_entries += 1;
         self.current_index.insert(h, len as usize);
         self.maybe_complete_data(SLAB_SIZE_TARGET)?;
-        Ok(r)
+        Ok((r, true))
     }
 
     // Have we seen this hash before, if we have we will return the slab and offset
