@@ -27,7 +27,6 @@ use crate::thin_metadata::*;
 
 // Unpack and verify do different things with the data.
 trait UnpackDest {
-    fn handle_fill(&mut self, byte: u8, len: u64) -> Result<()>;
     fn handle_mapped(&mut self, data: &[u8]) -> Result<()>;
     fn handle_unmapped(&mut self, len: u64) -> Result<()>;
     fn complete(&mut self) -> Result<()>;
@@ -168,10 +167,6 @@ fn write_bytes<W: Write>(w: &mut W, byte: u8, len: u64) -> Result<()> {
 }
 
 impl<W: Write> UnpackDest for ThickDest<W> {
-    fn handle_fill(&mut self, byte: u8, len: u64) -> Result<()> {
-        write_bytes(&mut self.output, byte, len)
-    }
-
     fn handle_mapped(&mut self, data: &[u8]) -> Result<()> {
         self.output.write_all(data)?;
         Ok(())
@@ -252,12 +247,6 @@ impl ThinDest {
         Ok(())
     }
 
-    fn fill(&mut self, byte: u8, len: u64) -> Result<()> {
-        write_bytes(&mut self.output, byte, len)?;
-        self.pos += len;
-        Ok(())
-    }
-
     fn read(&mut self, len: u64) -> Result<Vec<u8>> {
         let mut buf = vec![0; len as usize];
         self.output.read_exact(&mut buf[..])?;
@@ -266,21 +255,6 @@ impl ThinDest {
     }
 
     //------------------
-
-    fn handle_fill_unprovisioned(&mut self, byte: u8, len: u64) -> Result<()> {
-        if byte == 0 {
-            // FIXME: what if we fill a partial block, then subsequently trigger a provision and
-            // block zeroing is turned off?
-            self.forward(len)
-        } else {
-            self.fill(byte, len)
-        }
-    }
-
-    fn handle_fill_provisioned(&mut self, byte: u8, len: u64) -> Result<()> {
-        self.fill(byte, len)
-    }
-
     fn handle_mapped_unprovisioned(&mut self, data: &[u8]) -> Result<()> {
         self.write(data)
     }
@@ -333,23 +307,6 @@ impl ThinDest {
 }
 
 impl UnpackDest for ThinDest {
-    fn handle_fill(&mut self, byte: u8, len: u64) -> Result<()> {
-        let mut remaining = len;
-        while remaining > 0 {
-            let (provisioned, c_len) = self.next_run(remaining)?;
-
-            if provisioned {
-                self.handle_fill_provisioned(byte, c_len)?;
-            } else {
-                self.handle_fill_unprovisioned(byte, c_len)?;
-            }
-
-            remaining -= c_len;
-        }
-
-        Ok(())
-    }
-
     fn handle_mapped(&mut self, data: &[u8]) -> Result<()> {
         let mut remaining = data.len() as u64;
         let mut offset = 0;
@@ -574,24 +531,6 @@ impl VerifyDest {
 }
 
 impl UnpackDest for VerifyDest {
-    fn handle_fill(&mut self, byte: u8, len: u64) -> Result<()> {
-        let mut remaining = len;
-        while remaining > 0 {
-            let actual = self.peek_data(remaining)?;
-            let actual_len = actual.len() as u64;
-
-            for b in actual {
-                if *b != byte {
-                    return Err(self.fail("fill mismatch"));
-                }
-            }
-            self.consume_data(actual_len)?;
-            remaining -= actual_len;
-        }
-        self.total_verified += len;
-        Ok(())
-    }
-
     fn handle_mapped(&mut self, expected: &[u8]) -> Result<()> {
         let mut remaining = expected.len() as u64;
         let mut offset = 0;
