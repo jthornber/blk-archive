@@ -322,7 +322,7 @@ impl Packer {
         if self.output.json {
             // Should all the values simply be added to the json too?  We can always add entries, but
             // we can never take any away to maintains backwards compatibility with JSON consumers.
-            let result = json!({ "stream_id": stream_id });
+            let result = json!({ "stream_id": stream_id, "stats": handler.stats, });
             println!("{}", to_string_pretty(&result).unwrap());
         } else {
             self.output
