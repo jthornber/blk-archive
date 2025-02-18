@@ -130,6 +130,8 @@ const SLAB_MAGIC: u64 = 0x20565137a3100a7c;
 
 const FORMAT_VERSION: u32 = 0;
 
+pub const SLAB_META_SIZE: u64 = 24;
+
 pub type SlabIndex = u64;
 
 pub struct SlabData {

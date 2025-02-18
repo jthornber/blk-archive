@@ -136,7 +136,17 @@ impl Data {
         }
     }
 
-    fn maybe_complete_data(&mut self, target: usize) -> Result<()> {
+    /// Checks to see if we have met the target threshold to write out a slab
+    /// # Arguments
+    ///
+    /// * `target` - target threshold
+    ///
+    /// # Returns
+    ///
+    /// Returns the number of bytes of slab data written and number of meta data written
+    fn maybe_complete_data(&mut self, target: usize) -> Result<(u64, u64)> {
+        let mut data_written = 0;
+        let mut hashes_written = 0;
         if complete_slab(&mut self.data_file, &mut self.data_buf, target)? {
             let mut builder = IndexBuilder::with_capacity(1024); // FIXME: estimate properly
             std::mem::swap(&mut builder, &mut self.current_index);
@@ -146,19 +156,26 @@ impl Data {
             self.hashes.put(self.current_slab, index);
 
             let mut hashes_file = self.hashes_file.lock().unwrap();
+            hashes_written = self.hashes_buf.len() as u64 + SLAB_META_SIZE;
+            data_written += SLAB_META_SIZE;
             complete_slab_(&mut hashes_file, &mut self.hashes_buf)?;
             self.current_slab += 1;
             self.current_entries = 0;
         }
-        Ok(())
+        Ok((data_written, hashes_written))
     }
 
     // Returns the (slab, entry) for the IoVec which may/may not already exist.
-    pub fn data_add(&mut self, h: Hash256, iov: &IoVec, len: u64) -> Result<((u32, u32), bool)> {
+    pub fn data_add(
+        &mut self,
+        h: Hash256,
+        iov: &IoVec,
+        len: u64,
+    ) -> Result<((u32, u32), u64, u64)> {
         // There is an inherent race condition between checking if we have it and adding it,
         // check before we add when this functionality ends up on a server side.
         if let Some(location) = self.is_known(&h)? {
-            return Ok((location, false));
+            return Ok((location, 0, 0));
         }
 
         // Add entry to cuckoo filter, not checking return value as we could get indication that
@@ -176,8 +193,8 @@ impl Data {
         }
         self.current_entries += 1;
         self.current_index.insert(h, len as usize);
-        self.maybe_complete_data(SLAB_SIZE_TARGET)?;
-        Ok((r, true))
+        let (data_written, hashes_written) = self.maybe_complete_data(SLAB_SIZE_TARGET)?;
+        Ok((r, data_written + len, hashes_written))
     }
 
     // Have we seen this hash before, if we have we will return the slab and offset
@@ -253,10 +270,8 @@ impl Data {
         Ok((data, data_begin, data_end))
     }
 
-    // Not used at the moment, but was used for the send/receive POC.  This was being called after
-    // we received the newly created stream file for a pack operation.  The reason this is done is
-    // until you complete a slab, you cannot locate it in the data_get path for unpack operation.
-    pub fn complete_slab(&mut self) -> Result<()> {
+    pub fn flush(&mut self) -> Result<(u64, u64)> {
+        // What else should we do here?
         self.maybe_complete_data(0)
     }
 
