@@ -92,6 +92,15 @@ fn main_() -> Result<()> {
                         .long("data-cache-size-meg")
                         .value_name("DATA_CACHE_SIZE_MEG")
                         .num_args(1),
+                )
+                .arg(
+                    Arg::new("DATA_COMPRESSION")
+                        .long("data-compression")
+                        .value_name("y|n")
+                        .help("Enable or disable slab data compression")
+                        .value_parser(["y", "n"]) // Restrict values
+                        .default_value("y")
+                        .action(ArgAction::Set),
                 ),
         )
         .subcommand(
