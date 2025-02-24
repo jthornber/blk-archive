@@ -47,7 +47,7 @@ fn write_config(
         data_cache_size_meg,
     };
 
-    write!(output, "{}", &serde_yaml::to_string(&config).unwrap())?;
+    write!(output, "{}", &serde_yaml_ng::to_string(&config).unwrap())?;
     Ok(())
 }
 

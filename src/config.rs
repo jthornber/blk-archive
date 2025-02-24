@@ -22,7 +22,7 @@ pub fn read_config<P: AsRef<Path>>(root: P) -> Result<Config> {
     p.push(root);
     p.push("dm-archive.yaml");
     let input = fs::read_to_string(p).context("couldn't read config file")?;
-    let config: Config = serde_yaml::from_str(&input).context("couldn't parse config file")?;
+    let config: Config = serde_yaml_ng::from_str(&input).context("couldn't parse config file")?;
     Ok(config)
 }
 
@@ -44,7 +44,7 @@ pub fn read_stream_config(stream_id: &str) -> Result<StreamConfig> {
     let input =
         fs::read_to_string(&p).with_context(|| format!("couldn't read stream config '{:?}", &p))?;
     let config: StreamConfig =
-        serde_yaml::from_str(&input).context("couldn't parse stream config file")?;
+        serde_yaml_ng::from_str(&input).context("couldn't parse stream config file")?;
     Ok(config)
 }
 
@@ -56,7 +56,7 @@ pub fn write_stream_config(stream_id: &str, cfg: &StreamConfig) -> Result<()> {
         .create(true)
         .truncate(true)
         .open(p)?;
-    let yaml = serde_yaml::to_string(cfg).unwrap();
+    let yaml = serde_yaml_ng::to_string(cfg).unwrap();
     output.write_all(yaml.as_bytes())?;
     Ok(())
 }
@@ -89,8 +89,8 @@ mod config_tests {
             thin_id: None,
         };
 
-        let ser = serde_yaml::to_string(&config).unwrap();
-        let des_config: StreamConfig = serde_yaml::from_str(&ser).unwrap();
+        let ser = serde_yaml_ng::to_string(&config).unwrap();
+        let des_config: StreamConfig = serde_yaml_ng::from_str(&ser).unwrap();
         assert!(config == des_config);
     }
 }
