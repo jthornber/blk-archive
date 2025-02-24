@@ -68,7 +68,7 @@ impl ContentSensitiveSplitter {
             if blen == 0 {
                 c.offset = 0;
                 c.block += 1;
-            } else if blen >= remaining {
+            } else if blen > remaining {
                 r.push(&b[c.offset..(c.offset + remaining)]);
                 c.offset += remaining;
                 remaining = 0;
@@ -80,6 +80,11 @@ impl ContentSensitiveSplitter {
             }
         }
         self.unconsumed_len -= len as u64;
+
+        if self.unconsumed_len == 0 {
+            assert!(c.block == self.blocks.len());
+        }
+
         r
     }
 
