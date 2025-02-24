@@ -197,10 +197,10 @@ fn main_() -> Result<()> {
             pack::run(sub_matches, output)?;
         }
         Some(("unpack", sub_matches)) => {
-            unpack::run_unpack(sub_matches, report)?;
+            unpack::run_unpack(sub_matches, output)?;
         }
         Some(("verify", sub_matches)) => {
-            unpack::run_verify(sub_matches, report)?;
+            unpack::run_verify(sub_matches, output)?;
         }
         Some(("list", sub_matches)) => {
             list::run(sub_matches, output)?;
