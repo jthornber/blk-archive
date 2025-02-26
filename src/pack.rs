@@ -140,6 +140,7 @@ impl IoVecHandler for DedupHandler {
         self.nr_chunks += 1;
         let len = iov_len_(iov);
         self.mapped_size += len;
+        assert!(len != 0);
 
         if let Some(first_byte) = all_same(iov) {
             self.fill_size += len;
