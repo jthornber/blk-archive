@@ -64,6 +64,18 @@ impl DataCache {
         let r = self.tree.get(&slab).cloned();
         if r.is_some() {
             self.hits += 1;
+
+            // FIXME: inefficient, use LinkedHashTable instead of lru
+            // Repush to the lru so it knows there was a hit.
+            use PushResult::*;
+            match self.lru.push(slab) {
+                AlreadyPresent => {
+                    // this was expected
+                }
+                _ => {
+                    panic!("lru and data cache tree are out of sync");
+                }
+            }
         } else {
             self.misses += 1;
         }
