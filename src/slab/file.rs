@@ -201,7 +201,7 @@ impl SlabFile {
         }));
 
         let (compressor, tx) = if flags == 1 {
-            let (c, tx) = CompressionService::new(1, tx);
+            let (c, tx) = CompressionService::new(1, tx, ZstdCompressor::new(0));
             (Some(c), tx)
         } else {
             (None, tx)
@@ -243,7 +243,7 @@ impl SlabFile {
         let compressed = flags == 1;
         let (tx, rx) = sync_channel(queue_depth);
         let (compressor, tx) = if flags == 1 {
-            let (c, tx) = CompressionService::new(4, tx);
+            let (c, tx) = CompressionService::new(4, tx, ZstdCompressor::new(0));
             (Some(c), tx)
         } else {
             (None, tx)

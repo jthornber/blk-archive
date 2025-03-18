@@ -8,6 +8,32 @@ use crate::slab::SlabData;
 
 //-----------------------------------------
 
+// First, define a trait for compression
+pub trait Compressor: Sync + Send + 'static {
+    fn compress(&self, data: &[u8]) -> Result<Vec<u8>>;
+}
+
+// Implement the trait for zstd
+pub struct ZstdCompressor {
+    level: i32,
+}
+
+impl ZstdCompressor {
+    pub fn new(level: i32) -> Self {
+        Self { level }
+    }
+}
+
+impl Compressor for ZstdCompressor {
+    fn compress(&self, data: &[u8]) -> Result<Vec<u8>> {
+        let mut encoder = zstd::Encoder::new(Vec::new(), self.level)?;
+        encoder.write_all(data)?;
+        Ok(encoder.finish()?)
+    }
+}
+
+//-----------------------------------------
+
 /// Represents different ways the compression service can be shut down
 #[derive(Clone, Eq, PartialEq)]
 pub enum ShutdownMode {
@@ -37,11 +63,12 @@ pub struct CompressionService {
     error_rx: Option<Receiver<anyhow::Error>>,
 }
 
-fn compression_worker_(
+fn compression_worker_<C: Compressor>(
     rx: Arc<Mutex<Receiver<SlabData>>>,
     tx: SyncSender<SlabData>,
     shutdown_rx: ShutdownRx,
     error_tx: SyncSender<anyhow::Error>,
+    compressor: Arc<C>,
 ) -> Result<()> {
     let mut shutdown_mode = None;
 
@@ -75,20 +102,7 @@ fn compression_worker_(
         };
 
         if let Some(data) = data {
-            let mut packer = match zstd::Encoder::new(Vec::new(), 0) {
-                Ok(p) => p,
-                Err(e) => {
-                    let _ = error_tx.send(e.into());
-                    continue;
-                }
-            };
-
-            if let Err(e) = packer.write_all(&data.data) {
-                let _ = error_tx.send(e.into());
-                continue;
-            }
-
-            let compressed_data = match packer.finish() {
+            let compressed_data = match compressor.compress(&data.data) {
                 Ok(data) => data,
                 Err(e) => {
                     let _ = error_tx.send(e.into());
@@ -108,13 +122,14 @@ fn compression_worker_(
     Ok(())
 }
 
-fn compression_worker(
+fn compression_worker<C: Compressor>(
     rx: Arc<Mutex<Receiver<SlabData>>>,
     tx: SyncSender<SlabData>,
     shutdown_rx: ShutdownRx,
     error_tx: SyncSender<anyhow::Error>,
+    compressor: Arc<C>,
 ) {
-    if let Err(e) = compression_worker_(rx, tx, shutdown_rx, error_tx.clone()) {
+    if let Err(e) = compression_worker_(rx, tx, shutdown_rx, error_tx.clone(), compressor) {
         let _ = error_tx.send(e);
     }
 }
@@ -132,7 +147,11 @@ impl CompressionService {
     /// A tuple containing:
     /// * The compression service
     /// * A sender that can be used to submit data for compression
-    pub fn new(nr_threads: usize, tx: SyncSender<SlabData>) -> (Self, SyncSender<SlabData>) {
+    pub fn new<C: Compressor>(
+        nr_threads: usize,
+        tx: SyncSender<SlabData>,
+        compressor: C,
+    ) -> (Self, SyncSender<SlabData>) {
         let mut threads = Vec::with_capacity(nr_threads);
         let (self_tx, rx) = sync_channel(nr_threads * 64);
         let mut shutdown_txs = Vec::with_capacity(nr_threads);
@@ -140,6 +159,7 @@ impl CompressionService {
 
         // we can only have a single receiver
         let rx = Arc::new(Mutex::new(rx));
+        let compressor = Arc::new(compressor);
 
         for _ in 0..nr_threads {
             let tx = tx.clone();
@@ -148,9 +168,11 @@ impl CompressionService {
             shutdown_txs.push(shutdown_tx);
 
             let worker_error_tx = error_tx.clone();
+            let worker_compressor = compressor.clone();
 
-            let tid =
-                thread::spawn(move || compression_worker(rx, tx, shutdown_rx, worker_error_tx));
+            let tid = thread::spawn(move || {
+                compression_worker(rx, tx, shutdown_rx, worker_error_tx, worker_compressor)
+            });
             threads.push(tid);
         }
 
@@ -218,5 +240,30 @@ impl CompressionService {
         }
     }
 }
+
+//-----------------------------------------
+
+/*
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockCompressor;
+
+    impl Compressor for MockCompressor {
+        fn compress(&self, data: &[u8]) -> Result<Vec<u8>> {
+            // Simple mock that just returns the original data
+            // or you could return a predictable result
+            Ok(data.to_vec())
+        }
+    }
+
+    #[test]
+    fn test_compression_service() {
+        // Test setup with mock compressor
+        // ...
+    }
+}
+*/
 
 //-----------------------------------------
