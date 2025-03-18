@@ -32,12 +32,16 @@ pub struct CompressionService {
     // We have one channel per worker thread so they don't have to do
     // any locking.
     shutdown_txs: Option<Vec<SyncSender<ShutdownMode>>>,
+
+    // Channel for workers to report errors back to the main thread
+    error_rx: Option<Receiver<anyhow::Error>>,
 }
 
 fn compression_worker_(
     rx: Arc<Mutex<Receiver<SlabData>>>,
     tx: SyncSender<SlabData>,
     shutdown_rx: ShutdownRx,
+    error_tx: SyncSender<anyhow::Error>,
 ) -> Result<()> {
     let mut shutdown_mode = None;
 
@@ -71,12 +75,33 @@ fn compression_worker_(
         };
 
         if let Some(data) = data {
-            let mut packer = zstd::Encoder::new(Vec::new(), 0)?;
-            packer.write_all(&data.data)?;
-            tx.send(SlabData {
+            let mut packer = match zstd::Encoder::new(Vec::new(), 0) {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = error_tx.send(e.into());
+                    continue;
+                }
+            };
+
+            if let Err(e) = packer.write_all(&data.data) {
+                let _ = error_tx.send(e.into());
+                continue;
+            }
+
+            let compressed_data = match packer.finish() {
+                Ok(data) => data,
+                Err(e) => {
+                    let _ = error_tx.send(e.into());
+                    continue;
+                }
+            };
+
+            if let Err(e) = tx.send(SlabData {
                 index: data.index,
-                data: packer.finish()?,
-            })?;
+                data: compressed_data,
+            }) {
+                let _ = error_tx.send(e.into());
+            }
         }
     }
 
@@ -87,9 +112,11 @@ fn compression_worker(
     rx: Arc<Mutex<Receiver<SlabData>>>,
     tx: SyncSender<SlabData>,
     shutdown_rx: ShutdownRx,
+    error_tx: SyncSender<anyhow::Error>,
 ) {
-    // FIXME: handle error
-    compression_worker_(rx, tx, shutdown_rx).unwrap();
+    if let Err(e) = compression_worker_(rx, tx, shutdown_rx, error_tx.clone()) {
+        let _ = error_tx.send(e);
+    }
 }
 
 impl CompressionService {
@@ -109,6 +136,7 @@ impl CompressionService {
         let mut threads = Vec::with_capacity(nr_threads);
         let (self_tx, rx) = sync_channel(nr_threads * 64);
         let mut shutdown_txs = Vec::with_capacity(nr_threads);
+        let (error_tx, error_rx) = sync_channel(nr_threads * 2);
 
         // we can only have a single receiver
         let rx = Arc::new(Mutex::new(rx));
@@ -119,7 +147,10 @@ impl CompressionService {
             let (shutdown_tx, shutdown_rx) = sync_channel(1);
             shutdown_txs.push(shutdown_tx);
 
-            let tid = thread::spawn(move || compression_worker(rx, tx, shutdown_rx));
+            let worker_error_tx = error_tx.clone();
+
+            let tid =
+                thread::spawn(move || compression_worker(rx, tx, shutdown_rx, worker_error_tx));
             threads.push(tid);
         }
 
@@ -127,9 +158,35 @@ impl CompressionService {
             Self {
                 threads: Some(threads),
                 shutdown_txs: Some(shutdown_txs),
+                error_rx: Some(error_rx),
             },
             self_tx,
         )
+    }
+
+    /// Checks if any worker threads have reported errors
+    ///
+    /// Returns the first error found, if any
+    pub fn check_errors(&self) -> Option<anyhow::Error> {
+        if let Some(rx) = &self.error_rx {
+            match rx.try_recv() {
+                Ok(err) => Some(err),
+                Err(_) => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Collects all pending errors from worker threads
+    pub fn collect_errors(&self) -> Vec<anyhow::Error> {
+        let mut errors = Vec::new();
+        if let Some(rx) = &self.error_rx {
+            while let Ok(err) = rx.try_recv() {
+                errors.push(err);
+            }
+        }
+        errors
     }
 
     /// Initiates shutdown of the compression service
