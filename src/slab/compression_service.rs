@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::io::Write;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
-use threadpool::ThreadPool;
+use std::thread;
 
 use crate::slab::SlabData;
 
@@ -26,7 +26,7 @@ type ShutdownRx = Receiver<ShutdownMode>;
 /// 2. Compresses the data using zstd
 /// 3. Sends the compressed data to an output channel
 pub struct CompressionService {
-    pool: ThreadPool,
+    threads: Option<Vec<thread::JoinHandle<()>>>,
 
     // Option so we can 'take' it and prevent two calls to shutdown.
     // We have one channel per worker thread so they don't have to do
@@ -106,7 +106,7 @@ impl CompressionService {
     /// * The compression service
     /// * A sender that can be used to submit data for compression
     pub fn new(nr_threads: usize, tx: SyncSender<SlabData>) -> (Self, SyncSender<SlabData>) {
-        let pool = ThreadPool::new(nr_threads);
+        let mut threads = Vec::with_capacity(nr_threads);
         let (self_tx, rx) = sync_channel(nr_threads * 64);
         let mut shutdown_txs = Vec::with_capacity(nr_threads);
 
@@ -118,12 +118,14 @@ impl CompressionService {
             let rx = rx.clone();
             let (shutdown_tx, shutdown_rx) = sync_channel(1);
             shutdown_txs.push(shutdown_tx);
-            pool.execute(move || compression_worker(rx, tx, shutdown_rx));
+
+            let tid = thread::spawn(move || compression_worker(rx, tx, shutdown_rx));
+            threads.push(tid);
         }
 
         (
             Self {
-                pool,
+                threads: Some(threads),
                 shutdown_txs: Some(shutdown_txs),
             },
             self_tx,
@@ -151,7 +153,12 @@ impl CompressionService {
         // Default to graceful shutdown if not already shutting down
         self.shutdown(ShutdownMode::Graceful);
 
-        self.pool.join();
+        // Join all worker threads
+        if let Some(threads) = self.threads.take() {
+            for tid in threads {
+                let _ = tid.join();
+            }
+        }
     }
 }
 
