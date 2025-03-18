@@ -61,6 +61,9 @@ pub struct CompressionService {
 
     // Channel for workers to report errors back to the main thread
     error_rx: Option<Receiver<anyhow::Error>>,
+
+    // Store collected errors
+    errors: Arc<Mutex<Vec<anyhow::Error>>>,
 }
 
 fn compression_worker_<C: Compressor>(
@@ -181,34 +184,41 @@ impl CompressionService {
                 threads: Some(threads),
                 shutdown_txs: Some(shutdown_txs),
                 error_rx: Some(error_rx),
+                errors: Arc::new(Mutex::new(Vec::new())),
             },
             self_tx,
         )
     }
 
-    /// Checks if any worker threads have reported errors
-    ///
-    /// Returns the first error found, if any
-    pub fn check_errors(&self) -> Option<anyhow::Error> {
+    fn collect_new_errors(&self) {
         if let Some(rx) = &self.error_rx {
-            match rx.try_recv() {
-                Ok(err) => Some(err),
-                Err(_) => None,
-            }
-        } else {
-            None
-        }
-    }
-
-    /// Collects all pending errors from worker threads
-    pub fn collect_errors(&self) -> Vec<anyhow::Error> {
-        let mut errors = Vec::new();
-        if let Some(rx) = &self.error_rx {
+            let mut errors = self.errors.lock().unwrap();
             while let Ok(err) = rx.try_recv() {
                 errors.push(err);
             }
         }
-        errors
+    }
+
+    /// Checks if any worker threads have reported errors
+    ///
+    /// Returns true if there are any pending errors
+    pub fn has_errors(&self) -> bool {
+        // First, collect any new errors from the channel
+        self.collect_new_errors();
+
+        // Then check if we have any stored errors
+        let errors = self.errors.lock().unwrap();
+        !errors.is_empty()
+    }
+
+    /// Collects all pending errors from worker threads
+    pub fn collect_errors(&self) -> Vec<anyhow::Error> {
+        // First collect any new errors
+        self.collect_new_errors();
+
+        // Then take all stored errors
+        let mut errors = self.errors.lock().unwrap();
+        std::mem::take(&mut *errors)
     }
 
     /// Initiates shutdown of the compression service
@@ -312,7 +322,7 @@ mod tests {
         }
 
         // Check for errors
-        assert!(service.check_errors().is_none());
+        assert!(!service.has_errors());
 
         // Clean up
         service.join();
@@ -396,7 +406,107 @@ mod tests {
         );
 
         // Check for errors
-        assert!(service.check_errors().is_none());
+        assert!(!service.has_errors());
+
+        // Clean up
+        service.join();
+    }
+
+    #[test]
+    fn test_error_handling() {
+        // Create channels
+        let (output_tx, output_rx) = sync_channel(10);
+
+        // Create a compressor that will fail on specific conditions
+        struct ErrorCompressor {
+            // Fail when compressing data with this index
+            fail_on_indices: std::collections::HashSet<u64>,
+        }
+
+        impl Compressor for ErrorCompressor {
+            fn compress(&self, data: &[u8]) -> Result<Vec<u8>> {
+                // Extract the index from the first byte of data (for test purposes)
+                if !data.is_empty() && self.fail_on_indices.contains(&(data[0] as u64)) {
+                    return Err(anyhow::anyhow!(
+                        "Simulated compression error on index {}",
+                        data[0]
+                    ));
+                }
+                Ok(data.to_vec())
+            }
+        }
+
+        // Create the service with the error-generating compressor
+        let fail_indices: std::collections::HashSet<u64> = [2, 5, 8].iter().cloned().collect();
+        let (service, input_tx) = CompressionService::new(
+            2,
+            output_tx,
+            ErrorCompressor {
+                fail_on_indices: fail_indices.clone(),
+            },
+        );
+
+        // Create test data - some will succeed, some will fail
+        let test_data: Vec<SlabData> = (0..10)
+            .map(|i| SlabData {
+                index: i,
+                data: vec![i as u8, 1, 2, 3, 4], // First byte is the index
+            })
+            .collect();
+
+        // Send all data
+        for data in &test_data {
+            input_tx.send(data.clone()).expect("Failed to send data");
+        }
+
+        // Wait a bit for processing to complete
+        thread::sleep(std::time::Duration::from_millis(500));
+
+        // Collect successful results
+        let mut successful_results = Vec::new();
+        while let Ok(data) = output_rx.try_recv() {
+            successful_results.push(data);
+        }
+
+        // Verify successful results
+        let expected_success_count = test_data.len() - fail_indices.len();
+        assert_eq!(successful_results.len(), expected_success_count);
+
+        // Verify each successful result has an index not in the fail set
+        for result in &successful_results {
+            assert!(!fail_indices.contains(&result.index));
+        }
+
+        // Test has_errors() - should return true
+        assert!(service.has_errors());
+
+        // Test collect_errors() - should return all errors
+        let errors = service.collect_errors();
+        assert_eq!(errors.len(), fail_indices.len());
+
+        // Verify each error message contains the expected text
+        for error in &errors {
+            let error_string = error.to_string();
+            assert!(error_string.contains("Simulated compression error on index"));
+        }
+
+        // After collecting all errors, has_errors should return false
+        assert!(!service.has_errors());
+
+        // Send more data after collecting errors to ensure service still works
+        let additional_data = SlabData {
+            index: 20,
+            data: vec![20, 1, 2, 3, 4],
+        };
+        input_tx
+            .send(additional_data.clone())
+            .expect("Failed to send additional data");
+
+        // Verify we can still receive successful results
+        match output_rx.recv_timeout(std::time::Duration::from_secs(1)) {
+            Ok(data) => assert_eq!(data.index, 20),
+            Err(e) => panic!("Failed to receive additional data: {}", e),
+        }
 
         // Clean up
         service.join();
