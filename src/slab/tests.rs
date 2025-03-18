@@ -1,6 +1,6 @@
 use super::builder::*;
 use super::*;
-use anyhow::ensure;
+use anyhow::{ensure, Result};
 use tempfile::*;
 
 // ensure the writer could handle unordered writes from the compressors
