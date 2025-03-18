@@ -11,7 +11,7 @@ use crate::config::*;
 use crate::cuckoo_filter::*;
 use crate::paths;
 use crate::paths::*;
-use crate::slab::*;
+use crate::slab::builder::*;
 
 //-----------------------------------------
 

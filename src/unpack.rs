@@ -18,6 +18,7 @@ use crate::chunkers::*;
 use crate::config;
 use crate::paths::*;
 use crate::run_iter::*;
+use crate::slab::builder::*;
 use crate::slab::*;
 use crate::stream;
 use crate::stream::*;

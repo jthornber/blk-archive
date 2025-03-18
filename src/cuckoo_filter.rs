@@ -9,7 +9,7 @@ use std::cmp;
 use std::iter::*;
 use std::path::Path;
 
-use crate::slab::*;
+use crate::slab::builder::*;
 use crate::utils::is_pow2;
 
 const ENTRIES_PER_BUCKET: usize = 4;

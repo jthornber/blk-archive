@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::output::Output;
+use crate::slab::builder::*;
 use crate::slab::*;
 use crate::stack::*;
 

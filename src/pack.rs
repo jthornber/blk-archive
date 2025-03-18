@@ -21,6 +21,7 @@ use crate::iovec::*;
 use crate::output::Output;
 use crate::paths::*;
 use crate::run_iter::*;
+use crate::slab::builder::*;
 use crate::slab::*;
 use crate::splitter::*;
 use crate::stream::*;
