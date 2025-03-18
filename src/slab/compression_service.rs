@@ -77,15 +77,19 @@ fn compression_worker_<C: Compressor>(
 
     loop {
         // Check for shutdown signal (non-blocking)
-        match shutdown_rx.try_recv() {
-            Ok(mode) => {
-                shutdown_mode = Some(mode);
-                if matches!(shutdown_mode, Some(ShutdownMode::Immediate)) {
+        if shutdown_mode.is_none() {
+            match shutdown_rx.try_recv() {
+                Ok(mode) => {
+                    shutdown_mode = Some(mode);
+                    if matches!(shutdown_mode, Some(ShutdownMode::Immediate)) {
+                        break;
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     break;
                 }
             }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
         }
 
         // Try to receive data with timeout
@@ -98,9 +102,12 @@ fn compression_worker_<C: Compressor>(
                     if matches!(shutdown_mode, Some(ShutdownMode::Graceful)) {
                         break;
                     }
+
                     continue;
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    break;
+                }
             }
         };
 
@@ -236,9 +243,7 @@ impl CompressionService {
     }
 
     /// Shuts down the service (gracefully by default) and waits for all workers to complete
-    ///
-    /// This method consumes the service, ensuring it cannot be used after joining.
-    pub fn join(mut self) {
+    pub fn join(&mut self) {
         // Default to graceful shutdown if not already shutting down
         self.shutdown(ShutdownMode::Graceful);
 
@@ -273,7 +278,7 @@ mod tests {
         let (output_tx, output_rx) = sync_channel(100);
 
         // Create the compression service with a mock compressor
-        let (service, input_tx) = CompressionService::new(
+        let (mut service, input_tx) = CompressionService::new(
             2, // Use 2 worker threads
             output_tx,
             MockCompressor,
@@ -348,7 +353,7 @@ mod tests {
         }
 
         // Create the service with multiple workers
-        let (service, input_tx) =
+        let (mut service, input_tx) =
             CompressionService::new(NUM_WORKERS, output_tx, SlowMockCompressor);
 
         // Create test data - more items than workers to ensure distribution
@@ -438,7 +443,7 @@ mod tests {
 
         // Create the service with the error-generating compressor
         let fail_indices: std::collections::HashSet<u64> = [2, 5, 8].iter().cloned().collect();
-        let (service, input_tx) = CompressionService::new(
+        let (mut service, input_tx) = CompressionService::new(
             2,
             output_tx,
             ErrorCompressor {
@@ -510,6 +515,205 @@ mod tests {
 
         // Clean up
         service.join();
+    }
+
+    #[test]
+    fn test_graceful_shutdown() {
+        // Create channels with a limited capacity to control the test flow
+        let (output_tx, output_rx) = sync_channel(10);
+
+        // Create a compressor that adds a delay to simulate work
+        struct DelayCompressor;
+        impl Compressor for DelayCompressor {
+            fn compress(&self, data: &[u8]) -> Result<Vec<u8>> {
+                // Add a delay to simulate compression work
+                thread::sleep(std::time::Duration::from_millis(50));
+                Ok(data.to_vec())
+            }
+        }
+
+        // Create the service with 2 workers
+        let (mut service, input_tx) = CompressionService::new(2, output_tx, DelayCompressor);
+
+        // Number of items to test with
+        const NUM_ITEMS: usize = 20;
+
+        // Create and send test data
+        let test_data: Vec<SlabData> = (0..NUM_ITEMS)
+            .map(|i| SlabData {
+                index: i as u64,
+                data: vec![i as u8; 100],
+            })
+            .collect();
+
+        for data in &test_data {
+            input_tx.send(data.clone()).expect("Failed to send data");
+        }
+
+        // Initiate graceful shutdown before all items are processed
+        // The delay in the compressor ensures some items are still in the queue
+        thread::sleep(std::time::Duration::from_millis(100));
+        service.shutdown(ShutdownMode::Graceful);
+
+        // Drop the sender to close the channel
+        drop(input_tx);
+
+        // Collect all results
+        let mut results = Vec::new();
+        while results.len() < NUM_ITEMS {
+            match output_rx.recv_timeout(std::time::Duration::from_secs(20)) {
+                Ok(data) => results.push(data),
+                Err(e) => {
+                    panic!(
+                        "Failed to receive all items during graceful shutdown. Got {}/{} items: {}",
+                        results.len(),
+                        NUM_ITEMS,
+                        e
+                    );
+                }
+            }
+        }
+
+        // Verify we received all items
+        assert_eq!(results.len(), NUM_ITEMS);
+
+        // Sort results by index for consistent comparison
+        results.sort_by_key(|d| d.index);
+
+        // Verify all data was processed correctly
+        for i in 0..NUM_ITEMS {
+            assert_eq!(results[i].index, i as u64);
+            assert_eq!(results[i].data.len(), 100);
+            assert_eq!(results[i].data[0], i as u8);
+        }
+
+        // Join the service - this should complete quickly since we already shut it down
+        let join_start = std::time::Instant::now();
+        service.join();
+        let join_duration = join_start.elapsed();
+
+        // Join should be quick since we already initiated shutdown
+        assert!(
+            join_duration < std::time::Duration::from_millis(500),
+            "Join took too long after graceful shutdown: {:?}",
+            join_duration
+        );
+
+        // Verify no errors occurred
+        assert!(
+            !service.has_errors(),
+            "Unexpected errors after graceful shutdown"
+        );
+    }
+
+    #[test]
+    fn test_immediate_shutdown() {
+        // Create channels with a limited capacity
+        let (output_tx, output_rx) = sync_channel(100);
+
+        // Create a compressor that adds a significant delay to simulate work
+        struct SlowCompressor;
+        impl Compressor for SlowCompressor {
+            fn compress(&self, data: &[u8]) -> Result<Vec<u8>> {
+                // Add a substantial delay to simulate slow compression
+                thread::sleep(std::time::Duration::from_millis(200));
+                Ok(data.to_vec())
+            }
+        }
+
+        // Create the service with 2 workers
+        let (mut service, input_tx) = CompressionService::new(2, output_tx, SlowCompressor);
+
+        // Number of items to test with - more than can be processed quickly
+        const NUM_ITEMS: usize = 20;
+
+        // Create and send test data
+        let test_data: Vec<SlabData> = (0..NUM_ITEMS)
+            .map(|i| SlabData {
+                index: i as u64,
+                data: vec![i as u8; 100],
+            })
+            .collect();
+
+        for data in &test_data {
+            input_tx.send(data.clone()).expect("Failed to send data");
+        }
+
+        // Allow a few items to be processed
+        thread::sleep(std::time::Duration::from_millis(500));
+
+        // Count how many items were processed before shutdown
+        let mut processed_before_shutdown = Vec::new();
+        while let Ok(data) = output_rx.try_recv() {
+            processed_before_shutdown.push(data);
+        }
+
+        println!(
+            "Processed {} items before immediate shutdown",
+            processed_before_shutdown.len()
+        );
+
+        // Initiate immediate shutdown
+        let shutdown_time = std::time::Instant::now();
+        service.shutdown(ShutdownMode::Immediate);
+
+        // Join the service
+        service.join();
+        let shutdown_duration = shutdown_time.elapsed();
+
+        // Immediate shutdown should be quick
+        assert!(
+            shutdown_duration < std::time::Duration::from_millis(500),
+            "Immediate shutdown took too long: {:?}",
+            shutdown_duration
+        );
+
+        // Try to receive any additional items that might have been processed
+        let mut processed_after_shutdown = Vec::new();
+        while let Ok(data) = output_rx.try_recv() {
+            processed_after_shutdown.push(data);
+        }
+
+        println!(
+            "Processed {} additional items after shutdown signal",
+            processed_after_shutdown.len()
+        );
+
+        // Calculate total processed items
+        let total_processed = processed_before_shutdown.len() + processed_after_shutdown.len();
+
+        // With immediate shutdown, we expect that not all items were processed
+        assert!(
+            total_processed < NUM_ITEMS,
+            "Expected fewer than {} items to be processed with immediate shutdown, but got {}",
+            NUM_ITEMS,
+            total_processed
+        );
+
+        // Verify no errors occurred during shutdown
+        let errors = service.collect_errors();
+        assert!(
+            errors.is_empty(),
+            "Unexpected errors during shutdown: {:?}",
+            errors
+        );
+
+        // Verify the items that were processed have the correct data
+        let all_processed: Vec<SlabData> = processed_before_shutdown
+            .into_iter()
+            .chain(processed_after_shutdown.into_iter())
+            .collect();
+
+        for processed in &all_processed {
+            // Find the original data for this index
+            let original = test_data
+                .iter()
+                .find(|d| d.index == processed.index)
+                .expect("Processed item with unknown index");
+
+            // Verify data matches (our mock compressor returns the same data)
+            assert_eq!(processed.data, original.data);
+        }
     }
 }
 

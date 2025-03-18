@@ -70,7 +70,7 @@ impl Drop for SlabFile {
 
         let mut compressor = None;
         std::mem::swap(&mut compressor, &mut self.compressor);
-        if let Some(c) = compressor {
+        if let Some(mut c) = compressor {
             c.join();
         }
     }
