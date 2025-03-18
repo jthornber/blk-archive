@@ -181,7 +181,6 @@ dependencies = [
  "size-display",
  "tempfile",
  "thinp",
- "threadpool",
  "udev 0.9.3",
  "walkdir",
  "zstd",
