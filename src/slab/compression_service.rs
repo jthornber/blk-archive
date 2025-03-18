@@ -8,6 +8,7 @@ use crate::slab::SlabData;
 
 //-----------------------------------------
 
+/// Represents different ways the compression service can be shut down
 #[derive(Clone, Eq, PartialEq)]
 pub enum ShutdownMode {
     /// Process all queued items before shutting down
@@ -18,6 +19,12 @@ pub enum ShutdownMode {
 
 type ShutdownRx = Arc<Mutex<Receiver<ShutdownMode>>>;
 
+/// A service that compresses SlabData using multiple worker threads
+///
+/// The service maintains a thread pool where each thread:
+/// 1. Receives SlabData from an input channel
+/// 2. Compresses the data using zstd
+/// 3. Sends the compressed data to an output channel
 pub struct CompressionService {
     pool: ThreadPool,
 
@@ -87,6 +94,18 @@ fn compression_worker(
 }
 
 impl CompressionService {
+    /// Creates a new compression service with the specified number of worker threads
+    ///
+    /// # Arguments
+    ///
+    /// * `nr_threads` - Number of compression worker threads to spawn
+    /// * `tx` - Channel to send compressed data to
+    ///
+    /// # Returns
+    ///
+    /// A tuple containing:
+    /// * The compression service
+    /// * A sender that can be used to submit data for compression
     pub fn new(nr_threads: usize, tx: SyncSender<SlabData>) -> (Self, SyncSender<SlabData>) {
         let pool = ThreadPool::new(nr_threads);
         let (self_tx, rx) = sync_channel(nr_threads * 64);
@@ -112,6 +131,11 @@ impl CompressionService {
         )
     }
 
+    /// Initiates shutdown of the compression service
+    ///
+    /// # Arguments
+    ///
+    /// * `mode` - Controls whether to process remaining items or abandon them
     pub fn shutdown(&mut self, mode: ShutdownMode) {
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
             // Send shutdown signal to all workers
@@ -121,6 +145,9 @@ impl CompressionService {
         }
     }
 
+    /// Shuts down the service (gracefully by default) and waits for all workers to complete
+    ///
+    /// This method consumes the service, ensuring it cannot be used after joining.
     pub fn join(mut self) {
         // Default to graceful shutdown if not already shutting down
         if self.shutdown_tx.is_some() {
