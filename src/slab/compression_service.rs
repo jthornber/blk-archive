@@ -317,6 +317,90 @@ mod tests {
         // Clean up
         service.join();
     }
+
+    #[test]
+    fn test_multiple_workers() {
+        // Create channels with limited capacity to ensure work distribution
+        let (output_tx, output_rx) = sync_channel(10);
+
+        // Use more worker threads
+        const NUM_WORKERS: usize = 4;
+        const NUM_ITEMS: usize = 100;
+
+        // Create a compressor that adds a small delay to simulate work
+        struct SlowMockCompressor;
+        impl Compressor for SlowMockCompressor {
+            fn compress(&self, data: &[u8]) -> Result<Vec<u8>> {
+                // Add a small delay to simulate compression work
+                thread::sleep(std::time::Duration::from_millis(10));
+                Ok(data.to_vec())
+            }
+        }
+
+        // Create the service with multiple workers
+        let (service, input_tx) =
+            CompressionService::new(NUM_WORKERS, output_tx, SlowMockCompressor);
+
+        // Create test data - more items than workers to ensure distribution
+        let test_data: Vec<SlabData> = (0..NUM_ITEMS)
+            .map(|i| SlabData {
+                index: i as u64,
+                data: vec![i as u8; 1000], // 1KB of data filled with the index value
+            })
+            .collect();
+
+        // Record start time to measure parallel execution
+        let start_time = std::time::Instant::now();
+
+        // Send all data
+        for data in &test_data {
+            input_tx.send(data.clone()).expect("Failed to send data");
+        }
+
+        // Collect and verify results
+        let mut received_indices = std::collections::HashSet::new();
+        for _ in 0..NUM_ITEMS {
+            match output_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+                Ok(data) => {
+                    // Verify data integrity
+                    assert_eq!(data.data.len(), 1000);
+                    assert!(data.data.iter().all(|&b| b == data.index as u8));
+
+                    // Track which indices we've received
+                    received_indices.insert(data.index);
+                }
+                Err(e) => panic!("Failed to receive data: {}", e),
+            }
+        }
+
+        // Verify we received all expected indices
+        assert_eq!(received_indices.len(), NUM_ITEMS);
+        for i in 0..NUM_ITEMS {
+            assert!(received_indices.contains(&(i as u64)));
+        }
+
+        // Measure elapsed time
+        let elapsed = start_time.elapsed();
+
+        // Calculate theoretical time for single-threaded execution
+        // Each item takes ~10ms, so single-threaded would be ~NUM_ITEMS * 10ms
+        let theoretical_single_thread = std::time::Duration::from_millis(NUM_ITEMS as u64 * 10);
+
+        // With NUM_WORKERS, we expect to be significantly faster than single-threaded
+        // Allow some overhead, but should be at least 2x faster with 4 workers
+        assert!(
+            elapsed < theoretical_single_thread / 2,
+            "Expected parallel speedup not achieved: {:?} vs theoretical single-thread {:?}",
+            elapsed,
+            theoretical_single_thread
+        );
+
+        // Check for errors
+        assert!(service.check_errors().is_none());
+
+        // Clean up
+        service.join();
+    }
 }
 
 //-----------------------------------------
