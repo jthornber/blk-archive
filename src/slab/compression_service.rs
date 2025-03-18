@@ -243,7 +243,6 @@ impl CompressionService {
 
 //-----------------------------------------
 
-/*
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,11 +258,65 @@ mod tests {
     }
 
     #[test]
-    fn test_compression_service() {
-        // Test setup with mock compressor
-        // ...
+    fn test_basic_compression_functionality() {
+        // Create channels for input and output
+        let (output_tx, output_rx) = sync_channel(100);
+
+        // Create the compression service with a mock compressor
+        let (service, input_tx) = CompressionService::new(
+            2, // Use 2 worker threads
+            output_tx,
+            MockCompressor,
+        );
+
+        // Create test data
+        let test_data = vec![
+            SlabData {
+                index: 1,
+                data: vec![1, 2, 3, 4, 5],
+            },
+            SlabData {
+                index: 2,
+                data: vec![6, 7, 8, 9, 10],
+            },
+            SlabData {
+                index: 3,
+                data: vec![11, 12, 13, 14, 15],
+            },
+        ];
+
+        // Send data to the compression service
+        for data in &test_data {
+            input_tx.send(data.clone()).expect("Failed to send data");
+        }
+
+        // Collect results
+        let mut results = Vec::new();
+        for _ in 0..test_data.len() {
+            // Use a timeout to avoid hanging if the test fails
+            match output_rx.recv_timeout(std::time::Duration::from_secs(1)) {
+                Ok(data) => results.push(data),
+                Err(e) => panic!("Failed to receive compressed data: {}", e),
+            }
+        }
+
+        // Verify results (with MockCompressor, data should be unchanged)
+        assert_eq!(results.len(), test_data.len());
+
+        // Sort results by index to ensure consistent comparison
+        results.sort_by_key(|d| d.index);
+
+        for (original, compressed) in test_data.iter().zip(results.iter()) {
+            assert_eq!(original.index, compressed.index);
+            assert_eq!(original.data, compressed.data); // MockCompressor returns the same data
+        }
+
+        // Check for errors
+        assert!(service.check_errors().is_none());
+
+        // Clean up
+        service.join();
     }
 }
-*/
 
 //-----------------------------------------
