@@ -34,6 +34,8 @@ const FORMAT_VERSION: u32 = 0;
 
 pub type SlabIndex = u64;
 
+// Clone should only be used in tests
+#[derive(Clone)]
 pub struct SlabData {
     pub index: SlabIndex,
     pub data: Vec<u8>,
