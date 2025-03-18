@@ -18,6 +18,10 @@ mod tests;
 
 //------------------------------------------------
 
+/// A cache for slab data that uses an LRU eviction policy.
+///
+/// This cache stores data blocks indexed by slab number and tracks cache hits and misses.
+/// When the cache reaches capacity, the least recently used entries are evicted.
 struct DataCache {
     lru: LRU,
     tree: BTreeMap<u32, Arc<Vec<u8>>>,
@@ -26,6 +30,11 @@ struct DataCache {
 }
 
 impl DataCache {
+    /// Creates a new `DataCache` with the specified capacity.
+    ///
+    /// # Arguments
+    ///
+    /// * `nr_entries` - Maximum number of entries to store in the cache
     fn new(nr_entries: usize) -> Self {
         let lru = LRU::with_capacity(nr_entries);
         let tree = BTreeMap::new();
@@ -38,7 +47,20 @@ impl DataCache {
         }
     }
 
+    /// Looks up a slab in the cache.
+    ///
+    /// Updates hit/miss statistics based on whether the slab was found.
+    ///
+    /// # Arguments
+    ///
+    /// * `slab` - The slab index to look up
+    ///
+    /// # Returns
+    ///
+    /// * `Some(Arc<Vec<u8>>)` - The cached data if found
+    /// * `None` - If the slab is not in the cache
     fn find(&mut self, slab: u32) -> Option<Arc<Vec<u8>>> {
+        // FIXME: this doesn't update the LRU?
         let r = self.tree.get(&slab).cloned();
         if r.is_some() {
             self.hits += 1;
@@ -48,6 +70,15 @@ impl DataCache {
         r
     }
 
+    /// Inserts a slab into the cache.
+    ///
+    /// If the cache is at capacity, the least recently used entry will be evicted.
+    /// If the slab is already in the cache, it will be marked as recently used.
+    ///
+    /// # Arguments
+    ///
+    /// * `slab` - The slab index to insert
+    /// * `data` - The slab data to cache
     fn insert(&mut self, slab: u32, data: Arc<Vec<u8>>) {
         use PushResult::*;
 
