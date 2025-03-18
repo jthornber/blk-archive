@@ -17,7 +17,7 @@ pub enum ShutdownMode {
     Immediate,
 }
 
-type ShutdownRx = Arc<Mutex<Receiver<ShutdownMode>>>;
+type ShutdownRx = Receiver<ShutdownMode>;
 
 /// A service that compresses SlabData using multiple worker threads
 ///
@@ -29,7 +29,9 @@ pub struct CompressionService {
     pool: ThreadPool,
 
     // Option so we can 'take' it and prevent two calls to shutdown.
-    shutdown_tx: Option<SyncSender<ShutdownMode>>,
+    // We have one channel per worker thread so they don't have to do
+    // any locking.
+    shutdown_txs: Option<Vec<SyncSender<ShutdownMode>>>,
 }
 
 fn compression_worker_(
@@ -41,18 +43,15 @@ fn compression_worker_(
 
     loop {
         // Check for shutdown signal (non-blocking)
-        {
-            let shutdown_rx = shutdown_rx.lock().unwrap();
-            match shutdown_rx.try_recv() {
-                Ok(mode) => {
-                    shutdown_mode = Some(mode);
-                    if matches!(shutdown_mode, Some(ShutdownMode::Immediate)) {
-                        break;
-                    }
+        match shutdown_rx.try_recv() {
+            Ok(mode) => {
+                shutdown_mode = Some(mode);
+                if matches!(shutdown_mode, Some(ShutdownMode::Immediate)) {
+                    break;
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
             }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
         }
 
         // Try to receive data with timeout
@@ -109,23 +108,23 @@ impl CompressionService {
     pub fn new(nr_threads: usize, tx: SyncSender<SlabData>) -> (Self, SyncSender<SlabData>) {
         let pool = ThreadPool::new(nr_threads);
         let (self_tx, rx) = sync_channel(nr_threads * 64);
-        let (shutdown_tx, shutdown_rx) = sync_channel(nr_threads);
+        let mut shutdown_txs = Vec::with_capacity(nr_threads);
 
         // we can only have a single receiver
         let rx = Arc::new(Mutex::new(rx));
-        let shutdown_rx = Arc::new(Mutex::new(shutdown_rx));
 
         for _ in 0..nr_threads {
             let tx = tx.clone();
             let rx = rx.clone();
-            let shutdown_rx = shutdown_rx.clone();
+            let (shutdown_tx, shutdown_rx) = sync_channel(1);
+            shutdown_txs.push(shutdown_tx);
             pool.execute(move || compression_worker(rx, tx, shutdown_rx));
         }
 
         (
             Self {
                 pool,
-                shutdown_tx: Some(shutdown_tx),
+                shutdown_txs: Some(shutdown_txs),
             },
             self_tx,
         )
@@ -137,10 +136,10 @@ impl CompressionService {
     ///
     /// * `mode` - Controls whether to process remaining items or abandon them
     pub fn shutdown(&mut self, mode: ShutdownMode) {
-        if let Some(shutdown_tx) = self.shutdown_tx.take() {
+        if let Some(shutdown_txs) = self.shutdown_txs.take() {
             // Send shutdown signal to all workers
-            for _ in 0..self.pool.max_count() {
-                let _ = shutdown_tx.send(mode.clone());
+            for tx in shutdown_txs {
+                let _ = tx.send(mode.clone());
             }
         }
     }
@@ -150,9 +149,7 @@ impl CompressionService {
     /// This method consumes the service, ensuring it cannot be used after joining.
     pub fn join(mut self) {
         // Default to graceful shutdown if not already shutting down
-        if self.shutdown_tx.is_some() {
-            self.shutdown(ShutdownMode::Graceful);
-        }
+        self.shutdown(ShutdownMode::Graceful);
 
         self.pool.join();
     }
