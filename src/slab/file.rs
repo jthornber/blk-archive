@@ -173,7 +173,7 @@ fn read_slab_header(data: &mut std::fs::File) -> Result<u32> {
 }
 
 impl SlabFile {
-    pub fn create<P: AsRef<Path>>(
+    pub(crate) fn create<P: AsRef<Path>>(
         data_path: P,
         queue_depth: usize,
         compressed: bool,
@@ -226,7 +226,7 @@ impl SlabFile {
         })
     }
 
-    pub fn open_for_write<P: AsRef<Path>>(
+    pub(crate) fn open_for_write<P: AsRef<Path>>(
         data_path: P,
         queue_depth: usize,
         cache_nr_entries: usize,
@@ -276,7 +276,10 @@ impl SlabFile {
         })
     }
 
-    pub fn open_for_read<P: AsRef<Path>>(data_path: P, cache_nr_entries: usize) -> Result<Self> {
+    pub(crate) fn open_for_read<P: AsRef<Path>>(
+        data_path: P,
+        cache_nr_entries: usize,
+    ) -> Result<Self> {
         let offsets_path = offsets_path(&data_path);
 
         let mut data = OpenOptions::new()
