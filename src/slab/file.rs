@@ -14,6 +14,9 @@ use crate::slab::compression_service::*;
 use crate::slab::data_cache::*;
 use crate::slab::offsets::*;
 
+#[cfg(test)]
+mod tests;
+
 //------------------------------------------------
 // Slab files are used to store 'slabs' of data.  You
 // may only append to a slab file, or read an existing
@@ -365,7 +368,7 @@ impl SlabFile {
         }
     }
 
-    pub fn reserve_slab(&mut self) -> (SlabIndex, SyncSender<SlabData>) {
+    fn reserve_slab(&mut self) -> (SlabIndex, SyncSender<SlabData>) {
         let index = self.pending_index;
         self.pending_index += 1;
         let tx = self.tx.as_ref().unwrap().clone();
