@@ -1,7 +1,10 @@
-use super::builder::*;
 use super::*;
 use anyhow::{ensure, Result};
 use tempfile::*;
+
+use crate::slab::SlabFileBuilder;
+
+//-----------------------------------------
 
 // ensure the writer could handle unordered writes from the compressors
 #[test]
@@ -45,3 +48,5 @@ fn write_unordered() -> Result<()> {
 
     Ok(())
 }
+
+//-----------------------------------------
