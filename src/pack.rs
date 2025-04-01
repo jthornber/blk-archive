@@ -556,7 +556,7 @@ pub fn run(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
     let input_file = Path::new(matches.get_one::<String>("INPUT").unwrap()).canonicalize()?;
 
     env::set_current_dir(archive_dir)?;
-    let config = config::read_config(".")?;
+    let config = config::read_config(".", matches)?;
 
     output
         .report

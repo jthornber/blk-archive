@@ -382,7 +382,7 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
 
     report.set_title(&format!("Unpacking {} ...", output_file.display()));
     if create {
-        let config = config::read_config(".")?;
+        let config = config::read_config(".", matches)?;
         let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
 
         let dest = ThickDest { output };
@@ -396,7 +396,7 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
             return Err(anyhow!("Destination size doesn't not match stream size"));
         }
 
-        let config = config::read_config(".")?;
+        let config = config::read_config(".", matches)?;
         let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
 
         if is_thin_device(output_file)? {
@@ -602,7 +602,7 @@ pub fn run_verify(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
 
     env::set_current_dir(archive_dir)?;
 
-    let config = config::read_config(".")?;
+    let config = config::read_config(".", matches)?;
     let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
 
     let stream_cfg = config::read_stream_config(stream)?;

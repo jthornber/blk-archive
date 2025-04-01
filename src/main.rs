@@ -50,6 +50,13 @@ fn main_() -> Result<()> {
         .action(ArgAction::SetTrue)
         .global(true);
 
+    let data_cache_size: Arg = Arg::new("DATA_CACHE_SIZE_MEG")
+        .help("Specify how much memory is used for caching data")
+        .required(false)
+        .long("data-cache-size-meg")
+        .value_name("DATA_CACHE_SIZE_MEG")
+        .num_args(1);
+
     let matches = command!()
         .arg(json)
         .propagate_version(true)
@@ -85,14 +92,7 @@ fn main_() -> Result<()> {
                         .value_name("HASH_CACHE_SIZE_MEG")
                         .num_args(1),
                 )
-                .arg(
-                    Arg::new("DATA_CACHE_SIZE_MEG")
-                        .help("Specify how much memory is used for caching data")
-                        .required(false)
-                        .long("data-cache-size-meg")
-                        .value_name("DATA_CACHE_SIZE_MEG")
-                        .num_args(1),
-                ),
+                .arg(data_cache_size.clone()),
         )
         .subcommand(
             Command::new("pack")
@@ -124,7 +124,8 @@ fn main_() -> Result<()> {
                         .long("delta-device")
                         .value_name("DELTA_DEVICE")
                         .num_args(1),
-                ),
+                )
+                .arg(data_cache_size.clone()),
         )
         .subcommand(
             Command::new("unpack")
@@ -142,6 +143,7 @@ fn main_() -> Result<()> {
                         .long("create")
                         .action(clap::ArgAction::SetTrue),
                 )
+                .arg(data_cache_size.clone())
                 .arg(archive_arg.clone())
                 .arg(stream_arg.clone()),
         )
@@ -155,6 +157,7 @@ fn main_() -> Result<()> {
                         .value_name("INPUT")
                         .num_args(1),
                 )
+                .arg(data_cache_size.clone())
                 .arg(archive_arg.clone())
                 .arg(stream_arg.clone()),
         )
