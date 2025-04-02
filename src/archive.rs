@@ -136,8 +136,8 @@ impl Data {
         }
     }
 
-    fn maybe_complete_data(&mut self, target: usize) -> Result<()> {
-        if complete_slab(&mut self.data_file, &mut self.data_buf, target)? {
+    fn complete_data_slab(&mut self) -> Result<()> {
+        if complete_slab(&mut self.data_file, &mut self.data_buf, 0)? {
             let mut builder = IndexBuilder::with_capacity(1024); // FIXME: estimate properly
             std::mem::swap(&mut builder, &mut self.current_index);
             let buffer = builder.build()?;
@@ -170,13 +170,16 @@ impl Data {
             self.rebuild_index(s)?;
         }
 
+        if self.data_buf.len() as u64 + len > SLAB_SIZE_TARGET as u64 {
+            self.complete_data_slab()?;
+        }
+
         let r = (self.current_slab, self.current_entries as u32);
         for v in iov {
             self.data_buf.extend_from_slice(v);
         }
         self.current_entries += 1;
         self.current_index.insert(h, len as usize);
-        self.maybe_complete_data(SLAB_SIZE_TARGET)?;
         Ok((r, true))
     }
 
@@ -257,12 +260,12 @@ impl Data {
     // we received the newly created stream file for a pack operation.  The reason this is done is
     // until you complete a slab, you cannot locate it in the data_get path for unpack operation.
     pub fn complete_slab(&mut self) -> Result<()> {
-        self.maybe_complete_data(0)
+        self.complete_data_slab()
     }
 
     fn sync_and_close(&mut self) {
-        self.maybe_complete_data(0)
-            .expect("Data.drop: maybe_complete_data error!");
+        self.complete_data_slab()
+            .expect("Data.drop: complete_data_slab error!");
         let mut hashes_file = self.hashes_file.lock().unwrap();
         hashes_file
             .close()
