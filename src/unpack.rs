@@ -2,6 +2,8 @@ use anyhow::{anyhow, Context, Result};
 use chrono::prelude::*;
 use clap::ArgMatches;
 use io::{Read, Seek, Write};
+use serde_json::json;
+use serde_json::to_string_pretty;
 use size_display::Size;
 use std::env;
 use std::fs;
@@ -10,12 +12,12 @@ use std::io;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use thinp::report::*;
 
 use crate::archive;
 use crate::archive::SLAB_SIZE_TARGET;
 use crate::chunkers::*;
 use crate::config;
+use crate::output::Output;
 use crate::paths::*;
 use crate::run_iter::*;
 use crate::slab::builder::*;
@@ -104,8 +106,8 @@ impl<D: UnpackDest> Unpacker<D> {
         Ok(())
     }
 
-    fn unpack(&mut self, report: &Arc<Report>, total: u64) -> Result<()> {
-        report.progress(0);
+    fn unpack(&mut self, output: Arc<Output>, total: u64) -> Result<()> {
+        output.report.progress(0);
 
         let nr_slabs = self.stream_file.get_nr_slabs();
         let mut unpacker = stream::MappingUnpacker::default();
@@ -126,22 +128,26 @@ impl<D: UnpackDest> Unpacker<D> {
                     let slab_fraction = s as f64 / nr_slabs as f64;
                     let percent =
                         ((slab_fraction + (entry_fraction / nr_slabs as f64)) * 100.0) as u8;
-                    report.progress(percent);
+                    output.report.progress(percent);
                 }
             }
         }
 
+        self.dest.complete()?;
+        output.report.progress(100);
         let end_time: DateTime<Utc> = Utc::now();
         let elapsed = end_time - start_time;
         let elapsed = elapsed.num_milliseconds() as f64 / 1000.0;
 
-        report.info(&format!(
-            "speed            : {:.2}/s",
-            Size((total as f64 / elapsed) as u64)
-        ));
-
-        self.dest.complete()?;
-        report.progress(100);
+        if output.json {
+            let result = json!({ "bytes_per_second": (total as f64 / elapsed) as u64 });
+            println!("{}", to_string_pretty(&result).unwrap());
+        } else {
+            output.report.info(&format!(
+                "speed            : {:.2}/s",
+                Size((total as f64 / elapsed) as u64)
+            ));
+        }
 
         Ok(())
     }
@@ -355,7 +361,7 @@ impl UnpackDest for ThinDest {
 
 //-----------------------------------------
 
-pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
+pub fn run_unpack(matches: &ArgMatches, report_output: Arc<Output>) -> Result<()> {
     let archive_dir = Path::new(matches.get_one::<String>("ARCHIVE").unwrap())
         .canonicalize()
         .context("Bad archive dir")?;
@@ -380,14 +386,16 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     env::set_current_dir(archive_dir)?;
     let stream_cfg = config::read_stream_config(stream)?;
 
-    report.set_title(&format!("Unpacking {} ...", output_file.display()));
+    report_output
+        .report
+        .set_title(&format!("Unpacking {} ...", output_file.display()));
     if create {
         let config = config::read_config(".", matches)?;
         let cache_nr_entries = (1024 * 1024 * config.data_cache_size_meg) / SLAB_SIZE_TARGET;
 
         let dest = ThickDest { output };
         let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
-        u.unpack(&report, stream_cfg.size)
+        u.unpack(report_output, stream_cfg.size)
     } else {
         // Check the size matches the stream size.
         let stream_size = stream_cfg.size;
@@ -416,11 +424,11 @@ pub fn run_unpack(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
                 writes_avoided: 0,
             };
             let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
-            u.unpack(&report, stream_size)
+            u.unpack(report_output, stream_size)
         } else {
             let dest = ThickDest { output };
             let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
-            u.unpack(&report, stream_size)
+            u.unpack(report_output, stream_size)
         }
     }
 }
@@ -595,7 +603,7 @@ fn thin_verifier(input_file: &Path) -> Result<VerifyDest> {
     Ok(VerifyDest::new(input_it))
 }
 
-pub fn run_verify(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
+pub fn run_verify(matches: &ArgMatches, output: Arc<Output>) -> Result<()> {
     let archive_dir = Path::new(matches.get_one::<String>("ARCHIVE").unwrap()).canonicalize()?;
     let input_file = Path::new(matches.get_one::<String>("INPUT").unwrap()).canonicalize()?;
     let stream = matches.get_one::<String>("STREAM").unwrap();
@@ -607,7 +615,7 @@ pub fn run_verify(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
 
     let stream_cfg = config::read_stream_config(stream)?;
 
-    report.set_title(&format!(
+    output.report.set_title(&format!(
         "Verifying {} and {} match ...",
         input_file.display(),
         &stream
@@ -620,7 +628,7 @@ pub fn run_verify(matches: &ArgMatches, report: Arc<Report>) -> Result<()> {
     };
 
     let mut u = Unpacker::new(stream, cache_nr_entries, dest)?;
-    u.unpack(&report, stream_cfg.size)
+    u.unpack(output, stream_cfg.size)
 }
 
 //-----------------------------------------

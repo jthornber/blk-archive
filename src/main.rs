@@ -92,7 +92,16 @@ fn main_() -> Result<()> {
                         .value_name("HASH_CACHE_SIZE_MEG")
                         .num_args(1),
                 )
-                .arg(data_cache_size.clone()),
+                .arg(data_cache_size.clone())
+                .arg(
+                    Arg::new("DATA_COMPRESSION")
+                        .long("data-compression")
+                        .value_name("y|n")
+                        .help("Enable or disable slab data compression")
+                        .value_parser(["y", "n"]) // Restrict values
+                        .default_value("y")
+                        .action(ArgAction::Set),
+                ),
         )
         .subcommand(
             Command::new("pack")
@@ -188,10 +197,10 @@ fn main_() -> Result<()> {
             pack::run(sub_matches, output)?;
         }
         Some(("unpack", sub_matches)) => {
-            unpack::run_unpack(sub_matches, report)?;
+            unpack::run_unpack(sub_matches, output)?;
         }
         Some(("verify", sub_matches)) => {
-            unpack::run_verify(sub_matches, report)?;
+            unpack::run_verify(sub_matches, output)?;
         }
         Some(("list", sub_matches)) => {
             list::run(sub_matches, output)?;
