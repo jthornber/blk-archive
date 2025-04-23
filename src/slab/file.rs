@@ -37,6 +37,8 @@ const FORMAT_VERSION: u32 = 0;
 
 pub type SlabIndex = u64;
 
+pub const SLAB_META_SIZE: u64 = 24; // Slab magic + length + check sum, each of which is 8 bytes
+
 // Clone should only be used in tests
 #[derive(Clone)]
 pub struct SlabData {

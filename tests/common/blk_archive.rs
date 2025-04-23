@@ -1,4 +1,6 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::args;
@@ -11,14 +13,35 @@ pub struct BlkArchive {
     archive: PathBuf,
 }
 
+#[derive(Deserialize, Serialize, Debug)]
+pub struct PackStats {
+    pub data_written: u64,
+    pub mapped_size: u64,
+    pub fill_size: u64,
+}
+#[derive(Deserialize, Serialize, Debug)]
+pub struct PackResponse {
+    pub stream_id: String,
+    pub stats: PackStats,
+}
+
 impl BlkArchive {
     pub fn new(archive: &Path) -> Result<Self> {
-        Self::new_with(archive, 4096)
+        Self::new_with(archive, 4096, true)
     }
 
-    pub fn new_with(archive: &Path, block_size: usize) -> Result<Self> {
+    pub fn new_with(archive: &Path, block_size: usize, data_compression: bool) -> Result<Self> {
         let bs_str = block_size.to_string();
-        run_ok(create_cmd(args!["-a", archive, "--block-size", &bs_str]))?;
+        let compression = if data_compression { "y" } else { "n" };
+
+        run_ok(create_cmd(args![
+            "-a",
+            archive,
+            "--block-size",
+            &bs_str,
+            "--data-compression",
+            &compression
+        ]))?;
         Ok(Self {
             archive: archive.to_path_buf(),
         })
@@ -30,17 +53,24 @@ impl BlkArchive {
         })
     }
 
+    pub fn data_size(&self) -> std::io::Result<u64> {
+        fn file_size(path: &PathBuf) -> std::io::Result<u64> {
+            fs::metadata(path).map(|meta| meta.len())
+        }
+
+        let base_path = self.archive.clone();
+        let data_size = file_size(&base_path.join("data/data"))?;
+        Ok(data_size)
+    }
+
     pub fn pack_cmd(&self, input: &Path) -> Command {
         pack_cmd(args!["-a", &self.archive, &input, "-j"])
     }
 
-    pub fn pack(&self, input: &Path) -> Result<String> {
+    pub fn pack(&self, input: &Path) -> Result<PackResponse> {
         let stdout = run_ok(self.pack_cmd(input))?;
-        let v: serde_json::Value = serde_json::from_str(&stdout)?;
-        let sid = v["stream_id"]
-            .as_str()
-            .ok_or(anyhow!("stream_id not found"))?;
-        Ok(sid.to_string())
+        let response: PackResponse = serde_json::from_str(&stdout)?;
+        Ok(response)
     }
 
     pub fn unpack_cmd(&self, stream: &str, output: &Path, create: bool) -> Command {

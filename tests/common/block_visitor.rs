@@ -4,7 +4,7 @@ use thinp::io_engine::buffer::Buffer;
 use thinp::io_engine::PAGE_SIZE;
 use thinp::math::div_up;
 
-use crate::common::random::Generator;
+use crate::common::random::{Generator, Pattern};
 
 //------------------------------------------
 
@@ -29,11 +29,13 @@ pub struct Stamper<T> {
     offset: u64,     // bytes
     len: u64,        // bytes
     size_limit: u64, // bytes
+    generator: Generator,
 }
 
 impl<T: FileExt> Stamper<T> {
-    pub fn new(file: T, seed: u64, block_size: usize) -> Self {
+    pub fn new(file: T, seed: u64, block_size: usize, pattern: Pattern) -> Self {
         let buf = Buffer::new(block_size, PAGE_SIZE);
+        let generator = Generator::new(pattern);
         Self {
             file,
             block_size,
@@ -42,6 +44,7 @@ impl<T: FileExt> Stamper<T> {
             offset: 0,
             len: u64::MAX,
             size_limit: u64::MAX,
+            generator,
         }
     }
 
@@ -67,9 +70,8 @@ impl<T: FileExt> BlockVisitor for Stamper<T> {
     fn visit(&mut self, blocknr: u64) -> Result<()> {
         let offset = blocknr * self.block_size as u64 + self.offset;
         if offset < self.size_limit {
-            let mut gen = Generator::new();
-            gen.fill_buffer(self.seed ^ blocknr, self.buf.get_data())?;
-
+            self.generator
+                .fill_buffer(self.seed ^ blocknr, self.buf.get_data())?;
             let len = std::cmp::min(self.block_size as u64, self.size_limit - offset);
             self.file
                 .write_all_at(&self.buf.get_data()[..len as usize], offset)?;
@@ -88,11 +90,13 @@ pub struct Verifier<T> {
     offset: u64,
     len: u64,
     size_limit: u64,
+    generator: Generator,
 }
 
 impl<T: FileExt> Verifier<T> {
-    pub fn new(file: T, seed: u64, block_size: usize) -> Self {
+    pub fn new(file: T, seed: u64, block_size: usize, pattern: Pattern) -> Self {
         let buf = Buffer::new(block_size, PAGE_SIZE);
+        let generator = Generator::new(pattern);
         Self {
             file,
             block_size,
@@ -101,6 +105,7 @@ impl<T: FileExt> Verifier<T> {
             offset: 0,
             len: u64::MAX,
             size_limit: u64::MAX,
+            generator,
         }
     }
 
@@ -130,12 +135,10 @@ impl<T: FileExt> BlockVisitor for Verifier<T> {
             let buf = &mut self.buf.get_data()[..len as usize];
             self.file.read_exact_at(buf, offset)?;
 
-            let mut gen = Generator::new();
-            if !gen.verify_buffer(self.seed ^ blocknr, buf)? {
+            if !self.generator.verify_buffer(self.seed ^ blocknr, buf)? {
                 return Err(anyhow!("data verify failed for data block {}", blocknr));
             }
         }
-
         Ok(())
     }
 }

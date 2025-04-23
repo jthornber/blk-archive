@@ -154,11 +154,11 @@ impl Data {
     }
 
     // Returns the (slab, entry) for the IoVec which may/may not already exist.
-    pub fn data_add(&mut self, h: Hash256, iov: &IoVec, len: u64) -> Result<((u32, u32), bool)> {
+    pub fn data_add(&mut self, h: Hash256, iov: &IoVec, len: u64) -> Result<((u32, u32), u64)> {
         // There is an inherent race condition between checking if we have it and adding it,
         // check before we add when this functionality ends up on a server side.
         if let Some(location) = self.is_known(&h)? {
-            return Ok((location, false));
+            return Ok((location, 0));
         }
 
         // Add entry to cuckoo filter, not checking return value as we could get indication that
@@ -180,7 +180,7 @@ impl Data {
         }
         self.current_entries += 1;
         self.current_index.insert(h, len as usize);
-        Ok((r, true))
+        Ok((r, len))
     }
 
     // Have we seen this hash before, if we have we will return the slab and offset
@@ -259,7 +259,7 @@ impl Data {
     // Not used at the moment, but was used for the send/receive POC.  This was being called after
     // we received the newly created stream file for a pack operation.  The reason this is done is
     // until you complete a slab, you cannot locate it in the data_get path for unpack operation.
-    pub fn complete_slab(&mut self) -> Result<()> {
+    pub fn flush(&mut self) -> Result<()> {
         self.complete_data_slab()
     }
 

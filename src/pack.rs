@@ -63,6 +63,12 @@ fn all_same(iov: &IoVec) -> Option<u8> {
 }
 
 //-----------------------------------------
+#[derive(serde::Serialize, Default)]
+struct DedupStats {
+    data_written: u64,
+    mapped_size: u64,
+    fill_size: u64,
+}
 
 struct DedupHandler {
     nr_chunks: usize,
@@ -72,9 +78,7 @@ struct DedupHandler {
 
     mapping_builder: Arc<Mutex<dyn Builder>>,
 
-    data_written: u64,
-    mapped_size: u64,
-    fill_size: u64,
+    stats: DedupStats,
     archive: Data,
 }
 
@@ -84,15 +88,14 @@ impl DedupHandler {
         mapping_builder: Arc<Mutex<dyn Builder>>,
         archive: Data,
     ) -> Result<Self> {
+        let stats = DedupStats::default();
+
         Ok(Self {
             nr_chunks: 0,
             stream_file,
             stream_buf: Vec::new(),
             mapping_builder,
-            // Stats
-            data_written: 0,
-            mapped_size: 0,
-            fill_size: 0,
+            stats,
             archive,
         })
     }
@@ -125,10 +128,6 @@ impl DedupHandler {
         Ok(())
     }
 
-    fn archive_file_sizes(&mut self) -> (u64, u64) {
-        self.archive.file_sizes()
-    }
-
     // TODO: Is there a better way to handle this and what are the ramifications with
     // client server with multiple clients and one server?
     fn ensure_extra_capacity(&mut self, blocks: usize) -> Result<()> {
@@ -140,11 +139,11 @@ impl IoVecHandler for DedupHandler {
     fn handle_data(&mut self, iov: &IoVec) -> Result<()> {
         self.nr_chunks += 1;
         let len = iov_len_(iov);
-        self.mapped_size += len;
+        self.stats.mapped_size += len;
         assert!(len != 0);
 
         if let Some(first_byte) = all_same(iov) {
-            self.fill_size += len;
+            self.stats.fill_size += len;
             self.add_stream_entry(
                 &MapEntry::Fill {
                     byte: first_byte,
@@ -157,15 +156,13 @@ impl IoVecHandler for DedupHandler {
             let h = hash_256_iov(iov);
             // Note: add_data_entry returns existing entry if present, else returns newly inserted
             // entry.
-            let (entry_location, inserted) = self.archive.data_add(h, iov, len)?;
+            let (entry_location, data_written) = self.archive.data_add(h, iov, len)?;
             let me = MapEntry::Data {
                 slab: entry_location.0,
                 offset: entry_location.1,
                 nr_entries: 1,
             };
-            if inserted {
-                self.data_written += len;
-            }
+            self.stats.data_written += data_written;
             self.add_stream_entry(&me, len)?;
             self.maybe_complete_stream()?;
         }
@@ -284,8 +281,6 @@ impl Packer {
 
         let mut handler = DedupHandler::new(stream_file, self.mapping_builder.clone(), ad)?;
 
-        let start_sizes = handler.archive_file_sizes();
-
         handler.ensure_extra_capacity(self.mapped_size as usize / self.block_size)?;
 
         self.output.report.progress(0);
@@ -316,22 +311,18 @@ impl Packer {
 
         splitter.complete(&mut handler)?;
         self.output.report.progress(100);
+        handler.archive.flush()?;
         let end_time: DateTime<Utc> = Utc::now();
         let elapsed = end_time - start_time;
         let elapsed = elapsed.num_milliseconds() as f64 / 1000.0;
-
-        let end_sizes = handler.archive_file_sizes();
-        let data_written = end_sizes.0 - start_sizes.0;
-        let hashes_written = end_sizes.1 - start_sizes.1;
-
         let stream_written = handler.stream_file.get_file_size();
         let ratio =
-            (self.mapped_size as f64) / ((data_written + hashes_written + stream_written) as f64);
+            (self.mapped_size as f64) / ((handler.stats.data_written + stream_written) as f64);
 
         if self.output.json {
             // Should all the values simply be added to the json too?  We can always add entries, but
             // we can never take any away to maintains backwards compatibility with JSON consumers.
-            let result = json!({ "stream_id": stream_id });
+            let result = json!({ "stream_id": stream_id, "stats": handler.stats, });
             println!("{}", to_string_pretty(&result).unwrap());
         } else {
             self.output
@@ -351,19 +342,17 @@ impl Packer {
                 .info(&format!("total read       : {:.2}", Size(total_read)));
             self.output.report.info(&format!(
                 "fills size       : {:.2}",
-                Size(handler.fill_size)
+                Size(handler.stats.fill_size)
             ));
             self.output.report.info(&format!(
                 "duplicate data   : {:.2}",
-                Size(total_read - handler.data_written - handler.fill_size)
+                Size(total_read - handler.stats.data_written - handler.stats.fill_size)
             ));
 
-            self.output
-                .report
-                .info(&format!("data written     : {:.2}", Size(data_written)));
-            self.output
-                .report
-                .info(&format!("hashes written   : {:.2}", Size(hashes_written)));
+            self.output.report.info(&format!(
+                "data written     : {:.2}",
+                Size(handler.stats.data_written)
+            ));
             self.output
                 .report
                 .info(&format!("stream written   : {:.2}", Size(stream_written)));
@@ -383,7 +372,7 @@ impl Packer {
             pack_time: config::now(),
             size: self.input_size,
             mapped_size: self.mapped_size,
-            packed_size: data_written + hashes_written + stream_written,
+            packed_size: handler.stats.data_written + stream_written,
             thin_id: self.thin_id,
         };
         config::write_stream_config(&stream_id, &cfg)?;
